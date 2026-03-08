@@ -9,14 +9,14 @@ const SIZES_GROUP_NAME = "Sizes";
 const MENU_SIZES = [
   { label: "12oz", sortOrder: 0 },
   { label: "16oz", sortOrder: 1 },
-  { label: "1-Liter", sortOrder: 2 },
-  { label: "Jar", sortOrder: 3 },
+  { label: "Jar", sortOrder: 2 },
+  { label: "1-Liter", sortOrder: 3 },
 ];
 
 const AVAILABILITY: Record<string, string[]> = {
   HOT: ["12oz", "16oz"],
-  ICED: ["12oz", "16oz", "1-Liter", "Jar"],
-  CONCENTRATED: ["1-Liter", "Jar"],
+  ICED: ["12oz", "16oz", "Jar", "1-Liter"],
+  CONCENTRATED: ["1-Liter"],
 };
 
 // Menu Settings: Sizes (separate from Option Groups)
