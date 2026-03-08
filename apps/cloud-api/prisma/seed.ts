@@ -73,55 +73,19 @@ async function seedMenuSizes() {
   }
 }
 
-// Legacy "Sizes" option group - required by drink-sizes API and item editor
-async function seedSizesOptionGroup() {
-  let group = await prisma.menuOptionGroup.findFirst({
-    where: { name: SIZES_GROUP_NAME, isSizeGroup: true },
-    include: { options: true },
-  });
-  if (!group) {
-    group = await prisma.menuOptionGroup.create({
-      data: {
-        name: SIZES_GROUP_NAME,
-        isSizeGroup: true,
-        isSystem: true,
-        required: false,
-        multi: false,
-      },
-      include: { options: true },
-    });
-    console.log("Created Sizes option group");
-  }
-  for (let i = 0; i < MENU_SIZES.length; i++) {
-    const { label } = MENU_SIZES[i];
-    const exists = group.options.some((o) => o.name === label);
-    if (!exists) {
-      await prisma.menuOption.create({
-        data: { groupId: group.id, name: label, sortOrder: i },
-      });
-      console.log("  Added option:", label);
-    }
-  }
-}
-
 async function main() {
   await seedMenuSizes();
-  await seedSizesOptionGroup();
 
-  const email = process.env.ADMIN_EMAIL ?? "admin@example.com";
-  const password = process.env.ADMIN_PASSWORD ?? "admin123";
-
-  const existing = await prisma.adminUser.findUnique({ where: { email } });
-  if (existing) {
-    console.log("Admin user already exists:", email);
-    return;
-  }
+  const email = process.env.ADMIN_EMAIL ?? "admin@bfc.local";
+  const password = process.env.ADMIN_PASSWORD ?? "Yapyap12";
 
   const passwordHash = await hashPassword(password);
-  await prisma.adminUser.create({
-    data: { email, passwordHash },
+  await prisma.adminUser.upsert({
+    where: { email },
+    update: {},
+    create: { email, passwordHash },
   });
-  console.log("Created admin user:", email);
+  console.log("Admin user ready:", email);
 }
 
 main()
