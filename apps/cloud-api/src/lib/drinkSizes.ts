@@ -1,4 +1,4 @@
-import type { PrismaClient } from "../generated/client2";
+import type { PrismaClient } from "@prisma/client";
 
 export const SIZES_GROUP_NAME = "Sizes";
 
