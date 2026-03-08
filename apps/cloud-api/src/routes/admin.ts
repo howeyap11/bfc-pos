@@ -409,7 +409,7 @@ export async function adminRoutes(app: FastifyInstance) {
 
   // Menu Settings > Transaction Types (requires Prisma client with TransactionTypeSetting model)
   const txDelegate = () => {
-    const d = (app.prisma as Record<string, unknown>).transactionTypeSetting;
+    const d = (app.prisma as unknown as Record<string, unknown>).transactionTypeSetting;
     return d as
       | { findMany: (a: object) => Promise<unknown[]>; findUnique: (a: object) => Promise<unknown | null>; count: () => Promise<number>; create: (a: object) => Promise<unknown>; update: (a: object) => Promise<unknown> }
       | undefined;

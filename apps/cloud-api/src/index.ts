@@ -13,13 +13,14 @@ import { syncRoutes } from "./routes/sync.js";
 
 const app = Fastify({ logger: true });
 
-app.setErrorHandler((err, _req, reply) => {
+app.setErrorHandler((err: unknown, _req, reply) => {
   app.log.error(err);
   const status = (err as { statusCode?: number }).statusCode ?? 500;
+  const message = err instanceof Error ? err.message : String(err);
   reply.status(status).send({
     ok: false,
-    message: err.message ?? "Internal server error",
-    error: err.message,
+    message: message || "Internal server error",
+    error: message,
   });
 });
 

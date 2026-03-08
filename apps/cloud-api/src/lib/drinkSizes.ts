@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import type { PrismaClient } from "../generated/client2";
 
 export const SIZES_GROUP_NAME = "Sizes";
 
@@ -33,7 +33,7 @@ export async function getDrinkSizesOptionGroup(
     };
   }
 
-  const options: DrinkSizeOption[] = group.options.map((o, i) => ({
+  const options: DrinkSizeOption[] = group.options.map((o: { id: string; name: string; sortOrder: number | null }, i: number) => ({
     id: o.id,
     label: o.name,
     sortOrder: o.sortOrder ?? i,

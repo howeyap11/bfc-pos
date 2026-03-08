@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@prisma/client";
+import type { PrismaClient } from "../generated/client2";
 
 export async function bumpCatalogVersion(prisma: PrismaClient): Promise<number> {
   const row = await prisma.catalogVersion.findUnique({ where: { id: 1 } });

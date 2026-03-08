@@ -1,1 +1,26 @@
+# Node
 node_modules
+
+# Next.js
+.next
+out
+dist
+
+# Logs
+npm-debug.log*
+pnpm-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+build
+
+# Prisma
+prisma/migrations/dev.db
