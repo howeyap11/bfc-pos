@@ -1,0 +1,558 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/client2"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model AdminUser {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// Single row (id=1): tracks current catalog version for sync
+model CatalogVersion {
+  id            Int @id @default(1)
+  latestVersion Int @default(0)
+}
+
+model Category {
+  id        String    @id @default(cuid())
+  name      String
+  slug      String    @unique
+  sortOrder Int       @default(0)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  subCategories SubCategory[]
+  items         MenuItem[]
+}
+
+enum DrinkTemp {
+  HOT
+  ICED
+  ANY
+}
+
+enum DrinkMode {
+  ICED
+  HOT
+  CONCENTRATED
+}
+
+model SubCategory {
+  id         String    @id @default(cuid())
+  name       String
+  categoryId String
+  sortOrder  Int       @default(0)
+  deletedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  category Category   @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  items    MenuItem[]
+
+  @@index([categoryId])
+}
+
+model MenuItem {
+  id         String    @id @default(cuid())
+  name       String
+  priceCents Int
+  imageUrl   String?
+  isActive   Boolean   @default(true)
+  hasSizes   Boolean   @default(false)
+  deletedAt  DateTime?
+  sortOrder  Int       @default(0)
+  version    Int
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  categoryId    String?
+  subCategoryId String
+
+  defaultSizeId       String?
+  defaultSizeOptionId String? // MenuOption.id from "Sizes" group
+
+  supportsShots Boolean @default(false)
+  defaultShots  Int?
+
+  category          Category?     @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  subCategory       SubCategory   @relation(fields: [subCategoryId], references: [id], onDelete: Restrict)
+  defaultSize       MenuItemSize? @relation("MenuItemDefaultSize", fields: [defaultSizeId], references: [id], onDelete: SetNull)
+  defaultSizeOption MenuOption?   @relation("MenuItemDefaultSizeOption", fields: [defaultSizeOptionId], references: [id], onDelete: SetNull)
+
+  recipeLines       RecipeLine[]
+  recipeLinesBySize RecipeLineSize[]
+  optionGroupLinks  MenuItemOptionGroup[]
+  sizes             MenuItemSize[]
+  drinkSizeConfigs  MenuItemDrinkSizeConfig[]
+  drinkModeDefaults MenuItemDrinkModeDefault[]
+  sizePrices        MenuItemSizePrice[]
+
+  @@index([version])
+  @@index([categoryId])
+  @@index([subCategoryId])
+  @@index([defaultSizeId])
+  @@index([defaultSizeOptionId])
+}
+
+model MenuItemSize {
+  id         String    @id @default(cuid())
+  menuItemId String
+  label      String
+  temp       DrinkTemp @default(ANY)
+  sortOrder  Int       @default(0)
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  menuItem  MenuItem   @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  asDefault MenuItem[] @relation("MenuItemDefaultSize")
+
+  @@unique([menuItemId, label, temp])
+  @@index([menuItemId])
+}
+
+model MenuItemDrinkSizeConfig {
+  id         String    @id @default(cuid())
+  menuItemId String
+  mode       DrinkMode
+  optionId   String
+  isEnabled  Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  menuItem MenuItem   @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  option   MenuOption @relation(fields: [optionId], references: [id], onDelete: Cascade)
+
+  @@unique([menuItemId, mode, optionId])
+  @@index([menuItemId])
+  @@index([optionId])
+}
+
+model MenuItemDrinkModeDefault {
+  id              String    @id @default(cuid())
+  menuItemId      String
+  mode            DrinkMode
+  defaultOptionId String
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  menuItem MenuItem   @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  option   MenuOption @relation(fields: [defaultOptionId], references: [id], onDelete: Cascade)
+
+  @@unique([menuItemId, mode])
+  @@index([menuItemId])
+  @@index([defaultOptionId])
+}
+
+model MenuItemSizePrice {
+  id           String    @id @default(cuid())
+  menuItemId   String
+  baseType     DrinkMode
+  sizeOptionId String
+  sizeCode     String
+  priceCents   Int
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  menuItem MenuItem   @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  option   MenuOption @relation(fields: [sizeOptionId], references: [id], onDelete: Cascade)
+
+  @@unique([menuItemId, baseType, sizeOptionId])
+  @@index([menuItemId])
+  @@index([sizeOptionId])
+}
+
+model MenuOptionGroup {
+  id              String  @id @default(cuid())
+  name            String
+  required        Boolean @default(false)
+  multi           Boolean @default(false)
+  defaultOptionId String?
+
+  isSizeGroup Boolean @default(false)
+  isSystem    Boolean @default(false)
+  isDeletable Boolean @default(true)
+
+  items         MenuItemOptionGroup[]
+  options       MenuOption[]
+  sections      MenuOptionGroupSection[]
+  defaultOption MenuOption?              @relation("GroupDefaultOption", fields: [defaultOptionId], references: [id], onDelete: SetNull)
+
+  @@index([defaultOptionId])
+}
+
+model MenuOptionGroupSection {
+  id            String  @id @default(cuid())
+  optionGroupId String
+  key           String
+  label         String
+  sortOrder     Int     @default(0)
+  isSystem      Boolean @default(false)
+  isDeletable   Boolean @default(true)
+
+  optionGroup MenuOptionGroup @relation(fields: [optionGroupId], references: [id], onDelete: Cascade)
+
+  @@unique([optionGroupId, key])
+  @@index([optionGroupId])
+}
+
+model MenuOption {
+  id         String @id @default(cuid())
+  name       String
+  priceDelta Int    @default(0)
+  sortOrder  Int    @default(0)
+
+  groupId String
+  group   MenuOptionGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  asDefaultSize      MenuItem[]                 @relation("MenuItemDefaultSizeOption")
+  drinkSizeConfigs   MenuItemDrinkSizeConfig[]
+  drinkModeDefaults  MenuItemDrinkModeDefault[]
+  sizePrices         MenuItemSizePrice[]
+  asDefaultForGroups MenuOptionGroup[]          @relation("GroupDefaultOption")
+
+  @@index([groupId])
+}
+
+model MenuItemOptionGroup {
+  id      String @id @default(cuid())
+  itemId  String
+  groupId String
+
+  item  MenuItem        @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  group MenuOptionGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([itemId, groupId])
+  @@index([itemId])
+  @@index([groupId])
+}
+
+model ShotPricingRule {
+  id                  String   @id @default(cuid())
+  name                String   @default("Standard")
+  shotsPerBundle      Int      @default(2)
+  priceCentsPerBundle Int      @default(4000)
+  isActive            Boolean  @default(true)
+  sortOrder           Int      @default(0)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+model TransactionTypeSetting {
+  id              String   @id @default(cuid())
+  code            String   @unique
+  label           String
+  priceDeltaCents Int      @default(0)
+  isActive        Boolean  @default(true)
+  sortOrder       Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model IngredientCategory {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  ingredients Ingredient[]
+}
+
+enum InventoryDepartment {
+  BAR
+  KITCHEN
+  PASTRY
+  SHARED
+}
+
+enum InventoryTrackingType {
+  VOLATILE
+  EXACT
+  COUNT_ONLY
+}
+
+enum InventoryLocationType {
+  WAREHOUSE
+  STORE
+  EVENT
+  POPUP
+}
+
+enum StockMovementType {
+  OPENING
+  SALE_DEDUCTION
+  PURCHASE_ADD
+  WASTE
+  TRANSFER_OUT
+  TRANSFER_IN
+  RECONCILIATION_VARIANCE
+  MANUAL_ADJUSTMENT
+  REVERSAL
+}
+
+enum StockTransferStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+enum InventoryReconciliationStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+}
+
+enum WasteReasonCode {
+  SPILL
+  REMAKE
+  EXPIRED
+  DAMAGED
+  TESTING
+  OTHER
+}
+
+model InventoryLocation {
+  id           String                @id @default(cuid())
+  code         String                @unique
+  name         String
+  locationType InventoryLocationType
+  isActive     Boolean               @default(true)
+  sortOrder    Int                   @default(0)
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+
+  stockMovements     StockMovement[]
+  stockTransfersFrom StockTransfer[]           @relation("TransferFrom")
+  stockTransfersTo   StockTransfer[]           @relation("TransferTo")
+  reconciliations    InventoryReconciliation[]
+
+  @@index([locationType])
+}
+
+model Ingredient {
+  id         String    @id @default(cuid())
+  name       String
+  unitCode   String
+  isActive   Boolean   @default(true)
+  categoryId String?
+  sortOrder  Int       @default(0)
+  imageUrl   String?
+  deletedAt  DateTime?
+  version    Int
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  // Inventory metadata (optional for backward compat)
+  department           InventoryDepartment?
+  trackingType         InventoryTrackingType? @default(EXACT)
+  quickCountUnitName   String?
+  quickCountUnitToBase Decimal?               @db.Decimal(20, 10)
+  warehouseUnitName    String?
+  warehouseUnitToBase  Decimal?               @db.Decimal(20, 10)
+
+  category            IngredientCategory?           @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  recipeLines         RecipeLine[]
+  recipeLinesSize     RecipeLineSize[]
+  stockMovements      StockMovement[]
+  stockTransferLines  StockTransferLine[]
+  reconciliationLines InventoryReconciliationLine[]
+
+  @@index([version])
+  @@index([categoryId, sortOrder])
+  @@index([categoryId])
+  @@index([department])
+  @@index([trackingType])
+}
+
+model StockMovement {
+  id                    String            @id @default(cuid())
+  ingredientId          String
+  locationId            String
+  movementType          StockMovementType
+  quantityDeltaBaseUnit Decimal           @db.Decimal(20, 10)
+  sourceType            String?
+  sourceId              String?
+  actorStaffId          String?
+  approvedByStaffId     String?
+  notes                 String?
+  businessDate          DateTime?
+  createdAt             DateTime          @default(now())
+
+  ingredient Ingredient        @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+  location   InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
+
+  @@index([sourceType, sourceId])
+  @@index([ingredientId, locationId])
+  @@index([locationId])
+  @@index([createdAt])
+}
+
+model StockTransfer {
+  id                 String              @id @default(cuid())
+  fromLocationId     String
+  toLocationId       String
+  submittedByStaffId String?
+  approvedByStaffId  String?
+  status             StockTransferStatus @default(DRAFT)
+  notes              String?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  fromLocation InventoryLocation   @relation("TransferFrom", fields: [fromLocationId], references: [id], onDelete: Restrict)
+  toLocation   InventoryLocation   @relation("TransferTo", fields: [toLocationId], references: [id], onDelete: Restrict)
+  lines        StockTransferLine[]
+
+  @@index([fromLocationId])
+  @@index([toLocationId])
+  @@index([status])
+}
+
+model StockTransferLine {
+  id              String  @id @default(cuid())
+  stockTransferId String
+  ingredientId    String
+  quantityInput   Decimal @db.Decimal(20, 10)
+  quantityBase    Decimal @db.Decimal(20, 10)
+  notes           String?
+
+  stockTransfer StockTransfer @relation(fields: [stockTransferId], references: [id], onDelete: Cascade)
+  ingredient    Ingredient    @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+
+  @@index([stockTransferId])
+  @@index([ingredientId])
+}
+
+model InventoryReconciliation {
+  id                String                        @id @default(cuid())
+  locationId        String
+  businessDate      DateTime
+  countedByStaffId  String?
+  approvedByStaffId String?
+  status            InventoryReconciliationStatus @default(DRAFT)
+  notes             String?
+  createdAt         DateTime                      @default(now())
+  updatedAt         DateTime                      @updatedAt
+
+  location InventoryLocation             @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  lines    InventoryReconciliationLine[]
+
+  @@unique([locationId, businessDate])
+  @@index([locationId])
+  @@index([businessDate])
+}
+
+model InventoryReconciliationLine {
+  id                 String  @id @default(cuid())
+  reconciliationId   String
+  ingredientId       String
+  theoreticalQtyBase Decimal @db.Decimal(20, 10)
+  actualQtyBase      Decimal @db.Decimal(20, 10)
+  varianceQtyBase    Decimal @db.Decimal(20, 10)
+  varianceReasonCode String?
+  notes              String?
+
+  reconciliation InventoryReconciliation @relation(fields: [reconciliationId], references: [id], onDelete: Cascade)
+  ingredient     Ingredient              @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+
+  @@unique([reconciliationId, ingredientId])
+  @@index([reconciliationId])
+  @@index([ingredientId])
+}
+
+// Menu Settings: expandable for Sizes, future modifiers, etc.
+model MenuSettingGroup {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  name        String
+  isSystem    Boolean  @default(false)
+  isDeletable Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  menuSizes MenuSize[]
+}
+
+model MenuSize {
+  id        String   @id @default(cuid())
+  groupId   String
+  label     String
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  group        MenuSettingGroup       @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  availability MenuSizeAvailability[]
+
+  @@index([groupId])
+}
+
+model MenuSizeAvailability {
+  id        String    @id @default(cuid())
+  mode      DrinkMode
+  sizeId    String
+  imageUrl  String?
+  isEnabled Boolean   @default(true)
+  sortOrder Int       @default(0)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  size MenuSize @relation(fields: [sizeId], references: [id], onDelete: Cascade)
+
+  @@unique([mode, sizeId])
+  @@index([mode])
+  @@index([sizeId])
+}
+
+model RecipeLine {
+  id           String     @id @default(cuid())
+  menuItemId   String
+  menuItem     MenuItem   @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  ingredientId String
+  ingredient   Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+  qtyPerItem   Decimal    @db.Decimal(20, 10)
+  unitCode     String
+  deletedAt    DateTime?
+  version      Int
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@unique([menuItemId, ingredientId])
+  @@index([menuItemId])
+  @@index([ingredientId])
+  @@index([version])
+}
+
+model RecipeLineSize {
+  id           String     @id @default(cuid())
+  menuItemId   String
+  menuItem     MenuItem   @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  ingredientId String
+  ingredient   Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+  baseType     DrinkMode
+  sizeCode     String
+  qtyPerItem   Decimal    @db.Decimal(20, 10)
+  unitCode     String
+  deletedAt    DateTime?
+  version      Int
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@unique([menuItemId, ingredientId, baseType, sizeCode])
+  @@index([menuItemId])
+  @@index([ingredientId])
+  @@index([version])
+}

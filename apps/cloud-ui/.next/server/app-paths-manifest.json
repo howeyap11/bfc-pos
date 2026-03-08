@@ -1,0 +1,13 @@
+{
+  "/_global-error/page": "app/_global-error/page.js",
+  "/_not-found/page": "app/_not-found/page.js",
+  "/categories/page": "app/categories/page.js",
+  "/dashboard/page": "app/dashboard/page.js",
+  "/ingredients/page": "app/ingredients/page.js",
+  "/items/[id]/page": "app/items/[id]/page.js",
+  "/items/new/page": "app/items/new/page.js",
+  "/items/page": "app/items/page.js",
+  "/login/page": "app/login/page.js",
+  "/options/page": "app/options/page.js",
+  "/page": "app/page.js"
+}

@@ -1,0 +1,13 @@
+{
+  "/_global-error/page": "/_global-error",
+  "/_not-found/page": "/_not-found",
+  "/categories/page": "/categories",
+  "/dashboard/page": "/dashboard",
+  "/ingredients/page": "/ingredients",
+  "/items/[id]/page": "/items/[id]",
+  "/items/new/page": "/items/new",
+  "/items/page": "/items",
+  "/login/page": "/login",
+  "/options/page": "/options",
+  "/page": "/"
+}

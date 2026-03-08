@@ -1,0 +1,285 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model AdminUser {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// Single row (id=1): tracks current catalog version for sync
+model CatalogVersion {
+  id            Int @id @default(1)
+  latestVersion Int @default(0)
+}
+
+model Category {
+  id        String    @id @default(cuid())
+  name      String
+  slug      String    @unique
+  sortOrder Int       @default(0)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  subCategories SubCategory[]
+  items         MenuItem[]
+}
+
+enum DrinkTemp {
+  HOT
+  ICED
+  ANY
+}
+
+enum DrinkMode {
+  ICED
+  HOT
+  CONCENTRATED
+}
+
+model SubCategory {
+  id         String    @id @default(cuid())
+  name       String
+  categoryId String
+  sortOrder  Int       @default(0)
+  deletedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  category Category   @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  items    MenuItem[]
+
+  @@index([categoryId])
+}
+
+model MenuItem {
+  id         String    @id @default(cuid())
+  name       String
+  priceCents Int
+  imageUrl   String?
+  isActive   Boolean   @default(true)
+  deletedAt  DateTime?
+  sortOrder  Int       @default(0)
+  version    Int
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  categoryId    String?
+  subCategoryId String
+
+  defaultSizeId       String?
+  defaultSizeOptionId String? // MenuOption.id from "Sizes" group
+
+  category          Category?     @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  subCategory       SubCategory   @relation(fields: [subCategoryId], references: [id], onDelete: Restrict)
+  defaultSize       MenuItemSize? @relation("MenuItemDefaultSize", fields: [defaultSizeId], references: [id], onDelete: SetNull)
+  defaultSizeOption MenuOption?   @relation("MenuItemDefaultSizeOption", fields: [defaultSizeOptionId], references: [id], onDelete: SetNull)
+
+  recipeLines       RecipeLine[]
+  optionGroupLinks  MenuItemOptionGroup[]
+  sizes             MenuItemSize[]
+  drinkSizeConfigs  MenuItemDrinkSizeConfig[]
+  drinkModeDefaults MenuItemDrinkModeDefault[]
+
+  @@index([version])
+  @@index([categoryId])
+  @@index([subCategoryId])
+  @@index([defaultSizeId])
+  @@index([defaultSizeOptionId])
+}
+
+model MenuItemSize {
+  id         String    @id @default(cuid())
+  menuItemId String
+  label      String
+  temp       DrinkTemp @default(ANY)
+  sortOrder  Int       @default(0)
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  menuItem  MenuItem   @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  asDefault MenuItem[] @relation("MenuItemDefaultSize")
+
+  @@unique([menuItemId, label, temp])
+  @@index([menuItemId])
+}
+
+model MenuItemDrinkSizeConfig {
+  id         String    @id @default(cuid())
+  menuItemId String
+  mode       DrinkMode
+  optionId   String
+  isEnabled  Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  menuItem MenuItem   @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  option   MenuOption @relation(fields: [optionId], references: [id], onDelete: Cascade)
+
+  @@unique([menuItemId, mode, optionId])
+  @@index([menuItemId])
+  @@index([optionId])
+}
+
+model MenuItemDrinkModeDefault {
+  id              String    @id @default(cuid())
+  menuItemId      String
+  mode            DrinkMode
+  defaultOptionId String
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  menuItem MenuItem   @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  option   MenuOption @relation(fields: [defaultOptionId], references: [id], onDelete: Cascade)
+
+  @@unique([menuItemId, mode])
+  @@index([menuItemId])
+  @@index([defaultOptionId])
+}
+
+model MenuOptionGroup {
+  id          String  @id @default(cuid())
+  name        String
+  required    Boolean @default(false)
+  multi       Boolean @default(false)
+  isSizeGroup Boolean @default(false)
+  isSystem    Boolean @default(false)
+  isDeletable Boolean @default(true)
+
+  items    MenuItemOptionGroup[]
+  options  MenuOption[]
+  sections MenuOptionGroupSection[]
+}
+
+model MenuOptionGroupSection {
+  id            String  @id @default(cuid())
+  optionGroupId String
+  key           String
+  label         String
+  sortOrder     Int     @default(0)
+  isSystem      Boolean @default(false)
+  isDeletable   Boolean @default(true)
+
+  optionGroup MenuOptionGroup @relation(fields: [optionGroupId], references: [id], onDelete: Cascade)
+
+  @@unique([optionGroupId, key])
+  @@index([optionGroupId])
+}
+
+model MenuOption {
+  id         String @id @default(cuid())
+  name       String
+  priceDelta Int    @default(0)
+  sortOrder  Int    @default(0)
+
+  groupId String
+  group   MenuOptionGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  asDefaultSize     MenuItem[]                 @relation("MenuItemDefaultSizeOption")
+  drinkSizeConfigs  MenuItemDrinkSizeConfig[]
+  drinkModeDefaults MenuItemDrinkModeDefault[]
+
+  @@index([groupId])
+}
+
+model MenuItemOptionGroup {
+  id      String @id @default(cuid())
+  itemId  String
+  groupId String
+
+  item  MenuItem        @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  group MenuOptionGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([itemId, groupId])
+  @@index([itemId])
+  @@index([groupId])
+}
+
+model Ingredient {
+  id        String    @id @default(cuid())
+  name      String
+  unitCode  String
+  isActive  Boolean   @default(true)
+  deletedAt DateTime?
+  version   Int
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  recipeLines RecipeLine[]
+
+  @@index([version])
+}
+
+// Menu Settings: expandable for Sizes, future modifiers, etc.
+model MenuSettingGroup {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  name        String
+  isSystem    Boolean  @default(false)
+  isDeletable Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  menuSizes MenuSize[]
+}
+
+model MenuSize {
+  id        String   @id @default(cuid())
+  groupId   String
+  label     String
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  group        MenuSettingGroup       @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  availability MenuSizeAvailability[]
+
+  @@index([groupId])
+}
+
+model MenuSizeAvailability {
+  id        String    @id @default(cuid())
+  mode      DrinkMode
+  sizeId    String
+  isEnabled Boolean   @default(true)
+  sortOrder Int       @default(0)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  size MenuSize @relation(fields: [sizeId], references: [id], onDelete: Cascade)
+
+  @@unique([mode, sizeId])
+  @@index([mode])
+  @@index([sizeId])
+}
+
+model RecipeLine {
+  id           String     @id @default(cuid())
+  menuItemId   String
+  menuItem     MenuItem   @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  ingredientId String
+  ingredient   Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+  qtyPerItem   Decimal    @db.Decimal(20, 10)
+  unitCode     String
+  deletedAt    DateTime?
+  version      Int
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@unique([menuItemId, ingredientId])
+  @@index([menuItemId])
+  @@index([ingredientId])
+  @@index([version])
+}

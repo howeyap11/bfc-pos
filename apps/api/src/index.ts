@@ -1,0 +1,325 @@
+// apps/api/src/index.ts
+import Fastify from "fastify";
+import cors from "@fastify/cors";
+
+import prismaPlugin from "./plugins/prisma";
+import inventoryServicePlugin from "./plugins/inventoryService";
+import { staffGuardPlugin } from "./plugins/staffGuard";
+import { staffQueueRoutes } from "./routes/staffQueue";
+import { orderStatusRoutes } from "./routes/orderStatus";
+import { functionRoomRoutes } from "./routes/functionRoom";
+import { orderCancelRoutes } from "./routes/orderCancel";
+import { registerRoutes } from "./routes/register";
+import { posTransactionsRoutes } from "./routes/posTransactions";
+import { drawerRoutes } from "./routes/drawer";
+import { adminSyncRoutes } from "./routes/admin/adminSync";
+import { ensureItemForCloudId } from "./services/catalogCache.service";
+
+const app = Fastify({ logger: true });
+
+// Plugins
+await app.register(cors, { origin: true });
+await app.register(prismaPlugin);
+await app.register(inventoryServicePlugin);
+await app.register(staffGuardPlugin);
+
+// Staff routes (protected by x-staff-key inside the route files)
+await app.register(staffQueueRoutes);
+await app.register(orderStatusRoutes);
+await app.register(functionRoomRoutes);
+await app.register(orderCancelRoutes);
+await app.register(registerRoutes);
+await app.register(posTransactionsRoutes);
+await app.register(drawerRoutes);
+await app.register(adminSyncRoutes);
+
+// Public routes (MUST be before listen)
+app.get("/health", async () => ({ ok: true, ts: Date.now() }));
+
+app.get("/tables", async () => {
+  return app.prisma.table.findMany({
+    where: { isActive: true },
+    include: { zone: true },
+  });
+});
+
+// Catalog from local cache (CloudMenuItem) - offline-first, no cloud dependency
+app.get("/menu", async () => {
+  const items = await app.prisma.cloudMenuItem.findMany({
+    where: { storeId: "store_1", isActive: true, deletedAt: null },
+    orderBy: { name: "asc" },
+  });
+  // UI expects Category[] with items; CloudMenuItem has no category, use single "Menu"
+  return [
+    {
+      id: "menu",
+      name: "Menu",
+      items: items.map((i) => ({
+        id: i.cloudId,
+        name: i.name,
+        basePrice: i.priceCents,
+        description: null,
+        imageUrl: i.imageUrl,
+      })),
+    },
+  ];
+});
+
+app.get("/items/:id", async (req) => {
+  const { id } = req.params as { id: string };
+
+  // id is cloudId from menu; also support legacy Item.id for backward compat
+  const cloud = await app.prisma.cloudMenuItem.findUnique({
+    where: { cloudId: id },
+  });
+
+  if (cloud && !cloud.deletedAt) {
+    const storeId = cloud.storeId;
+    const links = await app.prisma.cloudMenuItemOptionGroup.findMany({
+      where: { menuItemCloudId: cloud.cloudId, storeId },
+    });
+    const groupCloudIds = [...new Set(links.map((l) => l.groupCloudId))];
+    const groups = await app.prisma.cloudMenuOptionGroup.findMany({
+      where: { cloudId: { in: groupCloudIds }, storeId },
+    });
+    const options = await app.prisma.cloudMenuOption.findMany({
+      where: { groupCloudId: { in: groupCloudIds }, storeId },
+    });
+    const groupMap = new Map(groups.map((g) => [g.cloudId, g]));
+    const optionsByGroup = new Map<string, typeof options>();
+    for (const o of options) {
+      const list = optionsByGroup.get(o.groupCloudId) ?? [];
+      list.push(o);
+      optionsByGroup.set(o.groupCloudId, list);
+    }
+
+    // Per-item drink sizes by mode (only show sizes enabled for this item)
+    const drinkConfigs = await app.prisma.cloudMenuItemDrinkSizeConfig.findMany({
+      where: { menuItemCloudId: cloud.cloudId, storeId },
+    });
+    const optionIdsFromConfigs = [...new Set(drinkConfigs.map((c) => c.optionCloudId))];
+    const [sizeOptions, sizePrices] = await Promise.all([
+      app.prisma.cloudMenuOption.findMany({
+        where: { cloudId: { in: optionIdsFromConfigs }, storeId },
+      }),
+      app.prisma.cloudMenuItemSizePrice.findMany({
+        where: { menuItemCloudId: cloud.cloudId, storeId },
+      }),
+    ]);
+    const optionNameMap = new Map(sizeOptions.map((o) => [o.cloudId, o.name]));
+    const priceMap = new Map(
+      sizePrices.map((p) => [`${p.baseType}|${p.sizeOptionCloudId}`, p.priceCents] as const)
+    );
+    const MODES = ["HOT", "ICED", "CONCENTRATED"] as const;
+    const sizesByMode: Record<
+      string,
+      Array<{ id: string; name: string; priceCents?: number }>
+    > = { HOT: [], ICED: [], CONCENTRATED: [] };
+    for (const c of drinkConfigs) {
+      const name = optionNameMap.get(c.optionCloudId);
+      if (name && sizesByMode[c.mode]) {
+        const key = `${c.mode}|${c.optionCloudId}`;
+        const priceCents = priceMap.get(key);
+        sizesByMode[c.mode].push({ id: c.optionCloudId, name, priceCents: priceCents ?? undefined });
+      }
+    }
+    const hasSizes = drinkConfigs.length > 0 || cloud.hasSizes;
+
+    const itemOptionGroups = links.map((link) => {
+      const g = groupMap.get(link.groupCloudId);
+      if (!g) return null;
+      const opts = (optionsByGroup.get(g.cloudId) ?? []).map((o) => ({
+        id: o.cloudId,
+        name: o.name,
+        priceDelta: o.priceDelta,
+        isDefault: (cloud as { defaultSizeOptionCloudId?: string | null }).defaultSizeOptionCloudId === o.cloudId && g.isSizeGroup,
+      }));
+      return {
+        group: {
+          id: g.cloudId,
+          name: g.name,
+          type: g.multi ? ("MULTI" as const) : ("SINGLE" as const),
+          minSelect: g.required ? 1 : 0,
+          maxSelect: g.multi ? 999 : 1,
+          isRequired: g.required,
+          isSizeGroup: g.isSizeGroup,
+          options: opts,
+        },
+      };
+    }).filter(Boolean) as Array<{ group: { id: string; name: string; type: "SINGLE" | "MULTI"; minSelect: number; maxSelect: number; isRequired: boolean; options: Array<{ id: string; name: string; priceDelta: number; isDefault: boolean }> } }>;
+
+    return {
+      id: cloud.cloudId,
+      name: cloud.name,
+      basePrice: cloud.priceCents,
+      description: null,
+      imageUrl: cloud.imageUrl,
+      isDrink: cloud.isDrink,
+      serveVessel: cloud.serveVessel,
+      defaultSizeOptionId: (cloud as { defaultSizeOptionCloudId?: string | null }).defaultSizeOptionCloudId ?? null,
+      defaultMilk: "FULL_CREAM",
+      defaultShots12oz: 0,
+      defaultShots16oz: 0,
+      itemOptionGroups,
+      hasSizes: hasSizes || undefined,
+      sizesByMode: hasSizes ? sizesByMode : undefined,
+    };
+  }
+
+  // Fallback: legacy Item (for existing URLs or mixed use)
+  const item = await app.prisma.item.findUnique({
+    where: { id },
+    include: {
+      itemOptionGroups: {
+        include: {
+          group: {
+            include: {
+              options: { orderBy: { sort: "asc" } },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!item) {
+    return { error: "NOT_FOUND" };
+  }
+
+  return item;
+});
+
+app.post("/orders", async (req) => {
+  const body = req.body as {
+    tablePublicKey: string;
+    paymentMethod?: "CASH" | "GCASH_MANUAL" | "PAYMONGO";
+    customerNote?: string;
+    items: Array<{
+      itemId: string;
+      qty: number;
+      note?: string;
+      optionIds: string[];
+    }>;
+  };
+
+  if (!body?.tablePublicKey) return { error: "MISSING_TABLE" };
+  if (!Array.isArray(body.items) || body.items.length === 0) return { error: "EMPTY_ITEMS" };
+
+  const table = await app.prisma.table.findUnique({
+    where: { publicKey: body.tablePublicKey },
+    include: { zone: true },
+  });
+  if (!table) return { error: "TABLE_NOT_FOUND" };
+
+  const last = await app.prisma.order.findFirst({
+    orderBy: { orderNo: "desc" },
+    select: { orderNo: true },
+  });
+  const nextNo = (last?.orderNo ?? 0) + 1;
+
+  // itemId from QR menu is cloudId; resolve to Item.id for OrderItem
+  const cloudIds = [...new Set(body.items.map((i) => i.itemId))];
+  const optionIds = [...new Set(body.items.flatMap((i) => i.optionIds ?? []))];
+
+  const resolvedIds: string[] = [];
+  for (const cid of cloudIds) {
+    try {
+      resolvedIds.push(await ensureItemForCloudId(app.prisma, cid));
+    } catch {
+      throw new Error(`Invalid itemId: ${cid}`);
+    }
+  }
+
+  const dbItems = await app.prisma.item.findMany({
+    where: { id: { in: resolvedIds } },
+    select: { id: true, cloudId: true, basePrice: true },
+  });
+  const itemMap = new Map<string, (typeof dbItems)[0]>();
+  for (const i of dbItems) {
+    itemMap.set(i.id, i);
+    if (i.cloudId) itemMap.set(i.cloudId, i);
+  }
+
+  const dbOptions = await app.prisma.option.findMany({
+    where: { id: { in: optionIds } },
+    select: { id: true, priceDelta: true },
+  });
+  const optionMap = new Map(dbOptions.map((o) => [o.id, o]));
+  
+  let source: any = "QR_UNPAID";
+  let paymentMethod: any = (body.paymentMethod ?? "CASH");
+  let paymentStatus: any = "UNPAID";
+  let tabId: string | null = null;
+
+  // If order is from function room zone and FR tab is open, attach it
+  if (table.zone.code === "FR" && table.isFunctionRoom) {
+    const frTab = await app.prisma.tab.findFirst({
+      where: { status: "OPEN", type: "FUNCTION_ROOM" },
+      orderBy: { openedAt: "desc" },
+    });
+
+    if (frTab) {
+      source = "FUNCTION_ROOM";
+      tabId = frTab.id;
+      paymentMethod = "TO_BE_DECIDED";
+      paymentStatus = "UNPAID";
+    }
+  }
+
+  const created = await app.prisma.order.create({
+    data: {
+      orderNo: nextNo,
+      tableId: table.id,
+      status: "PLACED",
+      source,
+      tabId,
+      paymentMethod,
+      paymentStatus,
+      customerNote: body.customerNote?.trim() || null,
+      items: {
+        create: body.items.map((it) => {
+          const dbItem = itemMap.get(it.itemId);
+          if (!dbItem) throw new Error(`Invalid itemId: ${it.itemId}`);
+
+          const optIds = it.optionIds ?? [];
+          const unitPrice =
+            dbItem.basePrice +
+            optIds.reduce((sum, oid) => sum + (optionMap.get(oid)?.priceDelta ?? 0), 0);
+
+          return {
+            itemId: dbItem.id,
+            qty: Math.max(1, it.qty || 1),
+            unitPrice,
+            lineNote: it.note?.trim() || null,
+            options: {
+              create: optIds.map((oid) => {
+                const opt = optionMap.get(oid);
+                if (!opt) throw new Error(`Invalid optionId: ${oid}`);
+                return { optionId: oid, priceDelta: opt.priceDelta };
+              }),
+            },
+          };
+        }),
+      },
+    },
+    include: {
+      table: { include: { zone: true } },
+      items: {
+        include: {
+          item: { include: { category: true } },
+          options: { include: { option: { include: { group: true } } } },
+        },
+      },
+    },
+  });
+
+  return created;
+});
+
+// NOTE:
+// DO NOT define app.get("/queue") here
+// DO NOT define app.patch("/orders/:id/status") here
+// Those are provided by staffQueueRoutes + orderStatusRoutes
+
+// Listen (MUST be last)
+await app.listen({ host: "0.0.0.0", port: 3000 });

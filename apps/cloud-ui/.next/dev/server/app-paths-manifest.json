@@ -1,0 +1,9 @@
+{
+  "/dashboard/page": "app/dashboard/page.js",
+  "/ingredients/page": "app/ingredients/page.js",
+  "/inventory/page": "app/inventory/page.js",
+  "/menu-settings/modifiers/page": "app/menu-settings/modifiers/page.js",
+  "/menu-settings/sizes/page": "app/menu-settings/sizes/page.js",
+  "/menu/page": "app/menu/page.js",
+  "/transactions/page": "app/transactions/page.js"
+}
