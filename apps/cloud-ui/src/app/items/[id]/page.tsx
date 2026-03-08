@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { api, type MenuItem } from "@/lib/api";
@@ -8,7 +8,7 @@ import ItemForm from "@/components/ItemForm";
 
 const TOAST_KEY = "items_toast";
 
-export default function EditItemPage() {
+function EditItemContent() {
   const params = useParams();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -107,5 +107,13 @@ export default function EditItemPage() {
         onDelete={handleDelete}
       />
     </div>
+  );
+}
+
+export default function EditItemPage() {
+  return (
+    <Suspense fallback={<div className="mx-auto max-w-6xl px-4 py-6">Loading…</div>}>
+      <EditItemContent />
+    </Suspense>
   );
 }

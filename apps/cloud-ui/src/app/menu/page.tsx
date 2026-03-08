@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -36,7 +36,7 @@ const TILE_COLORS = [
   { border: "#ec4899", accent: "#ec4899" },
 ];
 
-export default function MenuPage() {
+function MenuPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [categories, setCategories] = useState<Category[]>([]);
@@ -754,5 +754,13 @@ export default function MenuPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function MenuPage() {
+  return (
+    <Suspense fallback={<div className="mx-auto max-w-6xl px-4 py-6">Loading…</div>}>
+      <MenuPageContent />
+    </Suspense>
   );
 }

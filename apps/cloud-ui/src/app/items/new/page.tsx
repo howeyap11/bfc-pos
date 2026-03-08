@@ -1,10 +1,11 @@
 "use client";
 
+import { Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import ItemForm from "@/components/ItemForm";
 
-export default function NewItemPage() {
+function NewItemContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const presetCategoryId = searchParams.get("categoryId") ?? "";
@@ -26,5 +27,13 @@ export default function NewItemPage() {
         onCancel={() => router.back()}
       />
     </div>
+  );
+}
+
+export default function NewItemPage() {
+  return (
+    <Suspense fallback={<div className="mx-auto max-w-6xl px-4 py-6">Loading…</div>}>
+      <NewItemContent />
+    </Suspense>
   );
 }
