@@ -362,6 +362,7 @@ export const api = {
       hasSizes?: boolean;
       supportsShots?: boolean;
       defaultShots?: number | null;
+      sortOrder?: number;
     }
   ): Promise<MenuItem> {
     return apiFetch(`/admin/items/${id}`, {

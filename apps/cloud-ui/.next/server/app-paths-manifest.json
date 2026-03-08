@@ -4,10 +4,19 @@
   "/categories/page": "app/categories/page.js",
   "/dashboard/page": "app/dashboard/page.js",
   "/ingredients/page": "app/ingredients/page.js",
+  "/inventory/page": "app/inventory/page.js",
   "/items/[id]/page": "app/items/[id]/page.js",
   "/items/new/page": "app/items/new/page.js",
   "/items/page": "app/items/page.js",
   "/login/page": "app/login/page.js",
+  "/menu-settings/modifiers/page": "app/menu-settings/modifiers/page.js",
+  "/menu-settings/page": "app/menu-settings/page.js",
+  "/menu-settings/shots/page": "app/menu-settings/shots/page.js",
+  "/menu-settings/sizes/page": "app/menu-settings/sizes/page.js",
+  "/menu-settings/transaction-types/page": "app/menu-settings/transaction-types/page.js",
+  "/menu/page": "app/menu/page.js",
   "/options/page": "app/options/page.js",
-  "/page": "app/page.js"
+  "/page": "app/page.js",
+  "/reports/page": "app/reports/page.js",
+  "/transactions/page": "app/transactions/page.js"
 }

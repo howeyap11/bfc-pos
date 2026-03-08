@@ -68,6 +68,12 @@
       "namedRegex": "^/ingredients(?:/)?$"
     },
     {
+      "page": "/inventory",
+      "regex": "^/inventory(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/inventory(?:/)?$"
+    },
+    {
       "page": "/items",
       "regex": "^/items(?:/)?$",
       "routeKeys": {},
@@ -86,10 +92,58 @@
       "namedRegex": "^/login(?:/)?$"
     },
     {
+      "page": "/menu",
+      "regex": "^/menu(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/menu(?:/)?$"
+    },
+    {
+      "page": "/menu-settings",
+      "regex": "^/menu\\-settings(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/menu\\-settings(?:/)?$"
+    },
+    {
+      "page": "/menu-settings/modifiers",
+      "regex": "^/menu\\-settings/modifiers(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/menu\\-settings/modifiers(?:/)?$"
+    },
+    {
+      "page": "/menu-settings/shots",
+      "regex": "^/menu\\-settings/shots(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/menu\\-settings/shots(?:/)?$"
+    },
+    {
+      "page": "/menu-settings/sizes",
+      "regex": "^/menu\\-settings/sizes(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/menu\\-settings/sizes(?:/)?$"
+    },
+    {
+      "page": "/menu-settings/transaction-types",
+      "regex": "^/menu\\-settings/transaction\\-types(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/menu\\-settings/transaction\\-types(?:/)?$"
+    },
+    {
       "page": "/options",
       "regex": "^/options(?:/)?$",
       "routeKeys": {},
       "namedRegex": "^/options(?:/)?$"
+    },
+    {
+      "page": "/reports",
+      "regex": "^/reports(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/reports(?:/)?$"
+    },
+    {
+      "page": "/transactions",
+      "regex": "^/transactions(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/transactions(?:/)?$"
     }
   ],
   "dataRoutes": [],

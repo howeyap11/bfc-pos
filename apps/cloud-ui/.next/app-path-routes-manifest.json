@@ -4,10 +4,19 @@
   "/categories/page": "/categories",
   "/dashboard/page": "/dashboard",
   "/ingredients/page": "/ingredients",
+  "/inventory/page": "/inventory",
   "/items/[id]/page": "/items/[id]",
   "/items/new/page": "/items/new",
   "/items/page": "/items",
   "/login/page": "/login",
+  "/menu-settings/modifiers/page": "/menu-settings/modifiers",
+  "/menu-settings/page": "/menu-settings",
+  "/menu-settings/shots/page": "/menu-settings/shots",
+  "/menu-settings/sizes/page": "/menu-settings/sizes",
+  "/menu-settings/transaction-types/page": "/menu-settings/transaction-types",
+  "/menu/page": "/menu",
   "/options/page": "/options",
-  "/page": "/"
+  "/page": "/",
+  "/reports/page": "/reports",
+  "/transactions/page": "/transactions"
 }
