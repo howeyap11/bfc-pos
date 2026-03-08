@@ -19,7 +19,38 @@ const AVAILABILITY: Record<string, string[]> = {
   CONCENTRATED: ["1-Liter"],
 };
 
-// Menu Settings: Sizes (separate from Option Groups)
+// MenuOptionGroup "Sizes" (isSizeGroup) — required by /admin/drink-sizes and item drink-size config
+async function seedSizesOptionGroup() {
+  let group = await prisma.menuOptionGroup.findFirst({
+    where: { name: SIZES_GROUP_NAME, isSizeGroup: true },
+    include: { options: true },
+  });
+  if (!group) {
+    group = await prisma.menuOptionGroup.create({
+      data: {
+        name: SIZES_GROUP_NAME,
+        isSizeGroup: true,
+        required: false,
+        multi: false,
+        isSystem: true,
+        isDeletable: false,
+      },
+      include: { options: true },
+    });
+    console.log("MenuOptionGroup Sizes (drink sizes) created");
+  }
+  for (const { label, sortOrder } of MENU_SIZES) {
+    const existing = group.options.find((o) => o.name === label);
+    if (!existing) {
+      await prisma.menuOption.create({
+        data: { groupId: group.id, name: label, priceDelta: 0, sortOrder },
+      });
+      console.log("  Added MenuOption (Sizes):", label);
+    }
+  }
+}
+
+// Menu Settings: Sizes (MenuSettingGroup + MenuSize + MenuSizeAvailability)
 async function seedMenuSizes() {
   const group = await prisma.menuSettingGroup.upsert({
     where: { key: SIZES_GROUP_KEY },
@@ -74,6 +105,7 @@ async function seedMenuSizes() {
 }
 
 async function main() {
+  await seedSizesOptionGroup();
   await seedMenuSizes();
 
   const email = process.env.ADMIN_EMAIL ?? "admin@bfc.local";

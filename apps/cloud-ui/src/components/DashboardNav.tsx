@@ -6,10 +6,10 @@ import { clearToken } from "@/lib/api";
 
 const nav = [
   { href: "/dashboard", label: "Dashboard", icon: IconGrid },
+  { href: "/menu", label: "Menu", icon: IconMenu },
   { href: "/transactions", label: "Transactions", icon: IconReceipt },
   { href: "/ingredients", label: "Ingredients", icon: IconFlask },
   { href: "/inventory", label: "Inventory", icon: IconPackage },
-  { href: "/menu", label: "Menu", icon: IconMenu },
   { href: "/menu-settings/sizes", label: "Menu Settings", icon: IconSettings },
   { href: "/reports", label: "Reports", icon: IconChart },
 ];

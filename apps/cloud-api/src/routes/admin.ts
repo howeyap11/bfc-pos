@@ -1487,8 +1487,8 @@ export async function adminRoutes(app: FastifyInstance) {
     const { id } = req.params;
     const subCount = await app.prisma.subCategory.count({ where: { categoryId: id, deletedAt: null } });
     if (subCount > 0) {
-      reply.code(409);
-      return { error: "CATEGORY_NOT_EMPTY", message: "Cannot delete: category has subcategories" };
+      reply.code(400);
+      return { error: "CATEGORY_NOT_EMPTY", message: "Cannot delete category while sub-categories exist." };
     }
     await app.prisma.category.update({ where: { id }, data: { deletedAt: new Date() } });
     return { ok: true };

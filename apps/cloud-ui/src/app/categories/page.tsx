@@ -72,7 +72,7 @@ export default function CategoriesPage() {
       const msg = err instanceof Error ? err.message : "Failed";
       const body = (err as { body?: { error?: string } })?.body;
       if (body?.error === "CATEGORY_NOT_EMPTY") {
-        setError("Cannot delete: category has subcategories. Delete or move them first.");
+        setError("Cannot delete category while it still contains sub-categories. Delete or move the sub-categories first.");
       } else {
         setError(msg);
       }
