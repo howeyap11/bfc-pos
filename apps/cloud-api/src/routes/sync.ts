@@ -1,4 +1,33 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+import { z } from "zod";
+
+const syncSecret = process.env.STORE_SYNC_SECRET ?? "";
+
+const transactionImportSchema = z.object({
+  storeId: z.string().min(1),
+  sourceTransactionId: z.string().min(1),
+  transactionNo: z.number().int().positive(),
+  status: z.enum(["PAID", "VOID"]),
+  source: z.string().default("POS"),
+  serviceType: z.string().default("DINE_IN"),
+  cashierName: z.string().nullable().optional(),
+  totalCents: z.number().int(),
+  subtotalCents: z.number().int().default(0),
+  discountCents: z.number().int().default(0),
+  itemsCount: z.number().int().min(0).default(0),
+  payments: z.array(z.object({
+    method: z.string(),
+    amountCents: z.number().int(),
+  })),
+  lineItems: z.array(z.object({
+    name: z.string(),
+    qty: z.number().int(),
+    lineTotal: z.number().int(),
+  })).optional(),
+  createdAt: z.string(), // ISO date
+  voidedAt: z.string().nullable().optional(),
+  voidReason: z.string().nullable().optional(),
+});
 
 export async function syncRoutes(app: FastifyInstance) {
   app.get(
@@ -106,4 +135,68 @@ export async function syncRoutes(app: FastifyInstance) {
       };
     }
   );
+
+  // Import transaction from POS (idempotent)
+  app.post("/transactions", async (req: FastifyRequest, reply: FastifyReply) => {
+    if (syncSecret) {
+      const key = (req.headers["x-store-sync-key"] as string) || "";
+      if (key !== syncSecret) {
+        reply.code(401);
+        return { error: "UNAUTHORIZED", message: "Invalid or missing X-Store-Sync-Key" };
+      }
+    }
+    const parsed = transactionImportSchema.safeParse(req.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "INVALID_BODY", details: parsed.error.flatten(), message: "Invalid transaction payload" };
+    }
+    const d = parsed.data;
+    const paymentsJson = JSON.stringify(d.payments);
+    const lineItemsSummaryJson = d.lineItems ? JSON.stringify(d.lineItems) : null;
+    const createdAt = new Date(d.createdAt);
+    const voidedAt = d.voidedAt ? new Date(d.voidedAt) : null;
+    try {
+      const existing = await app.prisma.syncedTransaction.findUnique({
+        where: { sourceTransactionId: d.sourceTransactionId },
+      });
+      if (existing) {
+        await app.prisma.syncedTransaction.update({
+          where: { id: existing.id },
+          data: {
+            status: d.status,
+            voidedAt,
+            voidReason: d.voidReason ?? null,
+          },
+        });
+        app.log.debug({ sourceTransactionId: d.sourceTransactionId }, "[Sync] Transaction updated (void/sync)");
+        return { ok: true, imported: false, id: existing.id };
+      }
+      const created = await app.prisma.syncedTransaction.create({
+        data: {
+          storeId: d.storeId,
+          sourceTransactionId: d.sourceTransactionId,
+          transactionNo: d.transactionNo,
+          status: d.status,
+          source: d.source,
+          serviceType: d.serviceType,
+          cashierName: d.cashierName ?? null,
+          totalCents: d.totalCents,
+          subtotalCents: d.subtotalCents,
+          discountCents: d.discountCents,
+          itemsCount: d.itemsCount,
+          paymentsJson,
+          lineItemsSummaryJson,
+          createdAt,
+          voidedAt,
+          voidReason: d.voidReason ?? null,
+        },
+      });
+      app.log.info({ id: created.id, transactionNo: d.transactionNo }, "[Sync] Transaction imported");
+      return { ok: true, imported: true, id: created.id };
+    } catch (err) {
+      app.log.error({ err, sourceTransactionId: d.sourceTransactionId }, "[Sync] Failed to import transaction");
+      reply.code(500);
+      return { error: "IMPORT_FAILED", message: "Failed to import transaction" };
+    }
+  });
 }

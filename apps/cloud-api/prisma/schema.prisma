@@ -258,6 +258,30 @@ model TransactionTypeSetting {
   updatedAt       DateTime @updatedAt
 }
 
+// Synced from POS for Cloud Admin reporting
+model SyncedTransaction {
+  id                   String    @id @default(cuid())
+  storeId              String
+  sourceTransactionId  String    @unique // POS transaction id (idempotency)
+  transactionNo        Int
+  status               String    // PAID | VOID
+  source               String    @default("POS") // POS, QR, etc.
+  serviceType          String    @default("DINE_IN")
+  cashierName          String?
+  totalCents           Int
+  subtotalCents        Int       @default(0)
+  discountCents        Int       @default(0)
+  itemsCount           Int       @default(0)
+  paymentsJson         String    // JSON array of { method, amountCents }
+  lineItemsSummaryJson String?   // JSON array of { name, qty, lineTotal } for display
+  createdAt            DateTime
+  voidedAt             DateTime?
+  voidReason           String?
+
+  @@index([storeId])
+  @@index([storeId, createdAt])
+}
+
 model IngredientCategory {
   id        String   @id @default(cuid())
   name      String   @unique

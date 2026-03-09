@@ -215,7 +215,6 @@ export async function syncCatalogFromCloud(
               mode: c.mode,
               optionCloudId: c.optionId,
             })),
-            skipDuplicates: true,
           });
         }
       }
@@ -294,7 +293,6 @@ export async function syncCatalogFromCloud(
             menuItemCloudId: link.itemId,
             groupCloudId: link.groupId,
           })),
-          skipDuplicates: true,
         });
       }
 

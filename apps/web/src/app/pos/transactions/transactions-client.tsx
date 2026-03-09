@@ -361,14 +361,26 @@ export default function TransactionsClient() {
                   value: pinInput,
                   title: "Admin PIN",
                   onChange: setPinInput,
-                  onDone: (val) => {
+                  onDone: async (val) => {
                     setPinInput(val);
-                    if (val === "1234") {
-                      setAuthenticated(true);
-                      setPinError("");
-                      loadTransactions();
-                    } else {
-                      setPinError("Invalid admin PIN");
+                    try {
+                      const res = await fetch("/api/staff/verify-admin-pin", {
+                        method: "POST",
+                        headers: { "content-type": "application/json" },
+                        body: JSON.stringify({ pin: val }),
+                      });
+                      const data = await res.json();
+                      if (res.ok && data.ok) {
+                        setAuthenticated(true);
+                        setPinError("");
+                        loadTransactions();
+                        keyboard.closeKeyboard();
+                      } else {
+                        setPinError(data.message || "Invalid admin PIN");
+                        setPinInput("");
+                      }
+                    } catch (e: any) {
+                      setPinError("Verification failed: " + (e?.message || String(e)));
                       setPinInput("");
                     }
                   },

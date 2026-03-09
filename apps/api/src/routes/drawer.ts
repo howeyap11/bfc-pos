@@ -25,16 +25,19 @@ export async function drawerRoutes(app: FastifyInstance) {
       return { error: "INVALID_REASON" };
     }
 
-    // Create audit log
+    const staff = (req as { staff?: { id: string; name: string } }).staff;
+
     const auditLog = await app.prisma.auditLog.create({
       data: {
         storeId: STORE_ID,
         action: "DRAWER_OPEN",
         entity: "Drawer",
         entityId: null,
+        actorId: staff?.id ?? null,
         note: body.note?.trim() || null,
         metaJson: JSON.stringify({
           reason: body.reason,
+          staffName: staff?.name ?? null,
           timestamp: new Date().toISOString(),
         }),
       },

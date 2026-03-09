@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api, type Category, type SubCategory, normalizeSubCategories } from "@/lib/api";
+import { SortableList, DragHandle } from "@/components/SortableList";
 
 function slugFromName(name: string): string {
   return name
@@ -114,22 +115,6 @@ export default function CategoriesPage() {
 
   const safeCategories = Array.isArray(categories) ? categories : [];
 
-  async function reorderCategory(cat: Category, direction: "up" | "down") {
-    const idx = safeCategories.indexOf(cat);
-    if (idx < 0) return;
-    const next = direction === "up" ? idx - 1 : idx + 1;
-    if (next < 0 || next >= safeCategories.length) return;
-    const target = safeCategories[next];
-    setError("");
-    try {
-      await api.patchCategory(cat.id, { sortOrder: target.sortOrder });
-      await api.patchCategory(target.id, { sortOrder: cat.sortOrder });
-      refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed");
-    }
-  }
-
   return (
     <div className="mx-auto max-w-6xl px-4 py-6">
       <h1 className="mb-4 text-2xl font-semibold">Categories</h1>
@@ -163,31 +148,22 @@ export default function CategoriesPage() {
       {loading ? (
         <p className="text-gray-500">Loading…</p>
       ) : (
-        <ul className="space-y-2">
-          {safeCategories.map((cat, idx) => {
+        <SortableList
+          items={safeCategories}
+          setItems={setCategories}
+          getId={(c) => c.id}
+          onReorder={(order) => api.reorderCategories(order)}
+          onSuccess={() => { setError(""); refresh(); }}
+          onError={(msg) => setError(msg)}
+          renderItem={({ item: cat, dragHandleProps, isDragging }) => {
             const subs = normalizeSubCategories(cat.subCategories);
             const isExpanded = expandedCat === cat.id;
             return (
-              <li key={cat.id} className="rounded border bg-white p-3 shadow-sm">
-                <div className="flex flex-wrap items-center gap-2">
-                  <div className="flex gap-1">
-                    <button
-                      type="button"
-                      onClick={() => reorderCategory(cat, "up")}
-                      disabled={idx === 0}
-                      className="rounded border border-gray-300 px-2 py-1 text-xs hover:bg-gray-50 disabled:opacity-40"
-                    >
-                      ↑
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => reorderCategory(cat, "down")}
-                      disabled={idx === safeCategories.length - 1}
-                      className="rounded border border-gray-300 px-2 py-1 text-xs hover:bg-gray-50 disabled:opacity-40"
-                    >
-                      ↓
-                    </button>
-                  </div>
+              <div
+                className={`rounded border bg-white shadow-sm ${isDragging ? "opacity-90 shadow-md" : ""}`}
+              >
+                <div className="flex items-center gap-2 p-3">
+                  <DragHandle dragHandleProps={dragHandleProps} className="rounded border border-gray-200 p-1" />
                   <button
                     type="button"
                     onClick={() => setExpandedCat(isExpanded ? null : cat.id)}
@@ -210,12 +186,30 @@ export default function CategoriesPage() {
                   </button>
                 </div>
                 {isExpanded && (
-                  <div className="mt-4 border-t pt-4">
+                  <div className="border-t px-3 pb-3 pt-2">
                     <h3 className="mb-2 text-sm font-medium text-gray-700">Subcategories</h3>
-                    <ul className="mb-3 space-y-1">
-                      {subs.map((sc) => (
-                        <li key={sc.id} className="flex items-center justify-between rounded bg-gray-50 px-3 py-1.5 text-sm">
-                          {sc.name}
+                    <SortableList
+                      items={subs}
+                      setItems={(updater) => {
+                        setCategories((prev) =>
+                          prev.map((c) =>
+                            c.id === cat.id
+                              ? { ...c, subCategories: typeof updater === "function" ? updater(c.subCategories ?? []) : updater }
+                              : c
+                          )
+                        );
+                      }}
+                      getId={(s) => s.id}
+                      onReorder={(order) => api.reorderSubCategories(order)}
+                      onSuccess={() => { setError(""); refresh(); }}
+                      onError={(msg) => setError(msg)}
+                      listClassName="mb-3 space-y-1"
+                      renderItem={({ item: sc, dragHandleProps }) => (
+                        <div className="flex items-center justify-between rounded bg-gray-50 px-3 py-1.5 text-sm">
+                          <div className="flex items-center gap-2">
+                            <DragHandle dragHandleProps={dragHandleProps} className="rounded p-0.5" />
+                            <span>{sc.name}</span>
+                          </div>
                           <button
                             type="button"
                             onClick={() => handleDeleteSubCategory(sc)}
@@ -223,9 +217,9 @@ export default function CategoriesPage() {
                           >
                             Delete
                           </button>
-                        </li>
-                      ))}
-                    </ul>
+                        </div>
+                      )}
+                    />
                     <form onSubmit={(e) => handleCreateSub(cat.id, e)} className="flex gap-2">
                       <input
                         type="text"
@@ -240,12 +234,12 @@ export default function CategoriesPage() {
                     </form>
                   </div>
                 )}
-              </li>
+              </div>
             );
-          })}
-          {safeCategories.length === 0 && <p className="text-gray-500">No categories yet.</p>}
-        </ul>
+          }}
+        />
       )}
+      {safeCategories.length === 0 && !loading && <p className="text-gray-500">No categories yet.</p>}
     </div>
   );
 }

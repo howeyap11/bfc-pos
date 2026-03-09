@@ -77,6 +77,10 @@ export async function adminRoutes(app: FastifyInstance) {
     })
     .partial();
 
+  const reorderOrderSchema = z.object({
+    order: z.array(z.object({ id: z.string(), sortOrder: z.number().int().min(0) })),
+  });
+
   app.get("/drink-sizes", async (req: FastifyRequest, reply: FastifyReply) => {
     const result = await getDrinkSizesOptionGroup(app.prisma);
     if (!result.ok) {
@@ -553,6 +557,39 @@ export async function adminRoutes(app: FastifyInstance) {
         drinkModeDefaults: { include: { option: true } },
       },
     });
+  });
+
+  app.post("/items/reorder", async (req: FastifyRequest, reply: FastifyReply) => {
+    const parsed = reorderOrderSchema.safeParse(req.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "INVALID_BODY", details: parsed.error.flatten(), message: "order array of { id, sortOrder } required" };
+    }
+    const ids = parsed.data.order.map((o) => o.id);
+    const existing = await app.prisma.menuItem.findMany({ where: { id: { in: ids } }, select: { id: true, subCategoryId: true } });
+    const foundIds = new Set(existing.map((i) => i.id));
+    const missing = ids.filter((id) => !foundIds.has(id));
+    if (missing.length > 0) {
+      reply.code(400);
+      return { error: "INVALID_IDS", message: `Item ids not found: ${missing.join(", ")}` };
+    }
+    const subIds = [...new Set(existing.map((i) => i.subCategoryId))];
+    if (subIds.length > 1) {
+      reply.code(400);
+      return { error: "MIXED_SCOPE", message: "All items must belong to the same subcategory" };
+    }
+    const version = await bumpCatalogVersion(app.prisma);
+    await app.prisma.$transaction([
+      ...parsed.data.order.map(({ id, sortOrder }) =>
+        app.prisma.menuItem.update({ where: { id }, data: { sortOrder, version } })
+      ),
+    ]);
+    const list = await app.prisma.menuItem.findMany({
+      where: { id: { in: ids } },
+      orderBy: { sortOrder: "asc" },
+      include: { category: true, subCategory: true },
+    });
+    return list;
   });
 
   app.post("/items", async (req: FastifyRequest, reply: FastifyReply) => {
@@ -1278,6 +1315,24 @@ export async function adminRoutes(app: FastifyInstance) {
     sizeLines: z.array(recipeLineSizeSchema).optional(),
   });
 
+  /** Check if RecipeLineSize table exists (graceful fallback when migration not applied). */
+  async function safeRecipeLineSizeFindMany(menuItemId: string): Promise<{ lines: unknown[]; unavailable?: boolean }> {
+    try {
+      const lines = await app.prisma.recipeLineSize.findMany({
+        where: { menuItemId, deletedAt: null },
+      });
+      return { lines };
+    } catch (err: unknown) {
+      const msg = String((err as Error)?.message ?? "");
+      const code = (err as { code?: string })?.code;
+      if (code === "P2021" || /does not exist|RecipeLineSize.*does not exist|relation.*does not exist/i.test(msg)) {
+        app.log?.warn?.({ msg: "RecipeLineSize table missing; per-size recipe unavailable until migration is applied." });
+        return { lines: [], unavailable: true };
+      }
+      throw err;
+    }
+  }
+
   app.get("/items/:id/recipe", async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as { id: string };
     const item = await app.prisma.menuItem.findUnique({ where: { id } });
@@ -1285,15 +1340,16 @@ export async function adminRoutes(app: FastifyInstance) {
       reply.code(404);
       return { error: "NOT_FOUND" };
     }
-    const [lines, sizeLines] = await Promise.all([
+    const [lines, sizeResult] = await Promise.all([
       app.prisma.recipeLine.findMany({
         where: { menuItemId: id, deletedAt: null },
       }),
-      app.prisma.recipeLineSize.findMany({
-        where: { menuItemId: id, deletedAt: null },
-      }),
+      safeRecipeLineSizeFindMany(id),
     ]);
-    return { lines, sizeLines };
+    const sizeLines = sizeResult.lines;
+    const result: Record<string, unknown> = { lines, sizeLines };
+    if (sizeResult.unavailable) result.recipeLineSizeUnavailable = true;
+    return result;
   });
 
   app.put("/items/:id/recipe", async (req: FastifyRequest, reply: FastifyReply) => {
@@ -1345,14 +1401,34 @@ export async function adminRoutes(app: FastifyInstance) {
 
     const menuItemId = id;
 
+    // Check RecipeLineSize table exists when needed (graceful fallback if migration not applied)
+    const needsRecipeLineSize = item.hasSizes; // we read/write sizeLines for hasSizes items
+    let recipeLineSizeAvailable = true;
+    if (needsRecipeLineSize) {
+      try {
+        await app.prisma.recipeLineSize.findFirst({ take: 1 });
+      } catch (err: unknown) {
+        const msg = String((err as Error)?.message ?? "");
+        const code = (err as { code?: string })?.code;
+        if (code === "P2021" || /does not exist|RecipeLineSize.*does not exist|relation.*does not exist/i.test(msg)) {
+          recipeLineSizeAvailable = false;
+          reply.code(503);
+          return {
+            error: "RECIPE_LINE_SIZE_TABLE_MISSING",
+            message: "Per-size recipe data requires the RecipeLineSize table. Run migrations: pnpm prisma migrate deploy (in apps/cloud-api). Base recipe editing works for non-sized items.",
+          };
+        }
+        throw err;
+      }
+    }
+
     // Full replace: hard-delete all recipe rows for this item, then insert current payload.
     // (Soft-delete was causing unique constraint violations: old rows still hold the composite key.)
     const runReplace = async () => {
       await app.prisma.$transaction(async (tx) => {
         await tx.recipeLine.deleteMany({ where: { menuItemId } });
-        await tx.recipeLineSize.deleteMany({ where: { menuItemId } });
-
-        if (item.hasSizes) {
+        if (item.hasSizes && recipeLineSizeAvailable) {
+          await tx.recipeLineSize.deleteMany({ where: { menuItemId } });
           if (parsed.data.sizeLines && parsed.data.sizeLines.length > 0) {
             const raw = parsed.data.sizeLines;
             const seen = new Map<string, (typeof raw)[0]>();
@@ -1421,15 +1497,16 @@ export async function adminRoutes(app: FastifyInstance) {
       throw err;
     }
 
-    const [lines, sizeLines] = await Promise.all([
+    const [lines, sizeResult] = await Promise.all([
       app.prisma.recipeLine.findMany({
         where: { menuItemId, deletedAt: null },
       }),
-      app.prisma.recipeLineSize.findMany({
-        where: { menuItemId, deletedAt: null },
-      }),
+      safeRecipeLineSizeFindMany(menuItemId),
     ]);
-    return { lines, sizeLines };
+    const sizeLines = sizeResult.lines;
+    const out: Record<string, unknown> = { lines, sizeLines };
+    if (sizeResult.unavailable) out.recipeLineSizeUnavailable = true;
+    return out;
   });
 
   // Categories - exclude deleted
@@ -1482,6 +1559,31 @@ export async function adminRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  app.post("/categories/reorder", async (req: FastifyRequest, reply: FastifyReply) => {
+    const parsed = reorderOrderSchema.safeParse(req.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "INVALID_BODY", details: parsed.error.flatten(), message: "order array of { id, sortOrder } required" };
+    }
+    const ids = parsed.data.order.map((o) => o.id);
+    const existing = await app.prisma.category.findMany({ where: { id: { in: ids }, deletedAt: null }, select: { id: true } });
+    const foundIds = new Set(existing.map((c) => c.id));
+    const missing = ids.filter((id) => !foundIds.has(id));
+    if (missing.length > 0) {
+      reply.code(400);
+      return { error: "INVALID_IDS", message: `Category ids not found: ${missing.join(", ")}` };
+    }
+    await app.prisma.$transaction(
+      parsed.data.order.map(({ id, sortOrder }) => app.prisma.category.update({ where: { id }, data: { sortOrder } }))
+    );
+    const list = await app.prisma.category.findMany({
+      where: { id: { in: ids }, deletedAt: null },
+      orderBy: { sortOrder: "asc" },
+      include: { subCategories: { where: { deletedAt: null }, orderBy: [{ sortOrder: "asc" }] } },
+    });
+    return list;
+  });
+
   app.post("/categories/:categoryId/subcategories", async (req: FastifyRequest<{ Params: { categoryId: string } }>, reply: FastifyReply) => {
     const { categoryId } = req.params;
     const parsed = z.object({ name: z.string().min(1), sortOrder: z.number().optional() }).safeParse(req.body);
@@ -1530,6 +1632,30 @@ export async function adminRoutes(app: FastifyInstance) {
     }
     await app.prisma.subCategory.update({ where: { id }, data: { deletedAt: new Date() } });
     return { ok: true };
+  });
+
+  app.post("/subcategories/reorder", async (req: FastifyRequest, reply: FastifyReply) => {
+    const parsed = reorderOrderSchema.safeParse(req.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "INVALID_BODY", details: parsed.error.flatten(), message: "order array of { id, sortOrder } required" };
+    }
+    const ids = parsed.data.order.map((o) => o.id);
+    const existing = await app.prisma.subCategory.findMany({ where: { id: { in: ids }, deletedAt: null }, select: { id: true } });
+    const foundIds = new Set(existing.map((s) => s.id));
+    const missing = ids.filter((id) => !foundIds.has(id));
+    if (missing.length > 0) {
+      reply.code(400);
+      return { error: "INVALID_IDS", message: `Subcategory ids not found: ${missing.join(", ")}` };
+    }
+    await app.prisma.$transaction(
+      parsed.data.order.map(({ id, sortOrder }) => app.prisma.subCategory.update({ where: { id }, data: { sortOrder } }))
+    );
+    const list = await app.prisma.subCategory.findMany({
+      where: { id: { in: ids }, deletedAt: null },
+      orderBy: { sortOrder: "asc" },
+    });
+    return list;
   });
 
   // MenuItemSize CRUD (per-item sizes)
@@ -1746,5 +1872,148 @@ export async function adminRoutes(app: FastifyInstance) {
       include: { group: { include: { options: true, defaultOption: true } } },
     });
     return { optionGroupLinks: links };
+  });
+
+  // Synced transactions list (for Cloud Admin reports)
+  app.get("/transactions", async (req: FastifyRequest<{ Querystring: { storeId?: string; from?: string; to?: string; limit?: string; cursor?: string } }>, reply: FastifyReply) => {
+    const storeId = req.query.storeId || "store_1";
+    const from = req.query.from ? new Date(req.query.from) : null;
+    const to = req.query.to ? new Date(req.query.to) : null;
+    const limit = Math.min(parseInt(req.query.limit || "50", 10) || 50, 200);
+    const cursor = req.query.cursor ? req.query.cursor : null;
+
+    const where: { storeId: string; createdAt?: { gte?: Date; lte?: Date } } = { storeId };
+    if (from || to) {
+      where.createdAt = {};
+      if (from) where.createdAt.gte = from;
+      if (to) where.createdAt.lte = to;
+    }
+
+    const skip = cursor ? parseInt(cursor, 10) || 0 : 0;
+
+    const items = await app.prisma.syncedTransaction.findMany({
+      where,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      skip,
+      take: limit + 1,
+    });
+    const hasMore = items.length > limit;
+    const list = hasMore ? items.slice(0, limit) : items;
+    const nextCursor = hasMore ? String(skip + limit) : null;
+
+    const rows = list.map((t) => {
+      let payments: { method: string; amountCents: number }[] = [];
+      try {
+        payments = JSON.parse(t.paymentsJson) as { method: string; amountCents: number }[];
+      } catch {
+        // ignore
+      }
+      let lineItems: { name: string; qty: number; lineTotal: number }[] = [];
+      try {
+        if (t.lineItemsSummaryJson) lineItems = JSON.parse(t.lineItemsSummaryJson) as { name: string; qty: number; lineTotal: number }[];
+      } catch {
+        // ignore
+      }
+      return {
+        id: t.id,
+        sourceTransactionId: t.sourceTransactionId,
+        transactionNo: t.transactionNo,
+        status: t.status,
+        source: t.source,
+        serviceType: t.serviceType,
+        cashierName: t.cashierName,
+        totalCents: t.totalCents,
+        subtotalCents: t.subtotalCents,
+        discountCents: t.discountCents,
+        itemsCount: t.itemsCount,
+        createdAt: t.createdAt.toISOString(),
+        voidedAt: t.voidedAt?.toISOString() ?? null,
+        voidReason: t.voidReason,
+        payments,
+        lineItems,
+      };
+    });
+
+    return { items: rows, nextCursor, hasMore };
+  });
+
+  // Daily report
+  app.get("/reports/daily", async (req: FastifyRequest<{ Querystring: { storeId?: string; date?: string } }>, reply: FastifyReply) => {
+    const storeId = req.query.storeId || "store_1";
+    const dateStr = req.query.date || new Date().toISOString().slice(0, 10);
+    const start = new Date(dateStr + "T00:00:00.000Z");
+    const end = new Date(dateStr + "T23:59:59.999Z");
+
+    const txs = await app.prisma.syncedTransaction.findMany({
+      where: { storeId, status: "PAID", createdAt: { gte: start, lte: end } },
+    });
+
+    let totalSales = 0;
+    let totalDiscounts = 0;
+    const byMethod: Record<string, number> = {};
+    for (const t of txs) {
+      totalSales += t.totalCents;
+      totalDiscounts += t.discountCents;
+      try {
+        const payments = JSON.parse(t.paymentsJson) as { method: string; amountCents: number }[];
+        for (const p of payments) {
+          byMethod[p.method] = (byMethod[p.method] ?? 0) + p.amountCents;
+        }
+      } catch {
+        // ignore
+      }
+    }
+    const itemsCount = txs.reduce((s, t) => s + t.itemsCount, 0);
+
+    return {
+      date: dateStr,
+      storeId,
+      transactionCount: txs.length,
+      itemsCount,
+      totalSales,
+      totalDiscounts,
+      byPaymentMethod: byMethod,
+    };
+  });
+
+  // Monthly report
+  app.get("/reports/monthly", async (req: FastifyRequest<{ Querystring: { storeId?: string; year?: string; month?: string } }>, reply: FastifyReply) => {
+    const storeId = req.query.storeId || "store_1";
+    const year = parseInt(req.query.year || String(new Date().getFullYear()), 10);
+    const month = parseInt(req.query.month || String(new Date().getMonth() + 1), 10);
+    const start = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0));
+    const end = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999));
+
+    const txs = await app.prisma.syncedTransaction.findMany({
+      where: { storeId, status: "PAID", createdAt: { gte: start, lte: end } },
+    });
+
+    let totalSales = 0;
+    let totalDiscounts = 0;
+    const byMethod: Record<string, number> = {};
+    for (const t of txs) {
+      totalSales += t.totalCents;
+      totalDiscounts += t.discountCents;
+      try {
+        const payments = JSON.parse(t.paymentsJson) as { method: string; amountCents: number }[];
+        for (const p of payments) {
+          byMethod[p.method] = (byMethod[p.method] ?? 0) + p.amountCents;
+        }
+      } catch {
+        // ignore
+      }
+    }
+    const itemsCount = txs.reduce((s, t) => s + t.itemsCount, 0);
+
+    return {
+      year,
+      month,
+      storeId,
+      transactionCount: txs.length,
+      itemsCount,
+      totalSales,
+      totalDiscounts,
+      byPaymentMethod: byMethod,
+    };
   });
 }

@@ -10,8 +10,9 @@ const nav = [
   { href: "/transactions", label: "Transactions", icon: IconReceipt },
   { href: "/ingredients", label: "Ingredients", icon: IconFlask },
   { href: "/inventory", label: "Inventory", icon: IconPackage },
-  { href: "/menu-settings/sizes", label: "Menu Settings", icon: IconSettings },
   { href: "/reports", label: "Reports", icon: IconChart },
+  { href: "/menu-settings/sizes", label: "Menu Settings", icon: IconSettings },
+  { href: "/settings", label: "Settings", icon: IconSettings },
 ];
 
 function IconGrid({ className }: { className?: string }) {

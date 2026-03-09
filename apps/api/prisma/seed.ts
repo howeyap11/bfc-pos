@@ -170,6 +170,12 @@ async function seedStaff() {
       role: "CASHIER",
       key: "staff_fqv6bxdtcmjuqu3kfgncm" // Stable key for dev
     },
+    {
+      name: "Manager",
+      passcode: "1234",
+      role: "MANAGER",
+      key: "staff_1234_admin_pos",
+    },
   ];
   
   for (const staff of staffMembers) {

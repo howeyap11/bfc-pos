@@ -1,4 +1,5 @@
 // apps/api/src/index.ts
+import "dotenv/config";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 
@@ -6,6 +7,7 @@ import prismaPlugin from "./plugins/prisma";
 import inventoryServicePlugin from "./plugins/inventoryService";
 import { staffGuardPlugin } from "./plugins/staffGuard";
 import { staffQueueRoutes } from "./routes/staffQueue";
+import { posOrdersRoutes } from "./routes/posOrders";
 import { orderStatusRoutes } from "./routes/orderStatus";
 import { functionRoomRoutes } from "./routes/functionRoom";
 import { orderCancelRoutes } from "./routes/orderCancel";
@@ -14,6 +16,7 @@ import { posTransactionsRoutes } from "./routes/posTransactions";
 import { drawerRoutes } from "./routes/drawer";
 import { adminSyncRoutes } from "./routes/admin/adminSync";
 import { ensureItemForCloudId } from "./services/catalogCache.service";
+import { syncCatalogFromCloud } from "./services/syncCatalog.service.js";
 
 const app = Fastify({ logger: true });
 
@@ -25,6 +28,7 @@ await app.register(staffGuardPlugin);
 
 // Staff routes (protected by x-staff-key inside the route files)
 await app.register(staffQueueRoutes);
+await app.register(posOrdersRoutes);
 await app.register(orderStatusRoutes);
 await app.register(functionRoomRoutes);
 await app.register(orderCancelRoutes);
@@ -43,26 +47,57 @@ app.get("/tables", async () => {
   });
 });
 
-// Catalog from local cache (CloudMenuItem) - offline-first, no cloud dependency
+// Catalog from local cache - offline-first, no cloud dependency
+// Returns Category[] with items, using CloudCategory, CloudSubCategory, CloudMenuItem
 app.get("/menu", async () => {
-  const items = await app.prisma.cloudMenuItem.findMany({
-    where: { storeId: "store_1", isActive: true, deletedAt: null },
-    orderBy: { name: "asc" },
-  });
-  // UI expects Category[] with items; CloudMenuItem has no category, use single "Menu"
-  return [
-    {
-      id: "menu",
-      name: "Menu",
-      items: items.map((i) => ({
+  const [categories, subCategories, items] = await Promise.all([
+    app.prisma.cloudCategory.findMany({
+      where: { storeId: "store_1" },
+      orderBy: { sortOrder: "asc" },
+    }),
+    app.prisma.cloudSubCategory.findMany({
+      where: { storeId: "store_1" },
+      orderBy: { sortOrder: "asc" },
+    }),
+    app.prisma.cloudMenuItem.findMany({
+      where: { storeId: "store_1", isActive: true, deletedAt: null },
+      orderBy: { name: "asc" },
+    }),
+  ]);
+  const subCategoryMap = new Map(subCategories.map((s) => [s.cloudId, s.name]));
+  const result = categories.map((cat) => ({
+    id: cat.cloudId,
+    name: cat.name,
+    items: items
+      .filter((i) => i.categoryCloudId === cat.cloudId)
+      .map((i) => ({
         id: i.cloudId,
         name: i.name,
         basePrice: i.priceCents,
         description: null,
         imageUrl: i.imageUrl,
+        series: i.subCategoryCloudId ? subCategoryMap.get(i.subCategoryCloudId) ?? "Other" : "Other",
       })),
-    },
-  ];
+  }));
+  const uncategorized = items.filter((i) => !i.categoryCloudId);
+  if (uncategorized.length > 0) {
+    result.push({
+      id: "_uncategorized",
+      name: "Uncategorized",
+      items: uncategorized.map((i) => ({
+        id: i.cloudId,
+        name: i.name,
+        basePrice: i.priceCents,
+        description: null,
+        imageUrl: i.imageUrl,
+        series: i.subCategoryCloudId ? subCategoryMap.get(i.subCategoryCloudId) ?? "Other" : "Other",
+      })),
+    });
+  }
+  if (result.length === 0 && items.length > 0) {
+    return [{ id: "menu", name: "Menu", items: items.map((i) => ({ id: i.cloudId, name: i.name, basePrice: i.priceCents, description: null, imageUrl: i.imageUrl, series: "Other" })) }];
+  }
+  return result;
 });
 
 app.get("/items/:id", async (req) => {
@@ -323,3 +358,16 @@ app.post("/orders", async (req) => {
 
 // Listen (MUST be last)
 await app.listen({ host: "0.0.0.0", port: 3000 });
+
+// Sync catalog from cloud on startup (non-blocking; fails gracefully if CLOUD_URL unset or cloud unreachable)
+syncCatalogFromCloud(app.prisma, "default")
+  .then((outcome) => {
+    if (outcome.ok) {
+      app.log.info({ result: outcome.result }, "Catalog sync completed on startup");
+    } else {
+      app.log.warn({ error: outcome.error, code: outcome.code }, "Catalog sync skipped on startup");
+    }
+  })
+  .catch((err) => {
+    app.log.warn({ err }, "Catalog sync failed on startup");
+  });

@@ -1,26 +1,8 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import {
-  DndContext,
-  closestCenter,
-  type DragEndEvent,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
-} from "@dnd-kit/core";
-import {
-  arrayMove,
-  SortableContext,
-  horizontalListSortingStrategy,
-  rectSortingStrategy,
-  sortableKeyboardCoordinates,
-  useSortable,
-} from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
 import {
   api,
   type Category,
@@ -29,6 +11,8 @@ import {
   normalizeSubCategories,
 } from "@/lib/api";
 import { COLORS } from "@/lib/theme";
+import { SortableList, DragHandle } from "@/components/SortableList";
+import { horizontalListSortingStrategy, rectSortingStrategy } from "@dnd-kit/sortable";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 const TOAST_KEY = "items_toast";
@@ -54,88 +38,6 @@ const TILE_COLORS = [
   { border: "#ec4899", accent: "#ec4899" },
 ];
 
-function SortableCategoryChip({
-  cat,
-  isSelected,
-  onSelect,
-}: {
-  cat: Category;
-  isSelected: boolean;
-  onSelect: () => void;
-}) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: cat.id,
-  });
-  const baseTransform = CSS.Transform.toString(transform);
-  const scale = isDragging ? " scale(1.02)" : "";
-  const style: React.CSSProperties = {
-    transform: baseTransform ? `${baseTransform}${scale}` : scale || undefined,
-    transition,
-    opacity: isDragging ? 0.9 : 1,
-    boxShadow: isDragging ? "0 8px 16px rgba(0,0,0,0.4)" : undefined,
-    background: isSelected ? COLORS.primary : COLORS.bgPanel,
-    color: isSelected ? "#000" : "#ddd",
-    border: `1px solid ${isSelected ? COLORS.primary : COLORS.borderLight}`,
-  };
-  return (
-    <button
-      ref={setNodeRef}
-      type="button"
-      onClick={onSelect}
-      {...attributes}
-      {...listeners}
-      className="shrink-0 rounded-full px-4 py-2 text-sm font-medium transition-all duration-200"
-      style={style}
-    >
-      {cat.name}
-    </button>
-  );
-}
-
-function SortableSubcategoryTile({
-  sub,
-  index,
-  isSelected,
-  onSelect,
-}: {
-  sub: SubCategory;
-  index: number;
-  isSelected: boolean;
-  onSelect: () => void;
-}) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: sub.id,
-  });
-  const colors = TILE_COLORS[index % TILE_COLORS.length];
-  const baseTransform = CSS.Transform.toString(transform);
-  const scale = isDragging ? " scale(1.03)" : "";
-  const lift = isSelected ? " translateY(-2px)" : "";
-  const style: React.CSSProperties = {
-    transform: baseTransform ? `${baseTransform}${scale}${lift}` : scale || lift || undefined,
-    transition,
-    opacity: isDragging ? 0.9 : 1,
-    boxShadow: isDragging ? "0 8px 20px rgba(0,0,0,0.5)" : undefined,
-    background: isSelected ? "#333" : COLORS.bgPanel,
-    border: `2px solid ${colors.border}`,
-  };
-  return (
-    <button
-      ref={setNodeRef}
-      type="button"
-      onClick={onSelect}
-      {...attributes}
-      {...listeners}
-      className="flex min-h-[100px] flex-col items-center justify-center rounded-lg p-4 transition-all duration-200"
-      style={style}
-    >
-      <span className="text-center text-sm font-bold uppercase tracking-wide text-white" style={{ lineHeight: 1.3 }}>
-        {sub.name}
-      </span>
-      <div className="mt-2 h-0.5 w-10 rounded" style={{ background: colors.accent }} />
-    </button>
-  );
-}
-
 function MenuPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -160,14 +62,6 @@ function MenuPageContent() {
   const [editSubName, setEditSubName] = useState("");
   const [saving, setSaving] = useState(false);
 
-  const [draggingItemId, setDraggingItemId] = useState<string | null>(null);
-  const [dragOverItemId, setDragOverItemId] = useState<string | null>(null);
-
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
-  );
-
   const safeCategories = Array.isArray(categories) ? categories : [];
   const currentCategory = safeCategories.find((c) => c.id === selectedCategoryId);
   const subcategories = currentCategory
@@ -181,107 +75,6 @@ function MenuPageContent() {
           .slice()
           .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
       : [];
-
-  function reorderById<T extends { id: string }>(list: T[], fromId: string, toId: string): T[] {
-    if (fromId === toId) return list;
-    const fromIndex = list.findIndex((x) => x.id === fromId);
-    const toIndex = list.findIndex((x) => x.id === toId);
-    if (fromIndex === -1 || toIndex === -1) return list;
-    const result = list.slice();
-    const [moved] = result.splice(fromIndex, 1);
-    result.splice(toIndex, 0, moved);
-    return result;
-  }
-
-  async function persistCategoryOrder(next: Category[]) {
-    setCategories(next);
-    try {
-      await Promise.all(
-        next.map((cat, index) =>
-          cat.sortOrder !== index ? api.patchCategory(cat.id, { sortOrder: index }) : Promise.resolve(cat)
-        )
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to reorder categories");
-      refresh();
-    }
-  }
-
-  async function persistSubCategoryOrder(categoryId: string, nextSubs: SubCategory[]) {
-    setCategories((prev) =>
-      prev.map((cat) =>
-        cat.id === categoryId ? { ...cat, subCategories: nextSubs } : cat
-      )
-    );
-    try {
-      await Promise.all(
-        nextSubs.map((sub, index) =>
-          sub.sortOrder !== index ? api.patchSubCategory(sub.id, { sortOrder: index }) : Promise.resolve(sub)
-        )
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to reorder subcategories");
-      refresh();
-    }
-  }
-
-  const sortedCategories = [...safeCategories].sort((a, b) => a.sortOrder - b.sortOrder);
-  const sortedSubcategories = [...subcategories].sort((a, b) => (a?.sortOrder ?? 0) - (b?.sortOrder ?? 0));
-
-  const handleCategoryDragEnd = useCallback(
-    (event: DragEndEvent) => {
-      const { active, over } = event;
-      if (!over || active.id === over.id) return;
-      const sorted = [...safeCategories].sort((a, b) => a.sortOrder - b.sortOrder);
-      const oldIndex = sorted.findIndex((c) => c.id === active.id);
-      const newIndex = sorted.findIndex((c) => c.id === over.id);
-      if (oldIndex === -1 || newIndex === -1) return;
-      const next = arrayMove(sorted, oldIndex, newIndex).map((c, i) => ({
-        ...c,
-        sortOrder: i,
-      }));
-      persistCategoryOrder(next);
-    },
-    [safeCategories, persistCategoryOrder]
-  );
-
-  const handleSubcategoryDragEnd = useCallback(
-    (event: DragEndEvent) => {
-      const { active, over } = event;
-      if (!over || active.id === over.id || !selectedCategoryId) return;
-      const subs = normalizeSubCategories(
-        safeCategories.find((c) => c.id === selectedCategoryId)?.subCategories ?? []
-      );
-      const sorted = [...subs].sort((a, b) => (a?.sortOrder ?? 0) - (b?.sortOrder ?? 0));
-      const oldIndex = sorted.findIndex((s) => s?.id === active.id);
-      const newIndex = sorted.findIndex((s) => s?.id === over.id);
-      if (oldIndex === -1 || newIndex === -1) return;
-      const next = arrayMove(sorted, oldIndex, newIndex).map((s, i) =>
-        s ? { ...s, sortOrder: i } : s
-      ) as SubCategory[];
-      persistSubCategoryOrder(selectedCategoryId, next);
-    },
-    [safeCategories, selectedCategoryId, persistSubCategoryOrder]
-  );
-
-  async function persistItemOrder(subCategoryId: string, nextItems: MenuItem[]) {
-    setItems((prev) => {
-      const other = prev.filter((i) => i.subCategoryId !== subCategoryId);
-      return [...other, ...nextItems];
-    });
-    try {
-      await Promise.all(
-        nextItems.map((it, index) =>
-          (it.sortOrder ?? 0) !== index
-            ? api.updateItem(it.id, { sortOrder: index })
-            : Promise.resolve(it)
-        )
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to reorder items");
-      refresh();
-    }
-  }
 
   useEffect(() => {
     const msg = typeof sessionStorage !== "undefined" ? sessionStorage.getItem(TOAST_KEY) : null;
@@ -576,27 +369,34 @@ function MenuPageContent() {
           <>
             {/* CategoryRow: horizontal scrollable chips (drag to reorder) */}
             <div className="mb-4 overflow-x-auto pb-2">
-              <DndContext
-                sensors={sensors}
-                collisionDetection={closestCenter}
-                onDragEnd={handleCategoryDragEnd}
-              >
-                <SortableContext
-                  items={sortedCategories.map((c) => c.id)}
-                  strategy={horizontalListSortingStrategy}
-                >
-                  <div className="flex gap-2" style={{ minWidth: "min-content" }}>
-                    {sortedCategories.map((cat) => (
-                      <SortableCategoryChip
-                        key={cat.id}
-                        cat={cat}
-                        isSelected={selectedCategoryId === cat.id}
-                        onSelect={() => selectCategory(cat.id)}
-                      />
-                    ))}
+              <SortableList
+                items={safeCategories}
+                setItems={setCategories}
+                getId={(c) => c.id}
+                onReorder={(order) => api.reorderCategories(order)}
+                strategy={horizontalListSortingStrategy}
+                listClassName="flex gap-2"
+                onSuccess={() => { setSuccess("Reordered"); setTimeout(() => setSuccess(""), 2000); refresh(); }}
+                onError={(msg) => setError(msg)}
+                renderItem={({ item: cat, dragHandleProps, isDragging }) => (
+                  <div className="flex shrink-0 items-center gap-1">
+                    <DragHandle dragHandleProps={dragHandleProps} className="rounded p-1 text-white/60 hover:text-white/90" />
+                    <button
+                      type="button"
+                      onClick={() => selectCategory(cat.id)}
+                      className="shrink-0 rounded-full px-4 py-2 text-sm font-medium transition-all"
+                      style={{
+                        background: selectedCategoryId === cat.id ? COLORS.primary : COLORS.bgPanel,
+                        color: selectedCategoryId === cat.id ? "#000" : "#ddd",
+                        border: `1px solid ${selectedCategoryId === cat.id ? COLORS.primary : COLORS.borderLight}`,
+                        opacity: isDragging ? 0.9 : 1,
+                      }}
+                    >
+                      {cat.name}
+                    </button>
                   </div>
-                </SortableContext>
-              </DndContext>
+                )}
+              />
             </div>
 
             {/* Subcategory tiles (UTAK-style, drag to reorder) */}
@@ -605,31 +405,49 @@ function MenuPageContent() {
                 No subcategories. Use &quot;Add Subcategory&quot; above.
               </p>
             ) : (
-              <DndContext
-                sensors={sensors}
-                collisionDetection={closestCenter}
-                onDragEnd={handleSubcategoryDragEnd}
-              >
-                <SortableContext
-                  items={sortedSubcategories.map((s) => s.id)}
-                  strategy={rectSortingStrategy}
-                >
-                  <div
-                    className="mb-4 grid gap-4"
-                    style={{ gridTemplateColumns: "repeat(3, 1fr)", maxWidth: 900 }}
-                  >
-                    {sortedSubcategories.map((sub, index) => (
-                      <SortableSubcategoryTile
-                        key={sub.id}
-                        sub={sub}
-                        index={index}
-                        isSelected={selectedSubCategoryId === sub.id}
-                        onSelect={() => selectSubcategory(sub.id)}
-                      />
-                    ))}
-                  </div>
-                </SortableContext>
-              </DndContext>
+              <SortableList
+                items={subcategories}
+                setItems={(updater) => {
+                  const next = typeof updater === "function" ? updater(subcategories) : updater;
+                  setCategories((prev) =>
+                    prev.map((c) =>
+                      c.id === selectedCategoryId ? { ...c, subCategories: next } : c
+                    )
+                  );
+                }}
+                getId={(s) => s.id}
+                onReorder={(order) => api.reorderSubCategories(order)}
+                strategy={rectSortingStrategy}
+                listClassName="mb-4 grid max-w-[900px] grid-cols-3 gap-4"
+                onSuccess={() => { setSuccess("Reordered"); setTimeout(() => setSuccess(""), 2000); refresh(); }}
+                onError={(msg) => setError(msg)}
+                renderItem={({ item: sub, dragHandleProps, isDragging }) => {
+                  const index = subcategories.findIndex((s) => s.id === sub.id);
+                  const colors = TILE_COLORS[index % TILE_COLORS.length];
+                  const isSelected = selectedSubCategoryId === sub.id;
+                  return (
+                    <div className="flex items-stretch gap-1">
+                      <DragHandle dragHandleProps={dragHandleProps} className="shrink-0 self-center rounded p-1 text-white/60 hover:text-white/90" />
+                      <button
+                        type="button"
+                        onClick={() => selectSubcategory(sub.id)}
+                        className="flex min-h-[100px] flex-1 flex-col items-center justify-center rounded-lg p-4 transition-all"
+                        style={{
+                          background: isSelected ? "#333" : COLORS.bgPanel,
+                          border: `2px solid ${colors.border}`,
+                          opacity: isDragging ? 0.9 : 1,
+                          transform: isSelected ? "translateY(-2px)" : undefined,
+                        }}
+                      >
+                        <span className="text-center text-sm font-bold uppercase tracking-wide text-white" style={{ lineHeight: 1.3 }}>
+                          {sub.name}
+                        </span>
+                        <div className="mt-2 h-0.5 w-10 rounded" style={{ background: colors.accent }} />
+                      </button>
+                    </div>
+                  );
+                }}
+              />
             )}
 
             {/* Item grid under subcategories */}
@@ -646,50 +464,43 @@ function MenuPageContent() {
                     No items. Use &quot;Create Item&quot; above.
                   </p>
                 ) : (
-                  <div
-                    className="grid gap-3"
-                    style={{ gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))" }}
-                  >
-                    {filteredItems.map((item) => (
+                  <SortableList
+                    items={filteredItems}
+                    setItems={(updater) => {
+                      const next =
+                        typeof updater === "function" ? updater(filteredItems) : updater;
+                      setItems((prev) => {
+                        const other = prev.filter(
+                          (i) => i.subCategoryId !== selectedSubCategoryId
+                        );
+                        return [...other, ...next];
+                      });
+                    }}
+                    getId={(i) => i.id}
+                    onReorder={(order) => api.reorderItems(order)}
+                    strategy={rectSortingStrategy}
+                    listClassName="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3"
+                    onSuccess={() => {
+                      setSuccess("Reordered");
+                      setTimeout(() => setSuccess(""), 2000);
+                      refresh();
+                    }}
+                    onError={(msg) => setError(msg)}
+                    renderItem={({ item, dragHandleProps, isDragging }) => (
                       <div
-                        key={item.id}
-                        draggable
-                        onDragStart={() => {
-                          setDraggingItemId(item.id);
-                          setDragOverItemId(item.id);
-                        }}
-                        onDragOver={(e) => {
-                          e.preventDefault();
-                          if (
-                            draggingItemId &&
-                            dragOverItemId !== item.id &&
-                            selectedSubCategoryId
-                          ) {
-                            setDragOverItemId(item.id);
-                            const ordered = filteredItems;
-                            const next = reorderById(
-                              ordered,
-                              draggingItemId,
-                              item.id
-                            ).map((it, index) => ({ ...it, sortOrder: index }));
-                            persistItemOrder(selectedSubCategoryId, next);
-                          }
-                        }}
-                        onDragEnd={() => {
-                          setDraggingItemId(null);
-                          setDragOverItemId(null);
-                        }}
-                        className={`flex flex-col rounded-lg border-2 p-3 ${
-                          dragOverItemId === item.id && draggingItemId
-                            ? "ring-2 ring-amber-400"
-                            : ""
-                        }`}
+                        className="flex flex-col rounded-lg border-2 p-3"
                         style={{
                           background: COLORS.bgPanel,
                           borderColor: item.deletedAt ? "#444" : COLORS.borderLight,
-                          opacity: item.deletedAt ? 0.75 : 1,
+                          opacity: item.deletedAt ? 0.75 : isDragging ? 0.9 : 1,
                         }}
                       >
+                        <div className="mb-2 flex justify-end">
+                          <DragHandle
+                            dragHandleProps={dragHandleProps}
+                            className="shrink-0 rounded p-1 text-white/60 hover:text-white/90"
+                          />
+                        </div>
                         {item.imageUrl ? (
                           <img
                             src={
@@ -745,8 +556,8 @@ function MenuPageContent() {
                           )}
                         </div>
                       </div>
-                    ))}
-                  </div>
+                    )}
+                  />
                 )}
               </>
             )}

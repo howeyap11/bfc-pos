@@ -1,18 +1,33 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { COLORS } from "@/lib/theme";
 import { useOnScreenKeyboard, OnScreenKeyboard } from "@/lib/useOnScreenKeyboard";
 
 type DrawerReason = "GIVE_CHANGE" | "EXCHANGE_BILLS" | "CASH_DROP" | "OTHER";
 
 export default function DrawerClient() {
+  const router = useRouter();
   const keyboard = useOnScreenKeyboard();
+  const [activeStaff, setActiveStaff] = useState<{ id: string; name: string; staffKey: string } | null>(null);
   const [selectedReason, setSelectedReason] = useState<DrawerReason | null>(null);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showSuccess, setShowSuccess] = useState(false);
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("bfc_active_staff");
+      if (stored) {
+        const staff = JSON.parse(stored);
+        if (staff?.staffKey) setActiveStaff(staff);
+      }
+    } catch (e) {
+      console.error("[Drawer] Failed to load active staff", e);
+    }
+  }, []);
 
   const reasons: Array<{ value: DrawerReason; label: string; description: string }> = [
     { value: "GIVE_CHANGE", label: "Give Change", description: "Providing change to customer" },
@@ -22,6 +37,10 @@ export default function DrawerClient() {
   ];
 
   async function handleOpenDrawer() {
+    if (!activeStaff?.staffKey) {
+      setError("No active staff session. Please login from the Register page first.");
+      return;
+    }
     if (!selectedReason) {
       setError("Please select a reason");
       return;
@@ -38,7 +57,10 @@ export default function DrawerClient() {
     try {
       const res = await fetch("/api/drawer/open", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "x-staff-key": activeStaff.staffKey,
+        },
         body: JSON.stringify({
           reason: selectedReason,
           note: note.trim() || undefined,
@@ -76,6 +98,55 @@ export default function DrawerClient() {
       },
       onChange: (val) => setNote(val),
     });
+  }
+
+  if (!activeStaff?.staffKey) {
+    return (
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          minHeight: "60vh",
+          padding: 24,
+          background: COLORS.bgDarkest,
+        }}
+      >
+        <div
+          style={{
+            background: COLORS.bgDark,
+            padding: 32,
+            borderRadius: 12,
+            border: `1px solid ${COLORS.borderLight}`,
+            maxWidth: 400,
+            textAlign: "center",
+          }}
+        >
+          <h2 style={{ margin: "0 0 16px 0", fontSize: 20, color: COLORS.textPrimary }}>
+            Staff Login Required
+          </h2>
+          <p style={{ margin: "0 0 24px 0", fontSize: 15, color: COLORS.textSecondary, lineHeight: 1.5 }}>
+            No active staff session. Please login from the Register page first.
+          </p>
+          <button
+            type="button"
+            onClick={() => router.push("/pos/register")}
+            style={{
+              padding: "14px 28px",
+              fontSize: 16,
+              fontWeight: "600",
+              background: COLORS.primary,
+              color: "#fff",
+              border: "none",
+              borderRadius: 8,
+              cursor: "pointer",
+            }}
+          >
+            Go to Register
+          </button>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -225,24 +296,6 @@ export default function DrawerClient() {
         >
           {busy ? "Opening Drawer..." : "🔓 Open Drawer"}
         </button>
-
-        <div
-          style={{
-            marginTop: 24,
-            padding: 16,
-            background: COLORS.bgPanel,
-            borderRadius: 6,
-            border: `1px solid ${COLORS.borderLight}`,
-          }}
-        >
-          <h3 style={{ margin: "0 0 8px 0", fontSize: 14, fontWeight: 600, color: COLORS.textSecondary }}>
-            Info
-          </h3>
-          <p style={{ margin: 0, fontSize: 13, color: COLORS.textSecondary, lineHeight: 1.5 }}>
-            Opening the drawer is logged for audit purposes. In production, this would trigger the
-            physical cash drawer to open.
-          </p>
-        </div>
       </div>
 
       {keyboard.isOpen && (

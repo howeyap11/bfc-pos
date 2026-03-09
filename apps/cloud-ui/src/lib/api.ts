@@ -301,6 +301,37 @@ export type InventoryLocation = {
   sortOrder?: number;
 };
 
+export type SyncedTransactionRow = {
+  id: string;
+  sourceTransactionId: string;
+  transactionNo: number;
+  status: string;
+  source: string;
+  serviceType: string;
+  cashierName: string | null;
+  totalCents: number;
+  subtotalCents: number;
+  discountCents: number;
+  itemsCount: number;
+  createdAt: string;
+  voidedAt: string | null;
+  voidReason: string | null;
+  payments: { method: string; amountCents: number }[];
+  lineItems: { name: string; qty: number; lineTotal: number }[];
+};
+
+export type DailyReport = {
+  date: string;
+  storeId: string;
+  transactionCount: number;
+  itemsCount: number;
+  totalSales: number;
+  totalDiscounts: number;
+  byPaymentMethod: Record<string, number>;
+};
+
+export type MonthlyReport = Omit<DailyReport, "date"> & { year: number; month: number };
+
 export const api = {
   getItems(includeDeleted?: boolean): Promise<MenuItem[]> {
     const qs = includeDeleted ? "?includeDeleted=1" : "";
@@ -349,6 +380,9 @@ export const api = {
 
   deleteItem(id: string): Promise<void> {
     return apiFetch(`/admin/items/${id}`, { method: "DELETE" });
+  },
+  reorderItems(order: { id: string; sortOrder: number }[]): Promise<MenuItem[]> {
+    return apiFetch("/admin/items/reorder", { method: "POST", body: JSON.stringify({ order }) });
   },
   updateItem(
     id: string,
@@ -401,6 +435,9 @@ export const api = {
   patchCategory(id: string, body: { name?: string; slug?: string; sortOrder?: number }): Promise<Category> {
     return apiFetch(`/admin/categories/${id}`, { method: "PATCH", body: JSON.stringify(body) });
   },
+  reorderCategories(order: { id: string; sortOrder: number }[]): Promise<Category[]> {
+    return apiFetch("/admin/categories/reorder", { method: "POST", body: JSON.stringify({ order }) });
+  },
   deleteCategory(id: string): Promise<void> {
     return apiFetch(`/admin/categories/${id}`, { method: "DELETE" });
   },
@@ -415,6 +452,9 @@ export const api = {
   },
   patchSubCategory(id: string, body: { name?: string; sortOrder?: number }): Promise<SubCategory> {
     return apiFetch(`/admin/subcategories/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+  },
+  reorderSubCategories(order: { id: string; sortOrder: number }[]): Promise<SubCategory[]> {
+    return apiFetch("/admin/subcategories/reorder", { method: "POST", body: JSON.stringify({ order }) });
   },
   deleteSubCategory(id: string): Promise<void> {
     return apiFetch(`/admin/subcategories/${id}`, { method: "DELETE" });
@@ -635,6 +675,35 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     });
+  },
+
+  getTransactions(params: {
+    storeId?: string;
+    from?: string;
+    to?: string;
+    limit?: number;
+    cursor?: string;
+  }): Promise<{ items: SyncedTransactionRow[]; nextCursor: string | null; hasMore: boolean }> {
+    const q = new URLSearchParams();
+    if (params.storeId) q.set("storeId", params.storeId);
+    if (params.from) q.set("from", params.from);
+    if (params.to) q.set("to", params.to);
+    if (params.limit) q.set("limit", String(params.limit));
+    if (params.cursor) q.set("cursor", params.cursor);
+    return apiFetch(`/admin/transactions?${q}`);
+  },
+  getDailyReport(params: { storeId?: string; date?: string }): Promise<DailyReport> {
+    const q = new URLSearchParams();
+    if (params.storeId) q.set("storeId", params.storeId);
+    if (params.date) q.set("date", params.date);
+    return apiFetch(`/admin/reports/daily?${q}`);
+  },
+  getMonthlyReport(params: { storeId?: string; year?: number; month?: number }): Promise<MonthlyReport> {
+    const q = new URLSearchParams();
+    if (params.storeId) q.set("storeId", params.storeId);
+    if (params.year) q.set("year", String(params.year));
+    if (params.month) q.set("month", String(params.month));
+    return apiFetch(`/admin/reports/monthly?${q}`);
   },
 
   async uploadIngredientImage(id: string, file: File): Promise<{ imageUrl: string }> {
