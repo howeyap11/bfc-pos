@@ -81,11 +81,11 @@ export function formatDiagnosticError(error: any): string {
 
 /**
  * Get backend API base URL from environment
- * Defaults to 127.0.0.1:3000 (NOT localhost to avoid DNS issues)
- * IMPORTANT: Fastify runs on port 3000 by default
+ * Defaults to 127.0.0.1:4000 (NOT localhost to avoid DNS issues)
+ * IMPORTANT: Fastify runs on port 4000, Next.js on 3000
  */
 export function getBackendUrl(): string {
-  return process.env.POS_API_BASE_URL || "http://127.0.0.1:3000";
+  return process.env.POS_API_BASE_URL || "http://127.0.0.1:4000";
 }
 
 /**

@@ -677,6 +677,14 @@ export const api = {
     });
   },
 
+  getTransactionsExport(params: { storeId?: string; from: string; to: string }): Promise<{ items: Record<string, unknown>[] }> {
+    const q = new URLSearchParams();
+    if (params.storeId) q.set("storeId", params.storeId);
+    q.set("from", params.from);
+    q.set("to", params.to);
+    return apiFetch(`/admin/transactions/export?${q}`);
+  },
+
   getTransactions(params: {
     storeId?: string;
     from?: string;
@@ -698,6 +706,16 @@ export const api = {
     if (params.date) q.set("date", params.date);
     return apiFetch(`/admin/reports/daily?${q}`);
   },
+  getAdminPinConfigured(): Promise<{ configured: boolean }> {
+    return apiFetch("/admin/settings/admin-pin");
+  },
+  setAdminPin(pin: string): Promise<{ ok: boolean }> {
+    return apiFetch("/admin/settings/admin-pin", {
+      method: "PUT",
+      body: JSON.stringify({ pin }),
+    });
+  },
+
   getMonthlyReport(params: { storeId?: string; year?: number; month?: number }): Promise<MonthlyReport> {
     const q = new URLSearchParams();
     if (params.storeId) q.set("storeId", params.storeId);

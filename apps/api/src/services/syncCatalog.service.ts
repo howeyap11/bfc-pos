@@ -16,6 +16,9 @@ type CloudItem = {
   isDrink?: boolean;
   serveVessel?: string | null;
   defaultSizeId?: string | null;
+  defaultSizeOptionId?: string | null;
+  supportsShots?: boolean;
+  defaultShots?: number | null;
   drinkSizeConfigs?: Array<{ mode: string; optionId: string; isEnabled?: boolean }>;
   drinkModeDefaults?: Array<{ mode: string; defaultOptionId: string }>;
 };
@@ -149,6 +152,15 @@ export async function syncCatalogFromCloud(
     }
 
     data = (await res.json()) as SyncResponse;
+
+    // Diagnostic: log sync payload counts (helps debug itemsUpserted: 0)
+    console.log("[SyncCatalog] Cloud response:", {
+      sinceVersion,
+      itemsReceived: data.items.length,
+      ingredientsReceived: data.ingredients.length,
+      recipeLinesReceived: data.recipeLines.length,
+      latestVersion: data.latestVersion,
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return {
@@ -182,7 +194,10 @@ export async function syncCatalogFromCloud(
             isDrink: i.isDrink ?? false,
             serveVessel: i.serveVessel ?? null,
             defaultSizeId: i.defaultSizeId ?? null,
+            defaultSizeOptionCloudId: i.defaultSizeOptionId ?? null,
             hasSizes: (i as any).hasSizes ?? false,
+            supportsShots: i.supportsShots ?? false,
+            defaultShots: i.defaultShots ?? null,
           },
           update: {
             name: i.name,
@@ -196,7 +211,10 @@ export async function syncCatalogFromCloud(
             isDrink: i.isDrink ?? false,
             serveVessel: i.serveVessel ?? null,
             defaultSizeId: i.defaultSizeId ?? null,
+            defaultSizeOptionCloudId: i.defaultSizeOptionId ?? null,
             hasSizes: (i as any).hasSizes ?? false,
+            supportsShots: i.supportsShots ?? false,
+            defaultShots: i.defaultShots ?? null,
           },
         });
         itemsUpserted++;
@@ -219,7 +237,12 @@ export async function syncCatalogFromCloud(
         }
       }
 
-      for (const c of data.categories ?? []) {
+      const validCategories = (data.categories ?? []).filter((c: { deletedAt?: string | null }) => !c.deletedAt);
+      const validCategoryIds = validCategories.map((c) => c.id);
+      await tx.cloudCategory.deleteMany({
+        where: { storeId, cloudId: { notIn: validCategoryIds } },
+      });
+      for (const c of validCategories) {
         await tx.cloudCategory.upsert({
           where: { cloudId: c.id },
           create: {
@@ -233,7 +256,13 @@ export async function syncCatalogFromCloud(
         });
       }
 
-      for (const sc of data.subCategories ?? []) {
+      const validSubCategories = (data.subCategories ?? []).filter((s: { deletedAt?: string | null }) => !s.deletedAt);
+      const validSubCategoryIds = validSubCategories.map((s) => s.id);
+      await tx.cloudSubCategory.deleteMany({
+        where: { storeId, cloudId: { notIn: validSubCategoryIds } },
+      });
+      for (const sc of validSubCategories) {
+        if (!validCategoryIds.includes(sc.categoryId)) continue;
         await tx.cloudSubCategory.upsert({
           where: { cloudId: sc.id },
           create: {

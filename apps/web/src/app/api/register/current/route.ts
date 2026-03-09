@@ -1,9 +1,11 @@
+import { getBackendUrl } from "@/lib/api-helpers";
+
 export async function GET(req: Request) {
   try {
     // Pass through x-staff-key from client request
     const staffKey = req.headers.get("x-staff-key") ?? "";
 
-    const upstream = await fetch(`http://127.0.0.1:3000/register/current`, {
+    const upstream = await fetch(`${getBackendUrl()}/register/current`, {
       cache: "no-store",
       headers: { "x-staff-key": staffKey },
     });

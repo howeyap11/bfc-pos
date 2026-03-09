@@ -4,7 +4,7 @@ export async function GET(req: Request) {
     const url = new URL(req.url);
     const tab = url.searchParams.get("tab") ?? "qr";
 
-    const backendBase = process.env.POS_API_BASE_URL || "http://127.0.0.1:3000";
+    const backendBase = process.env.POS_API_BASE_URL || "http://127.0.0.1:4000";
     const backendUrl = `${backendBase}/pos/orders?tab=${tab}`;
 
     const upstream = await fetch(backendUrl, {

@@ -259,7 +259,7 @@ export default function SopClient() {
                     {completion.photoPath && (
                       <div style={{ marginTop: 8 }}>
                         <a
-                          href={`http://127.0.0.1:3000/${completion.photoPath}`}
+                          href={`${process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:4000"}/${completion.photoPath}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           style={{ color: "#007bff", fontSize: 13 }}

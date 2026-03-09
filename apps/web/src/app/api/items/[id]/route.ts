@@ -2,7 +2,8 @@ import { proxyToBackend } from "@/lib/api-helpers";
 
 export async function GET(
   _req: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
-  return proxyToBackend(`/items/${params.id}`);
+  const { id } = await params;
+  return proxyToBackend(`/items/${id}`);
 }

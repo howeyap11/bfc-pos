@@ -1,5 +1,6 @@
 // apps/api/src/routes/staff.ts
 import type { FastifyPluginAsync } from "fastify";
+import { verifyAdminPin } from "../services/adminPin.service.js";
 
 const STORE_ID = "store_1";
 
@@ -24,8 +25,7 @@ export const staffRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // POST /staff/verify-admin-pin - Verify admin PIN without changing session
-  // Used for admin gates (transactions, refunds) to verify admin access
-  // Does NOT return or change staffKey - only validates admin role + PIN
+  // Cloud-first when CLOUD_URL + STORE_SYNC_SECRET; else local Staff (ADMIN/MANAGER)
   app.post("/staff/verify-admin-pin", async (req, reply) => {
     const body = req.body as { pin: string };
 
@@ -33,30 +33,17 @@ export const staffRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(400).send({ error: "MISSING_PIN" });
     }
 
-    // Find admin staff with this PIN
-    const staff = await app.prisma.staff.findFirst({
-      where: {
-        passcode: body.pin,
-        role: { in: ["ADMIN", "MANAGER"] },
-        isActive: true,
-      },
-      select: {
-        id: true,
-        name: true,
-        role: true,
-      },
-    });
+    const result = await verifyAdminPin(body.pin, app.prisma);
 
-    if (!staff) {
+    if (!result.valid) {
       return reply.code(401).send({ error: "INVALID_PIN", message: "Invalid admin PIN" });
     }
 
-    // Return success with staff info (no key)
     return {
       ok: true,
-      staffId: staff.id,
-      name: staff.name,
-      role: staff.role,
+      staffId: result.staffId ?? "cloud-admin",
+      name: result.name ?? "Admin",
+      role: result.role ?? "ADMIN",
     };
   });
 

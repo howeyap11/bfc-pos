@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { z } from "zod";
+import { verifyPassword } from "../lib/password.js";
 
 const syncSecret = process.env.STORE_SYNC_SECRET ?? "";
 
@@ -39,6 +40,9 @@ export async function syncRoutes(app: FastifyInstance) {
         return { error: "INVALID_SINCE_VERSION" };
       }
 
+      // Bootstrap (sinceVersion 0): return all entities. Incremental: only version > sinceVersion.
+      const versionFilter = sinceVersion === 0 ? { gte: 0 } : { gt: sinceVersion };
+
       const [
         catalogVersion,
         items,
@@ -56,14 +60,14 @@ export async function syncRoutes(app: FastifyInstance) {
       ] = await Promise.all([
         app.prisma.catalogVersion.findUnique({ where: { id: 1 } }),
         app.prisma.menuItem.findMany({
-          where: { version: { gt: sinceVersion } },
+          where: { version: versionFilter },
           include: {
             drinkSizeConfigs: { include: { option: true } },
             drinkModeDefaults: { include: { option: true } },
           },
         }),
-        app.prisma.ingredient.findMany({ where: { version: { gt: sinceVersion } } }),
-        app.prisma.recipeLine.findMany({ where: { version: { gt: sinceVersion } } }),
+        app.prisma.ingredient.findMany({ where: { version: versionFilter } }),
+        app.prisma.recipeLine.findMany({ where: { version: versionFilter } }),
         app.prisma.category.findMany({ orderBy: { sortOrder: "asc" } }),
         app.prisma.subCategory.findMany({ orderBy: { sortOrder: "asc" } }),
         app.prisma.menuOptionGroup.findMany(),
@@ -197,6 +201,32 @@ export async function syncRoutes(app: FastifyInstance) {
       app.log.error({ err, sourceTransactionId: d.sourceTransactionId }, "[Sync] Failed to import transaction");
       reply.code(500);
       return { error: "IMPORT_FAILED", message: "Failed to import transaction" };
+    }
+  });
+
+  // Verify admin PIN (for POS - requires STORE_SYNC_SECRET)
+  app.post("/verify-admin-pin", async (req: FastifyRequest, reply: FastifyReply) => {
+    if (syncSecret) {
+      const key = (req.headers["x-store-sync-key"] as string) || "";
+      if (key !== syncSecret) {
+        reply.code(401);
+        return { valid: false, error: "UNAUTHORIZED" };
+      }
+    }
+    const parsed = z.object({ pin: z.string() }).safeParse(req.body);
+    if (!parsed.success || !parsed.data.pin) {
+      reply.code(400);
+      return { valid: false, error: "INVALID_BODY" };
+    }
+    try {
+      const row = await app.prisma.storeSetting.findUnique({ where: { id: "1" } });
+      if (!row?.adminPinHash) {
+        return { valid: false };
+      }
+      const valid = await verifyPassword(parsed.data.pin, row.adminPinHash);
+      return { valid };
+    } catch {
+      return { valid: false };
     }
   });
 }

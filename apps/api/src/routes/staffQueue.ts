@@ -1,10 +1,12 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
-import { Prisma, PrepArea, OrderStatus } from "@prisma/client";
+import type { Prisma } from "@prisma/client";
 
 const QueueQuery = z.object({
   area: z.enum(["BAR", "KITCHEN"]),
 });
+
+const ACTIVE_STATUSES = ["PLACED", "IN_PREP", "READY"] as const;
 
 export const staffQueueRoutes: FastifyPluginAsync = async (app) => {
   app.get("/queue", { preHandler: app.requireStaff }, async (req, reply) => {
@@ -14,20 +16,13 @@ export const staffQueueRoutes: FastifyPluginAsync = async (app) => {
     }
     const { area } = parsed.data;
 
-    // NOTE:
-    // - We hide ACCEPTED in UI, but DB still may contain it. We can exclude it from queue.
-    // - Queue statuses: pending(PLACED), IN_PREP, READY
-    const activeStatuses: OrderStatus[] = [OrderStatus.PLACED, OrderStatus.IN_PREP, OrderStatus.READY];
-
-    // Build WHERE without union typing
     const where: Prisma.OrderWhereInput = {
-      status: { in: activeStatuses },
+      status: { in: [...ACTIVE_STATUSES] },
     };
 
-    // Kitchen should only show orders that contain kitchen items
     if (area === "KITCHEN") {
       where.items = {
-        some: { item: { category: { prepArea: PrepArea.KITCHEN } } },
+        some: { item: { category: { prepArea: "KITCHEN" } } },
       };
     }
 
@@ -38,7 +33,7 @@ export const staffQueueRoutes: FastifyPluginAsync = async (app) => {
         table: { include: { zone: true } },
         items: {
           ...(area === "KITCHEN"
-            ? { where: { item: { category: { prepArea: PrepArea.KITCHEN } } } }
+            ? { where: { item: { category: { prepArea: "KITCHEN" } } } }
             : {}),
           include: {
             item: { include: { category: true } },

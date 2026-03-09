@@ -1,11 +1,13 @@
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+import { getBackendUrl } from "@/lib/api-helpers";
+
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const { id } = await params;
     const body = await req.text();
     
-    // Pass through x-staff-key from client request
     const staffKey = req.headers.get("x-staff-key") ?? "";
 
-    const upstream = await fetch(`http://127.0.0.1:3000/pos/transactions/${params.id}/void`, {
+    const upstream = await fetch(`${getBackendUrl()}/pos/transactions/${id}/void`, {
       method: "POST",
       headers: {
         "content-type": "application/json",

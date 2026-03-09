@@ -1,9 +1,11 @@
+import { getBackendUrl } from "@/lib/api-helpers";
+
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
     const area = url.searchParams.get("area") ?? "";
 
-    const upstream = await fetch(`http://127.0.0.1:3000/queue?area=${area}`, {
+    const upstream = await fetch(`${getBackendUrl()}/queue?area=${area}`, {
       cache: "no-store",
     });
 

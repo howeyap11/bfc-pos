@@ -258,6 +258,13 @@ model TransactionTypeSetting {
   updatedAt       DateTime @updatedAt
 }
 
+// Single-row store settings (id=1)
+model StoreSetting {
+  id         String   @id @default("1")
+  adminPinHash String?
+  updatedAt  DateTime @updatedAt
+}
+
 // Synced from POS for Cloud Admin reporting
 model SyncedTransaction {
   id                   String    @id @default(cuid())

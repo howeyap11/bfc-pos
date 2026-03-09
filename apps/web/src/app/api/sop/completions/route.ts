@@ -1,3 +1,5 @@
+import { getBackendUrl } from "@/lib/api-helpers";
+
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
@@ -5,7 +7,7 @@ export async function GET(req: Request) {
     // Pass through x-staff-key from client request
     const staffKey = req.headers.get("x-staff-key") ?? "";
 
-    const upstream = await fetch(`http://127.0.0.1:3000/sop/completions?${url.searchParams}`, {
+    const upstream = await fetch(`${getBackendUrl()}/sop/completions?${url.searchParams}`, {
       cache: "no-store",
       headers: { "x-staff-key": staffKey },
     });
@@ -29,7 +31,7 @@ export async function POST(req: Request) {
     const staffKey = req.headers.get("x-staff-key") ?? "";
     const formData = await req.formData();
 
-    const upstream = await fetch("http://127.0.0.1:3000/sop/completions", {
+    const upstream = await fetch(`${getBackendUrl()}/sop/completions`, {
       method: "POST",
       headers: { "x-staff-key": staffKey },
       body: formData,

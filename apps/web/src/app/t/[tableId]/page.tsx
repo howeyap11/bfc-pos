@@ -7,7 +7,8 @@ type MenuCategory = {
 };
 
 async function getMenu(): Promise<MenuCategory[]> {
-  const res = await fetch("http://127.0.0.1:3001/api/menu", { cache: "no-store" });
+  const base = process.env.POS_API_BASE_URL || "http://127.0.0.1:4000";
+  const res = await fetch(`${base}/menu`, { cache: "no-store" });
   const text = await res.text();
   if (!res.ok) throw new Error(`Menu fetch failed: ${res.status} ${res.statusText} - ${text}`);
   return JSON.parse(text) as MenuCategory[];

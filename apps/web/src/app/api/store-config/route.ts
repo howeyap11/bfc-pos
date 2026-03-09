@@ -1,7 +1,6 @@
 // apps/web/src/app/api/store-config/route.ts
 import { NextRequest, NextResponse } from "next/server";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+import { getBackendUrl } from "@/lib/api-helpers";
 
 // Default fallback config
 const DEFAULT_CONFIG = {
@@ -13,9 +12,10 @@ const DEFAULT_CONFIG = {
 
 export async function GET(req: NextRequest) {
   try {
-    console.log("[API /store-config] Fetching from backend:", `${API_BASE}/store-config`);
+    const backend = getBackendUrl();
+    console.log("[API /store-config] Fetching from backend:", `${backend}/store-config`);
     
-    const res = await fetch(`${API_BASE}/store-config`, {
+    const res = await fetch(`${backend}/store-config`, {
       method: "GET",
       headers: {
         "content-type": "application/json",
@@ -58,7 +58,7 @@ export async function PUT(req: NextRequest) {
     // Pass through x-staff-key from client request
     const staffKey = req.headers.get("x-staff-key") ?? "";
 
-    const res = await fetch(`${API_BASE}/store-config`, {
+    const res = await fetch(`${getBackendUrl()}/store-config`, {
       method: "PUT",
       headers: {
         "content-type": "application/json",

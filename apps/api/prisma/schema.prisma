@@ -1017,7 +1017,10 @@ model CloudMenuItem {
   isDrink          Boolean   @default(false)
   serveVessel      String?   // PLASTIC_CUP | GLASS | OTHER
   defaultSizeId    String?   // cloud MenuItemSize.id
+  defaultSizeOptionCloudId String?   // cloud MenuOption.id for Sizes group
   hasSizes         Boolean   @default(false)
+  supportsShots    Boolean   @default(false)
+  defaultShots     Int?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 

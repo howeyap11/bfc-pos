@@ -1,7 +1,6 @@
 // apps/web/src/app/api/staff/route.ts
 import { NextResponse } from "next/server";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000";
+import { getBackendUrl } from "@/lib/api-helpers";
 
 // Default fallback staff list for development (includes passcode and key for local validation)
 const DEFAULT_STAFF = [
@@ -12,9 +11,10 @@ const DEFAULT_STAFF = [
 
 export async function GET() {
   try {
-    console.log("[Staff API] Fetching from:", `${API_BASE}/staff`);
+    const backend = getBackendUrl();
+    console.log("[Staff API] Fetching from:", `${backend}/staff`);
     
-    const res = await fetch(`${API_BASE}/staff`, {
+    const res = await fetch(`${backend}/staff`, {
       method: "GET",
       headers: { "content-type": "application/json" },
       cache: "no-store",

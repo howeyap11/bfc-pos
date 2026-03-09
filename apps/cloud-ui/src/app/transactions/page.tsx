@@ -1,5 +1,10 @@
-import { redirect } from "next/navigation";
+import { Suspense } from "react";
+import { TransactionsContent } from "./TransactionsContent";
 
 export default function TransactionsPage() {
-  redirect("/reports?tab=Transactions");
+  return (
+    <Suspense fallback={<div className="p-6 text-white/70">Loading...</div>}>
+      <TransactionsContent />
+    </Suspense>
+  );
 }

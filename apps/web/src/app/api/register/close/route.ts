@@ -1,3 +1,5 @@
+import { getBackendUrl } from "@/lib/api-helpers";
+
 export async function POST(req: Request) {
   try {
     const body = await req.text();
@@ -5,7 +7,7 @@ export async function POST(req: Request) {
     // Pass through x-staff-key from client request
     const staffKey = req.headers.get("x-staff-key") ?? "";
 
-    const upstream = await fetch(`http://127.0.0.1:3000/register/close`, {
+    const upstream = await fetch(`${getBackendUrl()}/register/close`, {
       method: "POST",
       headers: {
         "content-type": "application/json",

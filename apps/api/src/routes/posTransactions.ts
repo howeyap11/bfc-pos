@@ -9,6 +9,7 @@
 import type { FastifyInstance } from "fastify";
 import type { MilkType, ShotsPricingMode } from "@prisma/client";
 import { requireStaffHook } from "../plugins/staffGuard";
+import { verifyAdminPin } from "../services/adminPin.service";
 import { enqueueOutbox } from "../services/outbox.service";
 import { ensureItemForCloudId } from "../services/catalogCache.service";
 
@@ -621,16 +622,14 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       lineIds: string[];
     };
 
-    // Validate admin PIN
     const adminPin = body?.adminPin?.trim();
     if (!adminPin) {
       reply.code(400);
       return { error: "MISSING_ADMIN_PIN" };
     }
 
-    // Check if staff is admin (hardcoded PIN for now, can be enhanced)
-    const ADMIN_PIN = "1234";
-    if (adminPin !== ADMIN_PIN) {
+    const pinResult = await verifyAdminPin(adminPin, app.prisma);
+    if (!pinResult.valid) {
       reply.code(403);
       return { error: "INVALID_ADMIN_PIN" };
     }

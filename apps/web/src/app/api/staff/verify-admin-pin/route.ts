@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000";
+import { getBackendUrl } from "@/lib/api-helpers";
 
 export async function POST(req: NextRequest) {
   try {
@@ -8,7 +7,7 @@ export async function POST(req: NextRequest) {
     
     console.log("[Admin Verify API] Verifying admin PIN");
 
-    const res = await fetch(`${API_BASE}/staff/verify-admin-pin`, {
+    const res = await fetch(`${getBackendUrl()}/staff/verify-admin-pin`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),

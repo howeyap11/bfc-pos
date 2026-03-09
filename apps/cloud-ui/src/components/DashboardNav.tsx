@@ -11,7 +11,7 @@ const nav = [
   { href: "/ingredients", label: "Ingredients", icon: IconFlask },
   { href: "/inventory", label: "Inventory", icon: IconPackage },
   { href: "/reports", label: "Reports", icon: IconChart },
-  { href: "/menu-settings/sizes", label: "Menu Settings", icon: IconSettings },
+  { href: "/menu-settings/sizes", label: "Menu Settings", icon: IconSettings, matchPrefix: "/menu-settings" },
   { href: "/settings", label: "Settings", icon: IconSettings },
 ];
 
@@ -76,9 +76,11 @@ function IconLogout({ className }: { className?: string }) {
 export function DashboardNav() {
   const pathname = usePathname();
 
-  function isActive(href: string) {
-    if (href === "/dashboard") return pathname === "/dashboard";
-    return pathname === href || pathname.startsWith(href + "/");
+  function isActive(item: { href: string; matchPrefix?: string }) {
+    const prefix = item.matchPrefix ?? item.href;
+    if (item.href === "/dashboard") return pathname === "/dashboard";
+    if (item.matchPrefix) return pathname === prefix || pathname.startsWith(prefix + "/");
+    return pathname === item.href || pathname.startsWith(item.href + "/");
   }
 
   return (
@@ -93,8 +95,9 @@ export function DashboardNav() {
           <span className="font-semibold text-white/95">Cloud Admin</span>
         </div>
         <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-3">
-          {nav.map(({ href, label, icon: Icon }) => {
-            const active = isActive(href);
+          {nav.map((item) => {
+            const { href, label, icon: Icon } = item;
+            const active = isActive(item);
             return (
               <Link
                 key={href}

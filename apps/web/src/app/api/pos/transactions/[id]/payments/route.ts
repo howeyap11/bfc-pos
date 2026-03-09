@@ -1,15 +1,17 @@
 import { buildProxyHeaders, logProxyRequest } from "@/lib/proxyHelpers";
+import { getBackendUrl } from "@/lib/api-helpers";
 
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const { id } = await params;
     const body = await req.text();
     
     logProxyRequest("POST /api/pos/transactions/:id/payments", req, {
-      transactionId: params.id,
+      transactionId: id,
       bodyLength: body.length,
     });
 
-    const upstream = await fetch(`http://127.0.0.1:3000/pos/transactions/${params.id}/payments`, {
+    const upstream = await fetch(`${getBackendUrl()}/pos/transactions/${id}/payments`, {
       method: "POST",
       headers: buildProxyHeaders(req),
       body,

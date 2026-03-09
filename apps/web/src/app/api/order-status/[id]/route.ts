@@ -1,8 +1,11 @@
-export async function PATCH(req: Request, { params }: { params: { id: string } }) {
+import { getBackendUrl } from "@/lib/api-helpers";
+
+export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const { id } = await params;
     const body = await req.text();
 
-    const upstream = await fetch(`http://127.0.0.1:3000/orders/${params.id}/status`, {
+    const upstream = await fetch(`${getBackendUrl()}/orders/${id}/status`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body,

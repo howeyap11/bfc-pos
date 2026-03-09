@@ -1,4 +1,5 @@
 import { buildProxyHeaders, logProxyRequest } from "@/lib/proxyHelpers";
+import { getBackendUrl } from "@/lib/api-helpers";
 
 export async function POST(req: Request) {
   try {
@@ -6,7 +7,7 @@ export async function POST(req: Request) {
     
     logProxyRequest("POST /api/pos/transactions", req);
 
-    const upstream = await fetch(`http://127.0.0.1:3000/pos/transactions`, {
+    const upstream = await fetch(`${getBackendUrl()}/pos/transactions`, {
       method: "POST",
       headers: buildProxyHeaders(req),
       body,

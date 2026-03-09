@@ -1,11 +1,11 @@
 // apps/web/src/app/api/qr/orders/[id]/accept/route.ts
 import { NextRequest, NextResponse } from "next/server";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+const API_BASE = process.env.POS_API_BASE_URL || "http://127.0.0.1:4000";
 
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const { id } = params;
+    const { id } = await params;
     
     // Pass through x-staff-key from client request
     const staffKey = req.headers.get("x-staff-key") ?? "";

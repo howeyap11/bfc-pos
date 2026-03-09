@@ -1,3 +1,5 @@
+import { getBackendUrl } from "@/lib/api-helpers";
+
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
@@ -6,7 +8,7 @@ export async function GET(req: Request) {
     // Pass through x-staff-key from client request
     const staffKey = req.headers.get("x-staff-key") ?? "";
 
-    const upstream = await fetch(`http://127.0.0.1:3000/pos/transactions?limit=${limit}`, {
+    const upstream = await fetch(`${getBackendUrl()}/pos/transactions?limit=${limit}`, {
       cache: "no-store",
       headers: { "x-staff-key": staffKey },
     });

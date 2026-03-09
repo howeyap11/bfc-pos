@@ -1,8 +1,10 @@
+import { getBackendUrl } from "@/lib/api-helpers";
+
 export async function POST(req: Request) {
   try {
     const body = await req.text();
 
-    const upstream = await fetch("http://127.0.0.1:3000/orders", {
+    const upstream = await fetch(`${getBackendUrl()}/orders`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body,

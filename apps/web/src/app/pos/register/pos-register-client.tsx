@@ -1697,6 +1697,7 @@ export default function PosRegisterClient() {
       
       const data = await fetchJson(`/api/qr/orders/${orderId}/accept`, {
         method: "POST",
+        headers: activeStaff?.staffKey ? { "x-staff-key": activeStaff.staffKey } : {},
       });
       
       if (data.kind === "PAYMONGO_DONE") {
@@ -1764,13 +1765,6 @@ export default function PosRegisterClient() {
   // Safe JSON fetch helper
   async function fetchJson(url: string, init?: RequestInit) {
     const staffKeyHeader = init?.headers ? (init.headers as any)["x-staff-key"] : undefined;
-    console.log("[fetchJson] DEBUG", {
-      url,
-      hasStaffKeyHeader: !!staffKeyHeader,
-      staffKeyPreview: staffKeyHeader ? `${staffKeyHeader.slice(0, 6)}...` : "NONE",
-      allHeaders: init?.headers,
-    });
-
     const res = await fetch(url, init);
     const text = await res.text();
     

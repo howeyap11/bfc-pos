@@ -1,7 +1,6 @@
 // apps/web/src/app/api/staff/login/route.ts
 import { NextRequest, NextResponse } from "next/server";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000";
+import { getBackendUrl } from "@/lib/api-helpers";
 
 export async function POST(req: NextRequest) {
   try {
@@ -9,7 +8,7 @@ export async function POST(req: NextRequest) {
     
     console.log("[Staff Login API] Attempting login for staffId:", body.staffId);
 
-    const res = await fetch(`${API_BASE}/staff/login`, {
+    const res = await fetch(`${getBackendUrl()}/staff/login`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -31,7 +30,7 @@ export async function POST(req: NextRequest) {
       // Return detailed diagnostic error
       return NextResponse.json({
         error: "Backend returned invalid response",
-        backendUrl: `${API_BASE}/staff/login`,
+        backendUrl: `${getBackendUrl()}/staff/login`,
         method: "POST",
         status: res.status,
         contentType: res.headers.get("content-type"),

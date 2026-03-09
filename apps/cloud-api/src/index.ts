@@ -26,7 +26,7 @@ app.setErrorHandler((err: unknown, _req, reply) => {
 await app.register(cors, {
   origin: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Store-Sync-Key"],
 });
 await app.register(jwt, {
   secret: process.env.JWT_SECRET ?? "dev-secret-change-in-production",

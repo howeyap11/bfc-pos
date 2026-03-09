@@ -6,11 +6,13 @@ import cors from "@fastify/cors";
 import prismaPlugin from "./plugins/prisma";
 import inventoryServicePlugin from "./plugins/inventoryService";
 import { staffGuardPlugin } from "./plugins/staffGuard";
+import { staffRoutes } from "./routes/staff";
 import { staffQueueRoutes } from "./routes/staffQueue";
 import { posOrdersRoutes } from "./routes/posOrders";
 import { orderStatusRoutes } from "./routes/orderStatus";
 import { functionRoomRoutes } from "./routes/functionRoom";
 import { orderCancelRoutes } from "./routes/orderCancel";
+import { qrAcceptRoutes } from "./routes/qrAccept";
 import { registerRoutes } from "./routes/register";
 import { posTransactionsRoutes } from "./routes/posTransactions";
 import { drawerRoutes } from "./routes/drawer";
@@ -26,12 +28,15 @@ await app.register(prismaPlugin);
 await app.register(inventoryServicePlugin);
 await app.register(staffGuardPlugin);
 
+// Staff routes (some public: /staff, /staff/login, /staff/verify-admin-pin)
+await app.register(staffRoutes);
 // Staff routes (protected by x-staff-key inside the route files)
 await app.register(staffQueueRoutes);
 await app.register(posOrdersRoutes);
 await app.register(orderStatusRoutes);
 await app.register(functionRoomRoutes);
 await app.register(orderCancelRoutes);
+await app.register(qrAcceptRoutes);
 await app.register(registerRoutes);
 await app.register(posTransactionsRoutes);
 await app.register(drawerRoutes);
@@ -183,6 +188,7 @@ app.get("/items/:id", async (req) => {
       };
     }).filter(Boolean) as Array<{ group: { id: string; name: string; type: "SINGLE" | "MULTI"; minSelect: number; maxSelect: number; isRequired: boolean; options: Array<{ id: string; name: string; priceDelta: number; isDefault: boolean }> } }>;
 
+    const defaultShots = (cloud as { defaultShots?: number | null }).defaultShots ?? 0;
     return {
       id: cloud.cloudId,
       name: cloud.name,
@@ -193,8 +199,9 @@ app.get("/items/:id", async (req) => {
       serveVessel: cloud.serveVessel,
       defaultSizeOptionId: (cloud as { defaultSizeOptionCloudId?: string | null }).defaultSizeOptionCloudId ?? null,
       defaultMilk: "FULL_CREAM",
-      defaultShots12oz: 0,
-      defaultShots16oz: 0,
+      supportsShots: (cloud as { supportsShots?: boolean }).supportsShots ?? false,
+      defaultShots12oz: defaultShots,
+      defaultShots16oz: defaultShots,
       itemOptionGroups,
       hasSizes: hasSizes || undefined,
       sizesByMode: hasSizes ? sizesByMode : undefined,
@@ -357,7 +364,9 @@ app.post("/orders", async (req) => {
 // Those are provided by staffQueueRoutes + orderStatusRoutes
 
 // Listen (MUST be last)
-await app.listen({ host: "0.0.0.0", port: 3000 });
+// Use PORT env for local dev (default 4000) so web can use 3000
+const port = parseInt(process.env.PORT ?? "4000", 10);
+await app.listen({ host: "0.0.0.0", port });
 
 // Sync catalog from cloud on startup (non-blocking; fails gracefully if CLOUD_URL unset or cloud unreachable)
 syncCatalogFromCloud(app.prisma, "default")
