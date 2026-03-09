@@ -46,10 +46,10 @@ export async function syncRoutes(app: FastifyInstance) {
       const [
         catalogVersion,
         items,
-        addOns,
-        substitutes,
-        menuItemAddOns,
-        menuItemSubstitutes,
+        addOnGroups,
+        substituteGroups,
+        menuItemAddOnGroups,
+        menuItemSubstituteGroups,
         ingredientsVersioned,
         recipeLinesVersioned,
         recipeLineSizesVersioned,
@@ -64,6 +64,7 @@ export async function syncRoutes(app: FastifyInstance) {
         menuItemSizePrices,
         transactionTypes,
         shotPricingRules,
+        storeSetting,
       ] = await Promise.all([
         app.prisma.catalogVersion.findUnique({ where: { id: 1 } }),
         app.prisma.menuItem.findMany({
@@ -73,10 +74,10 @@ export async function syncRoutes(app: FastifyInstance) {
             drinkModeDefaults: { include: { option: true } },
           },
         }),
-        app.prisma.addOn.findMany({ where: { isActive: true }, orderBy: { sortOrder: "asc" } }),
-        app.prisma.substitute.findMany({ where: { isActive: true }, orderBy: { sortOrder: "asc" } }),
-        app.prisma.menuItemAddOn.findMany(),
-        app.prisma.menuItemSubstitute.findMany(),
+        app.prisma.addOnGroup.findMany({ where: { isActive: true }, include: { options: { where: { isActive: true }, include: { recipeLines: { include: { ingredient: true } } }, orderBy: { sortOrder: "asc" } } }, orderBy: { sortOrder: "asc" } }),
+        app.prisma.substituteGroup.findMany({ where: { isActive: true }, include: { options: { where: { isActive: true }, include: { recipeLines: { include: { ingredient: true } } }, orderBy: { sortOrder: "asc" } } }, orderBy: { sortOrder: "asc" } }),
+        app.prisma.menuItemAddOnGroup.findMany(),
+        app.prisma.menuItemSubstituteGroup.findMany(),
         app.prisma.ingredient.findMany({ where: { version: versionFilter } }),
         app.prisma.recipeLine.findMany({ where: { version: versionFilter } }),
         app.prisma.recipeLineSize.findMany({ where: { version: versionFilter } }),
@@ -95,6 +96,7 @@ export async function syncRoutes(app: FastifyInstance) {
         app.prisma.menuItemSizePrice.findMany(),
         app.prisma.transactionTypeSetting.findMany({ where: { isActive: true }, orderBy: { sortOrder: "asc" } }),
         app.prisma.shotPricingRule.findMany({ where: { isActive: true }, orderBy: { sortOrder: "asc" } }),
+        app.prisma.storeSetting.findUnique({ where: { id: "1" } }),
       ]);
 
       const latestVersion = catalogVersion?.latestVersion ?? 0;
@@ -153,6 +155,7 @@ export async function syncRoutes(app: FastifyInstance) {
           deletedAt: i.deletedAt?.toISOString() ?? null,
           defaultSizeId: i.defaultSizeId,
           defaultSizeOptionId: i.defaultSizeOptionId,
+          defaultSubstituteOptionId: (i as { defaultSubstituteOptionId?: string | null }).defaultSubstituteOptionId ?? null,
           drinkSizeConfigs: i.drinkSizeConfigs?.map((c) => ({
             id: c.id,
             menuItemId: c.menuItemId,
@@ -219,10 +222,47 @@ export async function syncRoutes(app: FastifyInstance) {
           isActive: s.isActive,
           sortOrder: s.sortOrder,
         })),
-        addOns: addOns.map((a) => ({ id: a.id, name: a.name, priceCents: a.priceCents, sortOrder: a.sortOrder })),
-        substitutes: substitutes.map((s) => ({ id: s.id, name: s.name, priceCents: s.priceCents, sortOrder: s.sortOrder })),
-        menuItemAddOns: menuItemAddOns.map((l) => ({ itemId: l.itemId, addOnId: l.addOnId })),
-        menuItemSubstitutes: menuItemSubstitutes.map((l) => ({ itemId: l.itemId, substituteId: l.substituteId })),
+        storeSettings: storeSetting ? { adminPinHash: storeSetting.adminPinHash ?? null } : undefined,
+        addOnGroups: addOnGroups.map((g) => ({
+          id: g.id,
+          name: g.name,
+          isActive: g.isActive,
+          sortOrder: g.sortOrder,
+          options: g.options.map((o) => ({
+            id: o.id,
+            groupId: o.groupId,
+            name: o.name,
+            priceCents: o.priceCents,
+            isActive: o.isActive,
+            sortOrder: o.sortOrder,
+            recipeLines: o.recipeLines.map((r) => ({
+              ingredientId: r.ingredientId,
+              qtyPerItem: r.qtyPerItem.toString(),
+              unitCode: r.unitCode,
+            })),
+          })),
+        })),
+        substituteGroups: substituteGroups.map((g) => ({
+          id: g.id,
+          name: g.name,
+          isActive: g.isActive,
+          sortOrder: g.sortOrder,
+          options: g.options.map((o) => ({
+            id: o.id,
+            groupId: o.groupId,
+            name: o.name,
+            priceCents: o.priceCents,
+            isActive: o.isActive,
+            sortOrder: o.sortOrder,
+            recipeLines: o.recipeLines.map((r) => ({
+              ingredientId: r.ingredientId,
+              qtyPerItem: r.qtyPerItem.toString(),
+              unitCode: r.unitCode,
+            })),
+          })),
+        })),
+        menuItemAddOnGroups: menuItemAddOnGroups.map((l) => ({ itemId: l.itemId, groupId: l.groupId })),
+        menuItemSubstituteGroups: menuItemSubstituteGroups.map((l) => ({ itemId: l.itemId, groupId: l.groupId })),
       };
     }
   );
