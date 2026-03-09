@@ -38,6 +38,9 @@ export async function adminSyncRoutes(app: FastifyInstance) {
         itemsUpserted: outcome.result.itemsUpserted,
         ingredientsUpserted: outcome.result.ingredientsUpserted,
         recipeLinesUpserted: outcome.result.recipeLinesUpserted,
+        recipeLineSizesUpserted: outcome.result.recipeLineSizesUpserted,
+        transactionTypesUpserted: outcome.result.transactionTypesUpserted,
+        shotPricingRulesUpserted: outcome.result.shotPricingRulesUpserted,
       };
     }
   );

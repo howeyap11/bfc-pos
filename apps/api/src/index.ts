@@ -105,6 +105,34 @@ app.get("/menu", async () => {
   return result;
 });
 
+// Transaction types (For Here, To Go, FoodPanda, etc.)
+app.get("/transaction-types", async () => {
+  const rows = await app.prisma.cloudTransactionType.findMany({
+    where: { storeId: "store_1", isActive: true },
+    orderBy: { sortOrder: "asc" },
+  });
+  return rows.map((t) => ({
+    id: t.cloudId,
+    code: t.code,
+    label: t.label,
+    priceDeltaCents: t.priceDeltaCents,
+  }));
+});
+
+// Shot pricing rules (bundle pricing for extra shots)
+app.get("/shot-pricing-rules", async () => {
+  const rows = await app.prisma.cloudShotPricingRule.findMany({
+    where: { storeId: "store_1", isActive: true },
+    orderBy: { sortOrder: "asc" },
+  });
+  return rows.map((r) => ({
+    id: r.cloudId,
+    name: r.name,
+    shotsPerBundle: r.shotsPerBundle,
+    priceCentsPerBundle: r.priceCentsPerBundle,
+  }));
+});
+
 app.get("/items/:id", async (req) => {
   const { id } = req.params as { id: string };
 
@@ -119,13 +147,25 @@ app.get("/items/:id", async (req) => {
       where: { menuItemCloudId: cloud.cloudId, storeId },
     });
     const groupCloudIds = [...new Set(links.map((l) => l.groupCloudId))];
-    const groups = await app.prisma.cloudMenuOptionGroup.findMany({
-      where: { cloudId: { in: groupCloudIds }, storeId },
-    });
+    const [groups, sections] = await Promise.all([
+      app.prisma.cloudMenuOptionGroup.findMany({
+        where: { cloudId: { in: groupCloudIds }, storeId },
+      }),
+      app.prisma.cloudMenuOptionGroupSection.findMany({
+        where: { optionGroupCloudId: { in: groupCloudIds }, storeId },
+        orderBy: { sortOrder: "asc" },
+      }),
+    ]);
     const options = await app.prisma.cloudMenuOption.findMany({
       where: { groupCloudId: { in: groupCloudIds }, storeId },
     });
     const groupMap = new Map(groups.map((g) => [g.cloudId, g]));
+    const sectionsByGroup = new Map<string, typeof sections>();
+    for (const s of sections) {
+      const list = sectionsByGroup.get(s.optionGroupCloudId) ?? [];
+      list.push(s);
+      sectionsByGroup.set(s.optionGroupCloudId, list);
+    }
     const optionsByGroup = new Map<string, typeof options>();
     for (const o of options) {
       const list = optionsByGroup.get(o.groupCloudId) ?? [];
@@ -168,11 +208,13 @@ app.get("/items/:id", async (req) => {
     const itemOptionGroups = links.map((link) => {
       const g = groupMap.get(link.groupCloudId);
       if (!g) return null;
+      const groupSections = (sectionsByGroup.get(g.cloudId) ?? []).map((s) => ({ id: s.cloudId, key: s.key, label: s.label, sortOrder: s.sortOrder }));
+      const defaultOptCloudId = (g as { defaultOptionCloudId?: string | null }).defaultOptionCloudId ?? (cloud as { defaultSizeOptionCloudId?: string | null }).defaultSizeOptionCloudId;
       const opts = (optionsByGroup.get(g.cloudId) ?? []).map((o) => ({
         id: o.cloudId,
         name: o.name,
         priceDelta: o.priceDelta,
-        isDefault: (cloud as { defaultSizeOptionCloudId?: string | null }).defaultSizeOptionCloudId === o.cloudId && g.isSizeGroup,
+        isDefault: defaultOptCloudId === o.cloudId,
       }));
       return {
         group: {
@@ -183,12 +225,27 @@ app.get("/items/:id", async (req) => {
           maxSelect: g.multi ? 999 : 1,
           isRequired: g.required,
           isSizeGroup: g.isSizeGroup,
+          defaultOptionId: defaultOptCloudId ?? null,
+          sections: groupSections.length > 0 ? groupSections : undefined,
           options: opts,
         },
       };
-    }).filter(Boolean) as Array<{ group: { id: string; name: string; type: "SINGLE" | "MULTI"; minSelect: number; maxSelect: number; isRequired: boolean; options: Array<{ id: string; name: string; priceDelta: number; isDefault: boolean }> } }>;
+    }).filter(Boolean) as Array<{ group: { id: string; name: string; type: "SINGLE" | "MULTI"; minSelect: number; maxSelect: number; isRequired: boolean; defaultOptionId: string | null; sections?: Array<{ id: string; key: string; label: string; sortOrder: number }>; options: Array<{ id: string; name: string; priceDelta: number; isDefault: boolean }> } }>;
 
     const defaultShots = (cloud as { defaultShots?: number | null }).defaultShots ?? 0;
+
+    // Recipe consumption for future inventory deduction (optional)
+    const [recipeLines, recipeLineSizes] = await Promise.all([
+      app.prisma.cloudRecipeLine.findMany({
+        where: { menuItemCloudId: cloud.cloudId, storeId, deletedAt: null },
+        select: { ingredientCloudId: true, qtyPerItem: true, unitCode: true },
+      }),
+      app.prisma.cloudRecipeLineSize.findMany({
+        where: { menuItemCloudId: cloud.cloudId, storeId, deletedAt: null },
+        select: { ingredientCloudId: true, baseType: true, sizeCode: true, qtyPerItem: true, unitCode: true },
+      }),
+    ]);
+
     return {
       id: cloud.cloudId,
       name: cloud.name,
@@ -205,6 +262,9 @@ app.get("/items/:id", async (req) => {
       itemOptionGroups,
       hasSizes: hasSizes || undefined,
       sizesByMode: hasSizes ? sizesByMode : undefined,
+      recipeLines: recipeLines.length > 0 || recipeLineSizes.length > 0
+        ? { base: recipeLines.map((r) => ({ ingredientCloudId: r.ingredientCloudId, qtyPerItem: r.qtyPerItem.toString(), unitCode: r.unitCode })), bySize: recipeLineSizes.map((r) => ({ ingredientCloudId: r.ingredientCloudId, baseType: r.baseType, sizeCode: r.sizeCode, qtyPerItem: r.qtyPerItem.toString(), unitCode: r.unitCode })) }
+        : undefined,
     };
   }
 

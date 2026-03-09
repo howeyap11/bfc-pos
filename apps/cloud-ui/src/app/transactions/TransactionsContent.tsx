@@ -103,7 +103,9 @@ export function TransactionsContent() {
       const filename = `transactions_${from}_to_${to}.xlsx`;
       XLSX.writeFile(wb, filename);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Export failed");
+      const body = (e as { body?: { message?: string; error?: string } })?.body;
+      const msg = body?.message ?? body?.error ?? (e instanceof Error ? e.message : "Export failed");
+      setError(msg);
     } finally {
       setLoading(false);
     }

@@ -48,6 +48,7 @@ export async function syncRoutes(app: FastifyInstance) {
         items,
         ingredients,
         recipeLines,
+        recipeLineSizes,
         categories,
         subCategories,
         menuOptionGroups,
@@ -57,6 +58,8 @@ export async function syncRoutes(app: FastifyInstance) {
         menuItemSizes,
         menuSizes,
         menuItemSizePrices,
+        transactionTypes,
+        shotPricingRules,
       ] = await Promise.all([
         app.prisma.catalogVersion.findUnique({ where: { id: 1 } }),
         app.prisma.menuItem.findMany({
@@ -68,6 +71,7 @@ export async function syncRoutes(app: FastifyInstance) {
         }),
         app.prisma.ingredient.findMany({ where: { version: versionFilter } }),
         app.prisma.recipeLine.findMany({ where: { version: versionFilter } }),
+        app.prisma.recipeLineSize.findMany({ where: { version: versionFilter } }),
         app.prisma.category.findMany({ orderBy: { sortOrder: "asc" } }),
         app.prisma.subCategory.findMany({ orderBy: { sortOrder: "asc" } }),
         app.prisma.menuOptionGroup.findMany(),
@@ -78,8 +82,11 @@ export async function syncRoutes(app: FastifyInstance) {
         app.prisma.menuSize.findMany({
           where: { isActive: true },
           orderBy: { sortOrder: "asc" },
+          include: { availability: { orderBy: { sortOrder: "asc" } } },
         }),
         app.prisma.menuItemSizePrice.findMany(),
+        app.prisma.transactionTypeSetting.findMany({ where: { isActive: true }, orderBy: { sortOrder: "asc" } }),
+        app.prisma.shotPricingRule.findMany({ where: { isActive: true }, orderBy: { sortOrder: "asc" } }),
       ]);
 
       const latestVersion = catalogVersion?.latestVersion ?? 0;
@@ -123,11 +130,16 @@ export async function syncRoutes(app: FastifyInstance) {
         menuOptionGroupSections,
         menuItemOptionGroups,
         menuItemSizes,
-        menuSizes: menuSizes.map((s) => ({
-          id: s.id,
-          label: s.label,
-          sortOrder: s.sortOrder,
-        })),
+        menuSizes: menuSizes.map((s) => {
+          const avail = (s as { availability?: Array<{ id: string; mode: string; sizeId: string; imageUrl: string | null; isEnabled: boolean; sortOrder: number }> }).availability;
+          return {
+            id: s.id,
+            label: s.label,
+            sortOrder: s.sortOrder,
+            groupId: s.groupId,
+            availability: avail?.map((a) => ({ id: a.id, mode: a.mode, sizeId: a.sizeId, imageUrl: a.imageUrl ?? null, isEnabled: a.isEnabled, sortOrder: a.sortOrder })) ?? [],
+          };
+        }),
         menuItemSizePrices: menuItemSizePrices.map((p) => ({
           id: p.id,
           menuItemId: p.menuItemId,
@@ -135,6 +147,22 @@ export async function syncRoutes(app: FastifyInstance) {
           sizeOptionId: p.sizeOptionId,
           sizeCode: p.sizeCode,
           priceCents: p.priceCents,
+        })),
+        transactionTypes: transactionTypes.map((t) => ({
+          id: t.id,
+          code: t.code,
+          label: t.label,
+          priceDeltaCents: t.priceDeltaCents,
+          isActive: t.isActive,
+          sortOrder: t.sortOrder,
+        })),
+        shotPricingRules: shotPricingRules.map((s) => ({
+          id: s.id,
+          name: s.name,
+          shotsPerBundle: s.shotsPerBundle,
+          priceCentsPerBundle: s.priceCentsPerBundle,
+          isActive: s.isActive,
+          sortOrder: s.sortOrder,
         })),
       };
     }

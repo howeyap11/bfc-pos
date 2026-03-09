@@ -1899,7 +1899,69 @@ export async function adminRoutes(app: FastifyInstance) {
     return { optionGroupLinks: links };
   });
 
-  // Synced transactions list (for Cloud Admin reports)
+  // Export transactions (must be before /transactions to avoid path conflicts)
+  app.get("/transactions/export", async (req: FastifyRequest<{ Querystring: { storeId?: string; from?: string; to?: string } }>, reply: FastifyReply) => {
+    const storeId = req.query.storeId || "store_1";
+    const fromStr = req.query.from;
+    const toStr = req.query.to;
+    if (!fromStr || !toStr) {
+      reply.code(400);
+      return { error: "INVALID_QUERY", message: "from and to date required (YYYY-MM-DD)" };
+    }
+    const from = new Date(fromStr + "T00:00:00.000Z");
+    const to = new Date(toStr + "T23:59:59.999Z");
+    if (isNaN(from.getTime()) || isNaN(to.getTime())) {
+      reply.code(400);
+      return { error: "INVALID_DATES", message: "Invalid date format" };
+    }
+    if (from > to) {
+      reply.code(400);
+      return { error: "INVALID_RANGE", message: "From date must be before or equal to To date" };
+    }
+    const maxExport = 10000;
+    const items = await app.prisma.syncedTransaction.findMany({
+      where: { storeId, createdAt: { gte: from, lte: to } },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: maxExport + 1,
+    });
+    if (items.length > maxExport) {
+      reply.code(400);
+      return { error: "RANGE_TOO_LARGE", message: `Date range has more than ${maxExport} transactions. Narrow the range.` };
+    }
+    const rows = items.map((t) => {
+      let payments: { method: string; amountCents: number }[] = [];
+      try {
+        payments = JSON.parse(t.paymentsJson) as { method: string; amountCents: number }[];
+      } catch {
+        /* ignore */
+      }
+      let lineItems: { name: string; qty: number; lineTotal: number }[] = [];
+      try {
+        if (t.lineItemsSummaryJson) lineItems = JSON.parse(t.lineItemsSummaryJson) as { name: string; qty: number; lineTotal: number }[];
+      } catch {
+        /* ignore */
+      }
+      const primaryMethod = payments[0]?.method ?? "CASH";
+      return {
+        Date: t.createdAt.toISOString().slice(0, 10),
+        Time: t.createdAt.toISOString().slice(11, 19),
+        "Receipt No.": t.transactionNo,
+        Cashier: t.cashierName ?? "",
+        Status: t.status,
+        Source: t.source,
+        "Service Type": t.serviceType,
+        "Payment Method": primaryMethod,
+        Subtotal: (t.subtotalCents / 100).toFixed(2),
+        Discount: (t.discountCents / 100).toFixed(2),
+        Total: (t.totalCents / 100).toFixed(2),
+        "Items Count": t.itemsCount,
+        "Items Summary": lineItems.map((l) => `${l.name} x${l.qty}`).join("; ") || "",
+      };
+    });
+    return { items: rows };
+  });
+
+  // Synced transactions list (for Cloud Admin)
   app.get("/transactions", async (req: FastifyRequest<{ Querystring: { storeId?: string; from?: string; to?: string; limit?: string; cursor?: string } }>, reply: FastifyReply) => {
     const storeId = req.query.storeId || "store_1";
     const from = req.query.from ? new Date(req.query.from + "T00:00:00.000Z") : null;
@@ -1960,68 +2022,6 @@ export async function adminRoutes(app: FastifyInstance) {
     });
 
     return { items: rows, nextCursor, hasMore };
-  });
-
-  // Export transactions for date range (all in range, max 10000)
-  app.get("/transactions/export", async (req: FastifyRequest<{ Querystring: { storeId?: string; from?: string; to?: string } }>, reply: FastifyReply) => {
-    const storeId = req.query.storeId || "store_1";
-    const fromStr = req.query.from;
-    const toStr = req.query.to;
-    if (!fromStr || !toStr) {
-      reply.code(400);
-      return { error: "INVALID_QUERY", message: "from and to date required (YYYY-MM-DD)" };
-    }
-    const from = new Date(fromStr + "T00:00:00.000Z");
-    const to = new Date(toStr + "T23:59:59.999Z");
-    if (isNaN(from.getTime()) || isNaN(to.getTime())) {
-      reply.code(400);
-      return { error: "INVALID_DATES", message: "Invalid date format" };
-    }
-    if (from > to) {
-      reply.code(400);
-      return { error: "INVALID_RANGE", message: "From date must be before or equal to To date" };
-    }
-    const maxExport = 10000;
-    const items = await app.prisma.syncedTransaction.findMany({
-      where: { storeId, createdAt: { gte: from, lte: to } },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      take: maxExport + 1,
-    });
-    if (items.length > maxExport) {
-      reply.code(400);
-      return { error: "RANGE_TOO_LARGE", message: `Date range has more than ${maxExport} transactions. Narrow the range.` };
-    }
-    const rows = items.map((t) => {
-      let payments: { method: string; amountCents: number }[] = [];
-      try {
-        payments = JSON.parse(t.paymentsJson) as { method: string; amountCents: number }[];
-      } catch {
-        /* ignore */
-      }
-      let lineItems: { name: string; qty: number; lineTotal: number }[] = [];
-      try {
-        if (t.lineItemsSummaryJson) lineItems = JSON.parse(t.lineItemsSummaryJson) as { name: string; qty: number; lineTotal: number }[];
-      } catch {
-        /* ignore */
-      }
-      const primaryMethod = payments[0]?.method ?? "CASH";
-      return {
-        Date: t.createdAt.toISOString().slice(0, 10),
-        Time: t.createdAt.toISOString().slice(11, 19),
-        "Receipt No.": t.transactionNo,
-        Cashier: t.cashierName ?? "",
-        Status: t.status,
-        Source: t.source,
-        "Service Type": t.serviceType,
-        "Payment Method": primaryMethod,
-        Subtotal: (t.subtotalCents / 100).toFixed(2),
-        Discount: (t.discountCents / 100).toFixed(2),
-        Total: (t.totalCents / 100).toFixed(2),
-        "Items Count": t.itemsCount,
-        "Items Summary": lineItems.map((l) => `${l.name} x${l.qty}`).join("; ") || "",
-      };
-    });
-    return { items: rows };
   });
 
   // Daily report

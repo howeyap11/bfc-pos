@@ -125,6 +125,12 @@ function MenuPageContent() {
     setSelectedSubCategoryId(id);
   }
 
+  function drillOut() {
+    setSelectedSubCategoryId(null);
+  }
+
+  const drilledIn = !!selectedSubCategoryId;
+
   async function handleAddCategory(e: React.FormEvent) {
     e.preventDefault();
     if (!addCategoryName.trim()) return;
@@ -302,6 +308,14 @@ function MenuPageContent() {
             <>
               <button
                 type="button"
+                onClick={drillOut}
+                className="rounded px-3 py-1.5 text-sm text-gray-200 hover:bg-white/10"
+                style={{ border: `1px solid ${COLORS.borderLight}` }}
+              >
+                ← Back to Subcategories
+              </button>
+              <button
+                type="button"
                 onClick={() => {
                   setEditSubId(selectedSubcategory!.id);
                   setEditSubName(selectedSubcategory!.name);
@@ -384,11 +398,11 @@ function MenuPageContent() {
                     <button
                       type="button"
                       onClick={() => selectCategory(cat.id)}
-                      className="shrink-0 rounded-full px-4 py-2 text-sm font-medium transition-all"
+                      className="shrink-0 rounded-lg px-4 py-2 text-sm font-medium transition-all"
                       style={{
                         background: selectedCategoryId === cat.id ? COLORS.primary : COLORS.bgPanel,
                         color: selectedCategoryId === cat.id ? "#000" : "#ddd",
-                        border: `1px solid ${selectedCategoryId === cat.id ? COLORS.primary : COLORS.borderLight}`,
+                        border: `2px solid ${selectedCategoryId === cat.id ? COLORS.primary : COLORS.borderLight}`,
                         opacity: isDragging ? 0.9 : 1,
                       }}
                     >
@@ -399,12 +413,12 @@ function MenuPageContent() {
               />
             </div>
 
-            {/* Subcategory tiles (UTAK-style, drag to reorder) */}
-            {subcategories.length === 0 ? (
+            {/* Subcategory tiles (UTAK-style, drag to reorder) - hidden when drilled in */}
+            {!drilledIn && subcategories.length === 0 ? (
               <p style={{ color: "#888", marginBottom: 16 }}>
                 No subcategories. Use &quot;Add Subcategory&quot; above.
               </p>
-            ) : (
+            ) : !drilledIn ? (
               <SortableList
                 items={subcategories}
                 setItems={(updater) => {
@@ -448,9 +462,9 @@ function MenuPageContent() {
                   );
                 }}
               />
-            )}
+            ) : null}
 
-            {/* Item grid under subcategories */}
+            {/* Item grid under subcategories (shown when drilled in) */}
             {inSubcategory && (
               <>
                 <h3

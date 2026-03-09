@@ -61,6 +61,41 @@ type CloudMenuOptionGroup = {
   required: boolean;
   multi: boolean;
   isSizeGroup?: boolean;
+  defaultOptionId?: string | null;
+};
+
+type CloudMenuOptionGroupSection = {
+  id: string;
+  optionGroupId: string;
+  key: string;
+  label: string;
+  sortOrder: number;
+};
+
+type CloudMenuSize = {
+  id: string;
+  groupId: string;
+  label: string;
+  sortOrder: number;
+  availability?: Array<{ id: string; mode: string; sizeId: string; imageUrl: string | null; isEnabled: boolean; sortOrder: number }>;
+};
+
+type CloudTransactionType = {
+  id: string;
+  code: string;
+  label: string;
+  priceDeltaCents: number;
+  isActive: boolean;
+  sortOrder: number;
+};
+
+type CloudShotPricingRule = {
+  id: string;
+  name: string;
+  shotsPerBundle: number;
+  priceCentsPerBundle: number;
+  isActive: boolean;
+  sortOrder: number;
 };
 
 type CloudMenuOption = {
@@ -82,6 +117,7 @@ type CloudIngredient = {
   isActive: boolean;
   deletedAt: string | null;
   version: number;
+  imageUrl?: string | null;
 };
 
 type CloudRecipeLine = {
@@ -94,18 +130,35 @@ type CloudRecipeLine = {
   version: number;
 };
 
+type CloudRecipeLineSize = {
+  id: string;
+  menuItemId: string;
+  ingredientId: string;
+  baseType: string;
+  sizeCode: string;
+  qtyPerItem: string;
+  unitCode: string;
+  deletedAt: string | null;
+  version: number;
+};
+
 type SyncResponse = {
   latestVersion: number;
   items: CloudItem[];
   ingredients: CloudIngredient[];
   recipeLines: CloudRecipeLine[];
+  recipeLineSizes?: CloudRecipeLineSize[];
   categories?: CloudCategory[];
   subCategories?: CloudSubCategory[];
   menuOptionGroups?: CloudMenuOptionGroup[];
   menuOptions?: CloudMenuOption[];
+  menuOptionGroupSections?: CloudMenuOptionGroupSection[];
   menuItemOptionGroups?: CloudMenuItemOptionGroup[];
   menuItemSizes?: CloudMenuItemSize[];
+  menuSizes?: CloudMenuSize[];
   menuItemSizePrices?: CloudMenuItemSizePrice[];
+  transactionTypes?: CloudTransactionType[];
+  shotPricingRules?: CloudShotPricingRule[];
 };
 
 export type SyncCatalogResult = {
@@ -113,6 +166,9 @@ export type SyncCatalogResult = {
   itemsUpserted: number;
   ingredientsUpserted: number;
   recipeLinesUpserted: number;
+  recipeLineSizesUpserted: number;
+  transactionTypesUpserted: number;
+  shotPricingRulesUpserted: number;
 };
 
 /**
@@ -159,6 +215,9 @@ export async function syncCatalogFromCloud(
       itemsReceived: data.items.length,
       ingredientsReceived: data.ingredients.length,
       recipeLinesReceived: data.recipeLines.length,
+      recipeLineSizesReceived: (data.recipeLineSizes ?? []).length,
+      transactionTypesReceived: (data.transactionTypes ?? []).length,
+      shotPricingRulesReceived: (data.shotPricingRules ?? []).length,
       latestVersion: data.latestVersion,
     });
   } catch (err) {
@@ -174,6 +233,9 @@ export async function syncCatalogFromCloud(
   let itemsUpserted = 0;
   let ingredientsUpserted = 0;
   let recipeLinesUpserted = 0;
+  let recipeLineSizesUpserted = 0;
+  let transactionTypesUpserted = 0;
+  let shotPricingRulesUpserted = 0;
 
   try {
     await prisma.$transaction(async (tx) => {
@@ -290,9 +352,151 @@ export async function syncCatalogFromCloud(
             required: g.required,
             multi: g.multi,
             isSizeGroup: g.isSizeGroup ?? false,
+            defaultOptionCloudId: g.defaultOptionId ?? null,
           },
-          update: { name: g.name, required: g.required, multi: g.multi, isSizeGroup: g.isSizeGroup ?? false },
+          update: {
+            name: g.name,
+            required: g.required,
+            multi: g.multi,
+            isSizeGroup: g.isSizeGroup ?? false,
+            defaultOptionCloudId: g.defaultOptionId ?? null,
+          },
         });
+      }
+
+      // Sync option group sections (modifier sections)
+      const validSectionCloudIds = (data.menuOptionGroupSections ?? []).map((s) => s.id);
+      if (validSectionCloudIds.length > 0) {
+        await tx.cloudMenuOptionGroupSection.deleteMany({
+          where: { storeId, cloudId: { notIn: validSectionCloudIds } },
+        });
+      } else {
+        await tx.cloudMenuOptionGroupSection.deleteMany({ where: { storeId } });
+      }
+      for (const sec of data.menuOptionGroupSections ?? []) {
+        await tx.cloudMenuOptionGroupSection.upsert({
+          where: { cloudId: sec.id },
+          create: {
+            cloudId: sec.id,
+            storeId,
+            optionGroupCloudId: sec.optionGroupId,
+            key: sec.key,
+            label: sec.label,
+            sortOrder: sec.sortOrder ?? 0,
+          },
+          update: {
+            optionGroupCloudId: sec.optionGroupId,
+            key: sec.key,
+            label: sec.label,
+            sortOrder: sec.sortOrder ?? 0,
+          },
+        });
+      }
+
+      // Sync menu sizes (global size definitions) + availability (per-mode imageUrl, isEnabled)
+      const validMenuSizeCloudIds = new Set((data.menuSizes ?? []).map((s) => s.id));
+      await tx.cloudMenuSize.deleteMany({
+        where: { storeId, cloudId: { notIn: [...validMenuSizeCloudIds] } },
+      });
+      for (const ms of data.menuSizes ?? []) {
+        // #region agent log
+        fetch('http://127.0.0.1:7330/ingest/e360f4f2-ab8d-4cc6-b94b-f45235f7b95a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'347516'},body:JSON.stringify({sessionId:'347516',location:'syncCatalog.service.ts:menuSize',message:'menuSize payload',data:{id:ms.id,groupId:ms.groupId,hasGroupId:typeof (ms as any).groupId,keys:Object.keys(ms)},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+        // #endregion
+        const groupCloudId = (ms as { groupId?: string }).groupId ?? null;
+        if (!groupCloudId) {
+          // #region agent log
+          fetch('http://127.0.0.1:7330/ingest/e360f4f2-ab8d-4cc6-b94b-f45235f7b95a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'347516'},body:JSON.stringify({sessionId:'347516',location:'syncCatalog.service.ts:menuSizeSkip',message:'skipping menuSize missing groupId',data:{id:ms.id},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
+          // #endregion
+          continue;
+        }
+        await tx.cloudMenuSize.upsert({
+          where: { cloudId: ms.id },
+          create: {
+            cloudId: ms.id,
+            storeId,
+            groupCloudId,
+            label: ms.label,
+            sortOrder: ms.sortOrder ?? 0,
+          },
+          update: {
+            groupCloudId,
+            label: ms.label,
+            sortOrder: ms.sortOrder ?? 0,
+          },
+        });
+        await tx.cloudMenuSizeAvailability.deleteMany({
+          where: { storeId, sizeCloudId: ms.id },
+        });
+        const availList = ms.availability ?? [];
+        if (availList.length > 0) {
+          await tx.cloudMenuSizeAvailability.createMany({
+            data: availList.map((a) => ({
+              cloudId: a.id,
+              storeId,
+              sizeCloudId: ms.id,
+              mode: a.mode,
+              imageUrl: a.imageUrl ?? null,
+              isEnabled: a.isEnabled !== false,
+              sortOrder: a.sortOrder ?? 0,
+            })),
+          });
+        }
+      }
+
+      // Sync transaction types
+      const validTxTypeCloudIds = new Set((data.transactionTypes ?? []).map((t) => t.id));
+      await tx.cloudTransactionType.deleteMany({
+        where: { storeId, cloudId: { notIn: [...validTxTypeCloudIds] } },
+      });
+      for (const tt of data.transactionTypes ?? []) {
+        await tx.cloudTransactionType.upsert({
+          where: { cloudId: tt.id },
+          create: {
+            cloudId: tt.id,
+            storeId,
+            code: tt.code,
+            label: tt.label,
+            priceDeltaCents: tt.priceDeltaCents ?? 0,
+            isActive: tt.isActive !== false,
+            sortOrder: tt.sortOrder ?? 0,
+          },
+          update: {
+            code: tt.code,
+            label: tt.label,
+            priceDeltaCents: tt.priceDeltaCents ?? 0,
+            isActive: tt.isActive !== false,
+            sortOrder: tt.sortOrder ?? 0,
+          },
+        });
+        transactionTypesUpserted++;
+      }
+
+      // Sync shot pricing rules
+      const validShotRuleCloudIds = new Set((data.shotPricingRules ?? []).map((s) => s.id));
+      await tx.cloudShotPricingRule.deleteMany({
+        where: { storeId, cloudId: { notIn: [...validShotRuleCloudIds] } },
+      });
+      for (const sr of data.shotPricingRules ?? []) {
+        await tx.cloudShotPricingRule.upsert({
+          where: { cloudId: sr.id },
+          create: {
+            cloudId: sr.id,
+            storeId,
+            name: sr.name ?? "Standard",
+            shotsPerBundle: sr.shotsPerBundle ?? 2,
+            priceCentsPerBundle: sr.priceCentsPerBundle ?? 4000,
+            isActive: sr.isActive !== false,
+            sortOrder: sr.sortOrder ?? 0,
+          },
+          update: {
+            name: sr.name ?? "Standard",
+            shotsPerBundle: sr.shotsPerBundle ?? 2,
+            priceCentsPerBundle: sr.priceCentsPerBundle ?? 4000,
+            isActive: sr.isActive !== false,
+            sortOrder: sr.sortOrder ?? 0,
+          },
+        });
+        shotPricingRulesUpserted++;
       }
 
       for (const o of data.menuOptions ?? []) {
@@ -381,6 +585,7 @@ export async function syncCatalogFromCloud(
             unitCode: ing.unitCode,
             isActive: ing.isActive,
             version: ing.version,
+            imageUrl: ing.imageUrl ?? null,
             deletedAt: ing.deletedAt ? new Date(ing.deletedAt) : null,
           },
           update: {
@@ -388,6 +593,7 @@ export async function syncCatalogFromCloud(
             unitCode: ing.unitCode,
             isActive: ing.isActive,
             version: ing.version,
+            imageUrl: ing.imageUrl ?? null,
             deletedAt: ing.deletedAt ? new Date(ing.deletedAt) : null,
           },
         });
@@ -419,6 +625,42 @@ export async function syncCatalogFromCloud(
         recipeLinesUpserted++;
       }
 
+      // Sync per-size recipe consumption
+      await tx.cloudRecipeLineSize.deleteMany({ where: { storeId } });
+      for (const rls of data.recipeLineSizes ?? []) {
+        if (rls.deletedAt) continue;
+        await tx.cloudRecipeLineSize.upsert({
+          where: {
+            storeId_menuItemCloudId_ingredientCloudId_baseType_sizeCode: {
+              storeId,
+              menuItemCloudId: rls.menuItemId,
+              ingredientCloudId: rls.ingredientId,
+              baseType: rls.baseType,
+              sizeCode: rls.sizeCode,
+            },
+          },
+          create: {
+            cloudId: rls.id,
+            storeId,
+            menuItemCloudId: rls.menuItemId,
+            ingredientCloudId: rls.ingredientId,
+            baseType: rls.baseType,
+            sizeCode: rls.sizeCode,
+            qtyPerItem: rls.qtyPerItem,
+            unitCode: rls.unitCode,
+            version: rls.version,
+            deletedAt: rls.deletedAt ? new Date(rls.deletedAt) : null,
+          },
+          update: {
+            qtyPerItem: rls.qtyPerItem,
+            unitCode: rls.unitCode,
+            version: rls.version,
+            deletedAt: rls.deletedAt ? new Date(rls.deletedAt) : null,
+          },
+        });
+        recipeLineSizesUpserted++;
+      }
+
       await tx.syncState.upsert({
         where: { branchId },
         create: {
@@ -448,6 +690,9 @@ export async function syncCatalogFromCloud(
       itemsUpserted,
       ingredientsUpserted,
       recipeLinesUpserted,
+      recipeLineSizesUpserted,
+      transactionTypesUpserted,
+      shotPricingRulesUpserted,
     },
   };
 }

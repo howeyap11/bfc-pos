@@ -54,6 +54,7 @@ type ItemDetail = {
   id: string;
   name: string;
   basePrice: number;
+  imageUrl?: string | null;
   foodpandaSurchargeCents?: number;
   defaultMilk?: MilkType;
   supportsShots?: boolean;
@@ -2953,6 +2954,16 @@ export default function PosRegisterClient() {
                             e.currentTarget.style.borderColor = "#3a3a3a";
                           }}
                         >
+                          {(item as { imageUrl?: string | null })?.imageUrl ? (
+                            <div style={{ width: "100%", aspectRatio: 1, marginBottom: 8, borderRadius: 6, overflow: "hidden", background: "#1a1a1a" }}>
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={String((item as { imageUrl?: string | null }).imageUrl)}
+                                alt={item.name}
+                                style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                              />
+                            </div>
+                          ) : null}
                           <div style={{ fontWeight: "bold", marginBottom: 6, fontSize: 14, color: "#fff" }}>
                             {item.name}
                           </div>
@@ -2977,6 +2988,16 @@ export default function PosRegisterClient() {
           <>
             {/* Customize Panel Header */}
             <div style={{ padding: 16, borderBottom: `2px solid ${COLORS.primary}`, background: "#0a0a0a", display: "flex", alignItems: "center", gap: 12 }}>
+              {configuringItem.imageUrl ? (
+                <div style={{ flexShrink: 0, width: 64, height: 64, borderRadius: 8, overflow: "hidden", background: "#1a1a1a" }}>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={configuringItem.imageUrl}
+                    alt={configuringItem.name}
+                    style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                  />
+                </div>
+              ) : null}
               <button
                 onClick={closeItemConfig}
                 style={{

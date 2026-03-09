@@ -1095,15 +1095,16 @@ model CloudSubCategory {
 }
 
 model CloudMenuOptionGroup {
-  id       String  @id @default(cuid())
-  cloudId  String  @unique
-  storeId  String  @default("store_1")
-  name     String
-  required Boolean @default(false)
-  multi    Boolean @default(false)
-  isSizeGroup Boolean @default(false)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                  String   @id @default(cuid())
+  cloudId             String   @unique
+  storeId             String   @default("store_1")
+  name                String
+  required            Boolean  @default(false)
+  multi               Boolean  @default(false)
+  isSizeGroup         Boolean  @default(false)
+  defaultOptionCloudId String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   @@index([storeId])
 }
@@ -1120,6 +1121,86 @@ model CloudMenuOption {
 
   @@index([storeId])
   @@index([groupCloudId])
+}
+
+model CloudMenuOptionGroupSection {
+  id               String   @id @default(cuid())
+  cloudId          String   @unique
+  storeId          String   @default("store_1")
+  optionGroupCloudId String
+  key              String
+  label            String
+  sortOrder        Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([storeId])
+  @@index([optionGroupCloudId])
+}
+
+model CloudMenuSize {
+  id        String   @id @default(cuid())
+  cloudId   String   @unique
+  storeId   String   @default("store_1")
+  groupCloudId String
+  label     String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  availability CloudMenuSizeAvailability[]
+
+  @@index([storeId])
+  @@index([groupCloudId])
+}
+
+model CloudMenuSizeAvailability {
+  id          String   @id @default(cuid())
+  cloudId     String   @unique
+  storeId     String   @default("store_1")
+  sizeCloudId String
+  mode        String   // ICED | HOT | CONCENTRATED
+  imageUrl    String?
+  isEnabled   Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  size CloudMenuSize @relation(fields: [sizeCloudId], references: [cloudId], onDelete: Cascade)
+
+  @@unique([storeId, sizeCloudId, mode])
+  @@index([storeId])
+  @@index([sizeCloudId])
+}
+
+model CloudTransactionType {
+  id              String   @id @default(cuid())
+  cloudId         String   @unique
+  storeId         String   @default("store_1")
+  code            String
+  label           String
+  priceDeltaCents Int      @default(0)
+  isActive        Boolean  @default(true)
+  sortOrder       Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([storeId])
+}
+
+model CloudShotPricingRule {
+  id                  String   @id @default(cuid())
+  cloudId             String   @unique
+  storeId             String   @default("store_1")
+  name                String   @default("Standard")
+  shotsPerBundle      Int      @default(2)
+  priceCentsPerBundle Int      @default(4000)
+  isActive            Boolean  @default(true)
+  sortOrder           Int      @default(0)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([storeId])
 }
 
 model CloudMenuItemOptionGroup {
@@ -1159,6 +1240,7 @@ model CloudIngredient {
   unitCode  String
   isActive  Boolean   @default(true)
   version   Int
+  imageUrl  String?
   deletedAt DateTime?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
@@ -1179,6 +1261,27 @@ model CloudRecipeLine {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
+  @@index([storeId])
+  @@index([menuItemCloudId])
+  @@index([ingredientCloudId])
+}
+
+model CloudRecipeLineSize {
+  id                String    @id @default(cuid())
+  cloudId           String    @unique
+  storeId           String    @default("store_1")
+  menuItemCloudId   String
+  ingredientCloudId String
+  baseType          String    // ICED | HOT | CONCENTRATED
+  sizeCode          String
+  qtyPerItem        Decimal
+  unitCode          String
+  version           Int
+  deletedAt         DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([storeId, menuItemCloudId, ingredientCloudId, baseType, sizeCode])
   @@index([storeId])
   @@index([menuItemCloudId])
   @@index([ingredientCloudId])
