@@ -20,23 +20,35 @@ function sum(nums: number[]) {
   return nums.reduce((a, b) => a + b, 0);
 }
 
-function calculateShotsUpcharge(shotsQty: number, pricingMode: ShotsPricingMode | null | undefined): number {
-  if (shotsQty === 0 || !pricingMode) return 0;
-  
+function calculateShotsUpcharge(
+  shotsQty: number,
+  pricingMode: ShotsPricingMode | null | undefined,
+  defaultShots?: number | null,
+  shotRule?: { shotsPerBundle: number; priceCentsPerBundle: number } | null
+): number {
+  if (shotsQty === 0) return 0;
+
+  // Cloud: use synced rule with default included shots (null defaultShots = 0 free)
+  if (shotRule && defaultShots != null) {
+    const defShots = typeof defaultShots === "number" ? defaultShots : 0;
+    const extraShots = Math.max(0, shotsQty - defShots);
+    if (extraShots === 0) return 0;
+    const bundles = Math.ceil(extraShots / shotRule.shotsPerBundle);
+    return bundles * shotRule.priceCentsPerBundle;
+  }
+
+  // Legacy: shotsPricingMode
+  if (!pricingMode) return 0;
   if (pricingMode === "ESPRESSO_FREE2_PAIR40") {
-    // First 2 shots are FREE
     const extraShots = Math.max(0, shotsQty - 2);
     if (extraShots === 0) return 0;
-    
-    // Charge ₱40 per 2 shots beyond the first 2
     const chargedPairs = Math.ceil(extraShots / 2);
-    return chargedPairs * 4000; // 4000 cents = ₱40
-  } else if (pricingMode === "PAIR40_NO_FREE") {
-    // All shots charged at ₱40 per 2-shot pair
-    const pairs = Math.ceil(shotsQty / 2);
-    return pairs * 4000; // 4000 cents = ₱40 per pair
+    return chargedPairs * 4000;
   }
-  
+  if (pricingMode === "PAIR40_NO_FREE") {
+    const pairs = Math.ceil(shotsQty / 2);
+    return pairs * 4000;
+  }
   return 0;
 }
 
@@ -192,7 +204,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
 
     const cloudItems = await app.prisma.cloudMenuItem.findMany({
       where: { cloudId: { in: cloudIds }, storeId: STORE_ID },
-      select: { cloudId: true, isDrink: true, serveVessel: true },
+      select: { cloudId: true, isDrink: true, serveVessel: true, defaultShots: true },
     });
     const cloudItemMap = new Map(cloudItems.map((c) => [c.cloudId, c]));
 
@@ -219,6 +231,15 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     );
 
     const discountCents = Math.max(0, Math.trunc(Number(body.discountCents ?? 0)));
+
+    // Active shot pricing rule (for cloud items when Item.shotsPricingMode is null)
+    const shotRuleRow = await app.prisma.cloudShotPricingRule.findFirst({
+      where: { storeId: STORE_ID, isActive: true },
+      orderBy: { sortOrder: "asc" },
+    });
+    const shotRule = shotRuleRow
+      ? { shotsPerBundle: shotRuleRow.shotsPerBundle, priceCentsPerBundle: shotRuleRow.priceCentsPerBundle }
+      : null;
 
     // Load per-size pricing for sized items (baseType + size selection)
     const sizedItems = body.items.filter((it) => it.baseType && it.sizeLabel);
@@ -263,7 +284,14 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
 
       // Add espresso shots upcharge (server-side recalculation for money safety)
       const shotsQty = it.shotsQty ?? 0;
-      const shotsUpchargeCents = calculateShotsUpcharge(shotsQty, dbItem.shotsPricingMode);
+      const cloudItem = cloudItemMap.get(it.itemId);
+      const defaultShots = cloudItem?.defaultShots ?? null;
+      const shotsUpchargeCents = calculateShotsUpcharge(
+        shotsQty,
+        dbItem.shotsPricingMode,
+        defaultShots,
+        shotRule
+      );
       modifiersCents += shotsUpchargeCents;
 
       // Add milk upcharge (₱10 for non-default milk)
@@ -336,7 +364,6 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
 
       const optionsJson = JSON.stringify(optionsData);
 
-      const cloudItem = cloudItemMap.get(it.itemId);
       return {
         itemId: dbItem.id,
         name: dbItem.name,

@@ -1,14 +1,20 @@
 // apps/api/src/routes/staff.ts
+import fp from "fastify-plugin";
 import type { FastifyPluginAsync } from "fastify";
 import { verifyAdminPin } from "../services/adminPin.service.js";
 
 const STORE_ID = "store_1";
 
-export const staffRoutes: FastifyPluginAsync = async (app) => {
+const staffRoutes: FastifyPluginAsync = async (app) => {
   // GET /staff - List all staff members
   // Note: Returns passcode and key for local-first PIN validation and API authentication
   app.get("/staff", async (req, reply) => {
-    const staff = await app.prisma.staff.findMany({
+    const prisma = app.prisma;
+    if (!prisma?.staff) {
+      app.log.error("[Staff] Prisma staff model undefined - run: pnpm exec prisma generate --schema=apps/api/prisma/schema.prisma");
+      return reply.code(500).send({ error: "PRISMA_NOT_READY", message: "Staff model not available" });
+    }
+    const staff = await prisma.staff.findMany({
       where: { storeId: STORE_ID, isActive: true },
       orderBy: { name: "asc" },
       select: {
@@ -84,3 +90,5 @@ export const staffRoutes: FastifyPluginAsync = async (app) => {
     };
   });
 };
+
+export const staffRoutesPlugin = fp(staffRoutes, { name: "staffRoutes", dependencies: ["prisma"] });

@@ -1347,3 +1347,10 @@ model SyncState {
   catalogVersion Int       @default(0)
   lastSyncAt     DateTime?
 }
+
+// Synced from cloud StoreSetting (admin PIN for offline verification)
+model CloudStoreSetting {
+  id           String    @id @default("1")
+  adminPinHash String?
+  updatedAt    DateTime  @updatedAt
+}

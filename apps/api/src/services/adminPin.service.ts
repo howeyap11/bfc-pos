@@ -1,8 +1,9 @@
 /**
  * Admin PIN verification: cloud-first when CLOUD_URL + STORE_SYNC_SECRET are set,
- * fallback to local Staff (ADMIN/MANAGER with matching passcode).
+ * then synced CloudStoreSetting.adminPinHash (offline), then local Staff passcode.
  */
 import type { PrismaClient } from "@prisma/client";
+import { verifyPassword } from "../lib/password.js";
 
 const CLOUD_URL = process.env.CLOUD_URL ?? "";
 const STORE_SYNC_SECRET = process.env.STORE_SYNC_SECRET ?? "";
@@ -18,7 +19,7 @@ export async function verifyAdminPin(
   const p = (pin ?? "").trim();
   if (!p) return { valid: false };
 
-  // Try cloud first when configured
+  // 1. Try cloud first when configured
   if (CLOUD_URL?.trim() && STORE_SYNC_SECRET) {
     try {
       const url = `${CLOUD_URL.replace(/\/$/, "")}/sync/verify-admin-pin`;
@@ -39,7 +40,18 @@ export async function verifyAdminPin(
     }
   }
 
-  // Fallback: local Staff (ADMIN/MANAGER with matching passcode)
+  // 2. Fallback: synced admin PIN (CloudStoreSetting - for offline)
+  try {
+    const storeSetting = await prisma.cloudStoreSetting.findUnique({ where: { id: "1" } });
+    if (storeSetting?.adminPinHash) {
+      const ok = await verifyPassword(p, storeSetting.adminPinHash);
+      if (ok) return { valid: true, source: "local" };
+    }
+  } catch {
+    // CloudStoreSetting may not exist if migration not run
+  }
+
+  // 3. Fallback: local Staff (ADMIN/MANAGER with matching passcode)
   const staff = await prisma.staff.findFirst({
     where: {
       passcode: p,

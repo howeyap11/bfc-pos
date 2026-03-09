@@ -19,6 +19,7 @@ type ItemDetail = {
   id: string;
   name: string;
   basePrice: number;
+  imageUrl?: string | null;
   isDrink?: boolean;
   serveVessel?: string | null;
   defaultSizeOptionId?: string | null;
@@ -587,8 +588,18 @@ export default function PosCartClient() {
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <h2>{selectingItem.name}</h2>
-            <p style={{ fontSize: 18, marginBottom: 16 }}>Base: {formatPesos(selectingItem.basePrice)}</p>
+            <div style={{ display: "flex", gap: 16, marginBottom: 16 }}>
+              {selectingItem.imageUrl ? (
+                <div style={{ flexShrink: 0, width: 80, height: 80, borderRadius: 8, overflow: "hidden", background: "#eee" }}>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={selectingItem.imageUrl} alt={selectingItem.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                </div>
+              ) : null}
+              <div style={{ flex: 1 }}>
+                <h2 style={{ margin: "0 0 8px 0" }}>{selectingItem.name}</h2>
+                <p style={{ fontSize: 18, margin: 0 }}>Base: {formatPesos(selectingItem.basePrice)}</p>
+              </div>
+            </div>
 
             {selectingItem.hasSizes && selectingItem.sizesByMode ? (
               <>

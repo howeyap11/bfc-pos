@@ -11,6 +11,8 @@ export type CartItem = {
   itemName: string;
   basePrice: number;
   qty: number;
+  baseType?: "HOT" | "ICED" | "CONCENTRATED";
+  sizeLabel?: string;
   selectedOptions: Array<{
     id: string;
     name: string;
@@ -41,6 +43,8 @@ export type TxLineInput = {
   note?: string;
   shotsQty?: number;
   milkChoice?: MilkType;
+  baseType?: "HOT" | "ICED" | "CONCENTRATED";
+  sizeLabel?: string;
   surchargeCents?: number;
   discountPct?: number;
   discountAmount?: number;
@@ -61,6 +65,8 @@ export function buildTxLineInputs(cart: CartItem[]): TxLineInput[] {
       note: item.note?.trim() || undefined,
       shotsQty: item.shotsQty ?? 0,
       milkChoice: item.milkChoice,
+      baseType: item.baseType,
+      sizeLabel: item.sizeLabel,
       surchargeCents: item.surchargeCents ?? 0,
       discountPct: item.discountPct ?? 0,
       discountAmount: item.discountAmount ?? 0,

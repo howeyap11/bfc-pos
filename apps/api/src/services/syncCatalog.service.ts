@@ -159,10 +159,39 @@ type SyncResponse = {
   menuItemSizePrices?: CloudMenuItemSizePrice[];
   transactionTypes?: CloudTransactionType[];
   shotPricingRules?: CloudShotPricingRule[];
-  addOns?: { id: string; name: string; priceCents: number; sortOrder: number }[];
-  substitutes?: { id: string; name: string; priceCents: number; sortOrder: number }[];
-  menuItemAddOns?: { itemId: string; addOnId: string }[];
-  menuItemSubstitutes?: { itemId: string; substituteId: string }[];
+  addOnGroups?: Array<{
+    id: string;
+    name: string;
+    isActive: boolean;
+    sortOrder: number;
+    options: Array<{
+      id: string;
+      groupId: string;
+      name: string;
+      priceCents: number;
+      isActive: boolean;
+      sortOrder: number;
+      recipeLines?: Array<{ ingredientId: string; qtyPerItem: string; unitCode: string }>;
+    }>;
+  }>;
+  substituteGroups?: Array<{
+    id: string;
+    name: string;
+    isActive: boolean;
+    sortOrder: number;
+    options: Array<{
+      id: string;
+      groupId: string;
+      name: string;
+      priceCents: number;
+      isActive: boolean;
+      sortOrder: number;
+      recipeLines?: Array<{ ingredientId: string; qtyPerItem: string; unitCode: string }>;
+    }>;
+  }>;
+  menuItemAddOnGroups?: { itemId: string; groupId: string }[];
+  menuItemSubstituteGroups?: { itemId: string; groupId: string }[];
+  storeSettings?: { adminPinHash: string | null };
 };
 
 export type SyncCatalogResult = {
@@ -222,10 +251,10 @@ export async function syncCatalogFromCloud(
       recipeLineSizesReceived: (data.recipeLineSizes ?? []).length,
       transactionTypesReceived: (data.transactionTypes ?? []).length,
       shotPricingRulesReceived: (data.shotPricingRules ?? []).length,
-      addOnsReceived: (data.addOns ?? []).length,
-      substitutesReceived: (data.substitutes ?? []).length,
-      menuItemAddOnsReceived: (data.menuItemAddOns ?? []).length,
-      menuItemSubstitutesReceived: (data.menuItemSubstitutes ?? []).length,
+      addOnGroupsReceived: (data.addOnGroups ?? []).length,
+      substituteGroupsReceived: (data.substituteGroups ?? []).length,
+      menuItemAddOnGroupsReceived: (data.menuItemAddOnGroups ?? []).length,
+      menuItemSubstituteGroupsReceived: (data.menuItemSubstituteGroups ?? []).length,
       latestVersion: data.latestVersion,
     });
   } catch (err) {
@@ -268,7 +297,7 @@ export async function syncCatalogFromCloud(
             hasSizes: (i as any).hasSizes ?? false,
             supportsShots: i.supportsShots ?? false,
             defaultShots: i.defaultShots ?? null,
-            defaultSubstituteCloudId: (i as { defaultSubstituteId?: string | null }).defaultSubstituteId ?? null,
+            defaultSubstituteCloudId: (i as { defaultSubstituteOptionId?: string | null }).defaultSubstituteOptionId ?? (i as { defaultSubstituteId?: string | null }).defaultSubstituteId ?? null,
           },
           update: {
             name: i.name,
@@ -286,7 +315,7 @@ export async function syncCatalogFromCloud(
             hasSizes: (i as any).hasSizes ?? false,
             supportsShots: i.supportsShots ?? false,
             defaultShots: i.defaultShots ?? null,
-            defaultSubstituteCloudId: (i as { defaultSubstituteId?: string | null }).defaultSubstituteId ?? null,
+            defaultSubstituteCloudId: (i as { defaultSubstituteOptionId?: string | null }).defaultSubstituteOptionId ?? (i as { defaultSubstituteId?: string | null }).defaultSubstituteId ?? null,
           },
         });
         itemsUpserted++;
@@ -501,62 +530,86 @@ export async function syncCatalogFromCloud(
         shotPricingRulesUpserted++;
       }
 
-      // Sync add-ons and substitutes
-      for (const a of data.addOns ?? []) {
-        await tx.cloudAddOn.upsert({
-          where: { cloudId: a.id },
-          create: {
-            cloudId: a.id,
-            storeId,
-            name: a.name,
-            priceCents: a.priceCents ?? 0,
-            sortOrder: a.sortOrder ?? 0,
-          },
-          update: {
-            name: a.name,
-            priceCents: a.priceCents ?? 0,
-            sortOrder: a.sortOrder ?? 0,
-          },
-        });
+      // Sync add-ons from groups (flatten options to CloudAddOn for POS consumption)
+      const addOnGroups = data.addOnGroups ?? [];
+      for (const g of addOnGroups) {
+        for (const o of g.options ?? []) {
+          await tx.cloudAddOn.upsert({
+            where: { cloudId: o.id },
+            create: {
+              cloudId: o.id,
+              storeId,
+              name: o.name,
+              priceCents: o.priceCents ?? 0,
+              sortOrder: o.sortOrder ?? 0,
+            },
+            update: {
+              name: o.name,
+              priceCents: o.priceCents ?? 0,
+              sortOrder: o.sortOrder ?? 0,
+            },
+          });
+        }
       }
-      for (const s of data.substitutes ?? []) {
-        await tx.cloudSubstitute.upsert({
-          where: { cloudId: s.id },
-          create: {
-            cloudId: s.id,
-            storeId,
-            name: s.name,
-            priceCents: s.priceCents ?? 0,
-            sortOrder: s.sortOrder ?? 0,
-          },
-          update: {
-            name: s.name,
-            priceCents: s.priceCents ?? 0,
-            sortOrder: s.sortOrder ?? 0,
-          },
-        });
+      const addOnOptionsByGroup = new Map<string, Array<{ id: string }>>();
+      for (const g of addOnGroups) {
+        addOnOptionsByGroup.set(g.id, g.options?.map((o) => ({ id: o.id })) ?? []);
       }
       await tx.cloudMenuItemAddOn.deleteMany({ where: { storeId } });
-      const addOnLinks = data.menuItemAddOns ?? [];
-      if (addOnLinks.length > 0) {
-        await tx.cloudMenuItemAddOn.createMany({
-          data: addOnLinks.map((l) => ({
-            storeId,
-            menuItemCloudId: l.itemId,
-            addOnCloudId: l.addOnId,
-          })),
-        });
+      const addOnGroupLinks = data.menuItemAddOnGroups ?? [];
+      for (const l of addOnGroupLinks) {
+        const opts = addOnOptionsByGroup.get(l.groupId) ?? [];
+        if (opts.length > 0) {
+          await tx.cloudMenuItemAddOn.createMany({
+            data: opts.map((o) => ({
+              storeId,
+              menuItemCloudId: l.itemId,
+              addOnCloudId: o.id,
+            })),
+            skipDuplicates: true,
+          });
+        }
+      }
+
+      // Sync substitutes from groups (flatten options to CloudSubstitute)
+      const substituteGroups = data.substituteGroups ?? [];
+      for (const g of substituteGroups) {
+        for (const o of g.options ?? []) {
+          await tx.cloudSubstitute.upsert({
+            where: { cloudId: o.id },
+            create: {
+              cloudId: o.id,
+              storeId,
+              name: o.name,
+              priceCents: o.priceCents ?? 0,
+              sortOrder: o.sortOrder ?? 0,
+            },
+            update: {
+              name: o.name,
+              priceCents: o.priceCents ?? 0,
+              sortOrder: o.sortOrder ?? 0,
+            },
+          });
+        }
+      }
+      const subOptionsByGroup = new Map<string, Array<{ id: string }>>();
+      for (const g of substituteGroups) {
+        subOptionsByGroup.set(g.id, g.options?.map((o) => ({ id: o.id })) ?? []);
       }
       await tx.cloudMenuItemSubstitute.deleteMany({ where: { storeId } });
-      const subLinks = data.menuItemSubstitutes ?? [];
-      if (subLinks.length > 0) {
-        await tx.cloudMenuItemSubstitute.createMany({
-          data: subLinks.map((l) => ({
-            storeId,
-            menuItemCloudId: l.itemId,
-            substituteCloudId: l.substituteId,
-          })),
-        });
+      const subGroupLinks = data.menuItemSubstituteGroups ?? [];
+      for (const l of subGroupLinks) {
+        const opts = subOptionsByGroup.get(l.groupId) ?? [];
+        if (opts.length > 0) {
+          await tx.cloudMenuItemSubstitute.createMany({
+            data: opts.map((o) => ({
+              storeId,
+              menuItemCloudId: l.itemId,
+              substituteCloudId: o.id,
+            })),
+            skipDuplicates: true,
+          });
+        }
       }
 
       for (const o of data.menuOptions ?? []) {
@@ -719,6 +772,20 @@ export async function syncCatalogFromCloud(
           },
         });
         recipeLineSizesUpserted++;
+      }
+
+      // Sync store settings (admin PIN for offline verification)
+      if (data.storeSettings) {
+        await tx.cloudStoreSetting.upsert({
+          where: { id: "1" },
+          create: {
+            id: "1",
+            adminPinHash: data.storeSettings.adminPinHash ?? null,
+          },
+          update: {
+            adminPinHash: data.storeSettings.adminPinHash ?? null,
+          },
+        });
       }
 
       await tx.syncState.upsert({

@@ -37,12 +37,14 @@ type Item = {
   name: string;
   series?: string | null;
   basePrice: number;
+  imageUrl?: string | null;
   description?: string | null;
   foodpandaSurchargeCents?: number;
   defaultMilk?: MilkType;
   supportsShots?: boolean;
   isEspressoDrink?: boolean;
   shotsPricingMode?: ShotsPricingMode | null;
+  shotPricingRule?: { shotsPerBundle: number; priceCentsPerBundle: number } | null;
   defaultShots12oz?: number;
   defaultShots16oz?: number;
   shotsDefaultSource?: ShotsDefaultSource;
@@ -68,9 +70,13 @@ type ItemDetail = {
   shotsPricingMode?: ShotsPricingMode | null;
   defaultShots12oz?: number;
   defaultShots16oz?: number;
+  shotPricingRule?: { shotsPerBundle: number; priceCentsPerBundle: number } | null;
   shotsDefaultSource?: ShotsDefaultSource;
   // Legacy field (deprecated)
   defaultEspressoShots?: number;
+  hasSizes?: boolean;
+  sizesByMode?: Record<string, Array<{ id: string; name: string; priceCents?: number }>>;
+  defaultSizeOptionId?: string | null;
   itemOptionGroups: Array<{
     group: {
       id: string;
@@ -102,6 +108,8 @@ type CartItem = {
   itemName: string;
   basePrice: number;
   qty: number;
+  baseType?: "HOT" | "ICED" | "CONCENTRATED";
+  sizeLabel?: string;
   selectedOptions: Array<{
     id: string;
     name: string;
@@ -1465,6 +1473,8 @@ export default function PosRegisterClient() {
   const [shotsTouchedByUser, setShotsTouchedByUser] = useState<boolean>(false); // Track manual shot changes
   const [configTransactionType, setConfigTransactionType] = useState<TransactionType | null>(null);
   const [configNote, setConfigNote] = useState<string>("");
+  const [configBaseType, setConfigBaseType] = useState<"HOT" | "ICED" | "CONCENTRATED" | null>(null);
+  const [configSizeOption, setConfigSizeOption] = useState<{ id: string; name: string } | null>(null);
 
   // Cart item editing
   const [editingCartItem, setEditingCartItem] = useState<CartItem | null>(null);
@@ -1884,6 +1894,18 @@ export default function PosRegisterClient() {
 
       setConfiguringItem(item);
 
+      // For hasSizes + sizesByMode: init mode and size
+      if ((item as { hasSizes?: boolean }).hasSizes && (item as { sizesByMode?: Record<string, Array<{ id: string; name: string; priceCents?: number }>> }).sizesByMode) {
+        const sm = (item as { sizesByMode: Record<string, Array<{ id: string; name: string }>> }).sizesByMode;
+        const firstMode = (["HOT", "ICED", "CONCENTRATED"] as const).find((m) => sm[m]?.length);
+        const firstSize = firstMode ? sm[firstMode]?.[0] : null;
+        setConfigBaseType(firstMode ?? null);
+        setConfigSizeOption(firstSize ? { id: firstSize.id, name: firstSize.name } : null);
+      } else {
+        setConfigBaseType(null);
+        setConfigSizeOption(null);
+      }
+
       // Pre-select defaults
       const defaults: Record<string, string[]> = {};
       item.itemOptionGroups?.forEach(({ group }) => {
@@ -1974,6 +1996,8 @@ export default function PosRegisterClient() {
   function closeItemConfig() {
     setConfiguringItem(null);
     setSelectedOptions({});
+    setConfigBaseType(null);
+    setConfigSizeOption(null);
     setConfigQty(1);
     setConfigMilk("FULL_CREAM");
     setConfigShotsQty(0);
@@ -2047,28 +2071,86 @@ export default function PosRegisterClient() {
    * - 4 shots = ₱80 (2 pairs)
    * Formula: ceil(shotsQty / 2) * 4000 cents
    */
-  function calculateShotsUpcharge(shotsQty: number, pricingMode: ShotsPricingMode | null | undefined): number {
-    if (shotsQty === 0 || !pricingMode) return 0;
-    
+  function calculateShotsUpcharge(
+    shotsQty: number,
+    pricingMode: ShotsPricingMode | null | undefined,
+    defaultShots?: number,
+    shotPricingRule?: { shotsPerBundle: number; priceCentsPerBundle: number } | null
+  ): number {
+    if (shotsQty === 0) return 0;
+
+    // Cloud: use synced rule with default included shots
+    if (shotPricingRule && typeof defaultShots === "number") {
+      const extraShots = Math.max(0, shotsQty - defaultShots);
+      if (extraShots === 0) return 0;
+      const bundles = Math.ceil(extraShots / shotPricingRule.shotsPerBundle);
+      return bundles * shotPricingRule.priceCentsPerBundle;
+    }
+
+    // Legacy: shotsPricingMode
+    if (!pricingMode) return 0;
     if (pricingMode === "ESPRESSO_FREE2_PAIR40") {
-      // First 2 shots are FREE
       const extraShots = Math.max(0, shotsQty - 2);
       if (extraShots === 0) return 0;
-      
-      // Charge ₱40 per 2 shots beyond the first 2
       const chargedPairs = Math.ceil(extraShots / 2);
-      return chargedPairs * 4000; // 4000 cents = ₱40
-    } else if (pricingMode === "PAIR40_NO_FREE") {
-      // All shots charged at ₱40 per 2-shot pair
-      const pairs = Math.ceil(shotsQty / 2);
-      return pairs * 4000; // 4000 cents = ₱40 per pair
+      return chargedPairs * 4000;
     }
-    
+    if (pricingMode === "PAIR40_NO_FREE") {
+      const pairs = Math.ceil(shotsQty / 2);
+      return pairs * 4000;
+    }
     return 0;
   }
 
   function addToCart() {
     if (!configuringItem) return;
+
+    // hasSizes flow: require mode + size, use sizesByMode prices
+    if (configuringItem.hasSizes && configuringItem.sizesByMode) {
+      if (!configBaseType || !configSizeOption) return;
+      const sizeEntry = configuringItem.sizesByMode[configBaseType]?.find((s) => s.id === configSizeOption.id);
+      const unitPrice = sizeEntry?.priceCents ?? configuringItem.basePrice;
+      const newItem: CartItem = {
+        tempId: `${Date.now()}-${Math.random()}`,
+        itemId: configuringItem.id,
+        itemName: configuringItem.name,
+        basePrice: unitPrice,
+        qty: configQty,
+        baseType: configBaseType,
+        sizeLabel: configSizeOption.name,
+        selectedOptions: [{ id: configSizeOption.id, name: configSizeOption.name, groupName: configBaseType, priceDelta: 0 }],
+        milkChoice: configMilk,
+        defaultMilk: configuringItem.defaultMilk,
+        shotsQty: configShotsQty,
+        defaultShotsForSize: configSizeOption.name.includes("12") ? (configuringItem.defaultShots12oz ?? 0) : (configuringItem.defaultShots16oz ?? 0),
+        shotsUpchargeCents: (() => {
+          const def = configSizeOption.name.includes("12") ? (configuringItem.defaultShots12oz ?? 0) : (configuringItem.defaultShots16oz ?? 0);
+          return calculateShotsUpcharge(configShotsQty, configuringItem.shotsPricingMode, def, configuringItem.shotPricingRule);
+        })(),
+        transactionTypeCode: configTransactionType?.code ?? "FOR_HERE",
+        transactionTypeLabel: configTransactionType?.label ?? "For Here",
+        optionTotalCents: (() => {
+          let t = 0;
+          if (configuringItem.substitutes?.length) {
+            const defaultId = configuringItem.defaultSubstituteCloudId ?? configuringItem.substitutes[0]?.id;
+            const selectedSub = configuringItem.substitutes.find((s) => s.name.toUpperCase().includes(configMilk === "OAT" ? "OAT" : configMilk === "ALMOND" ? "ALMOND" : configMilk === "SOY" ? "SOY" : "CREAM"));
+            const defaultSub = defaultId ? configuringItem.substitutes.find((s) => s.id === defaultId) : configuringItem.substitutes[0];
+            t += (selectedSub?.priceCents ?? 0) - (defaultSub?.priceCents ?? 0);
+          } else if (configMilk !== (configuringItem.defaultMilk || "FULL_CREAM")) {
+            t = 1000;
+          }
+          return t;
+        })(),
+        surchargeCents: configTransactionType?.priceDeltaCents ?? 0,
+        discountPct: 0,
+        discountAmount: 0,
+        discountTag: null,
+        note: configNote.trim() || undefined,
+      };
+      setCart((prev) => [...prev, newItem]);
+      closeItemConfig();
+      return;
+    }
 
     const opts: CartItem["selectedOptions"] = [];
     let optionTotalCents = 0;
@@ -2118,14 +2200,7 @@ export default function PosRegisterClient() {
     }
     optionTotalCents += milkPriceDelta;
 
-    // Calculate espresso shots upcharge using business rules
-    const shotsUpchargeCents = calculateShotsUpcharge(configShotsQty, configuringItem.shotsPricingMode);
-    optionTotalCents += shotsUpchargeCents;
-
-    // Per-line surcharge from selected transaction type (cloud-synced priceDeltaCents)
-    const surchargeCents = configTransactionType?.priceDeltaCents ?? 0;
-
-    // Determine default shots for the selected size
+    // Determine default shots for the selected size (for shot pricing)
     const selectedSize = opts.find(o => 
       o.groupName.toUpperCase().includes("SIZE") || 
       o.name.toUpperCase().includes("OZ")
@@ -2134,6 +2209,18 @@ export default function PosRegisterClient() {
     const defaultShotsForSize = is12oz 
       ? (configuringItem.defaultShots12oz ?? 0)
       : (configuringItem.defaultShots16oz ?? 0);
+
+    // Calculate espresso shots upcharge (cloud shotPricingRule or legacy shotsPricingMode)
+    const shotsUpchargeCents = calculateShotsUpcharge(
+      configShotsQty,
+      configuringItem.shotsPricingMode,
+      defaultShotsForSize,
+      configuringItem.shotPricingRule
+    );
+    optionTotalCents += shotsUpchargeCents;
+
+    // Per-line surcharge from selected transaction type (cloud-synced priceDeltaCents)
+    const surchargeCents = configTransactionType?.priceDeltaCents ?? 0;
 
     const newItem: CartItem = {
       tempId: `${Date.now()}-${Math.random()}`,
@@ -3026,11 +3113,11 @@ export default function PosRegisterClient() {
                             e.currentTarget.style.borderColor = "#3a3a3a";
                           }}
                         >
-                          {(item as { imageUrl?: string | null })?.imageUrl ? (
+                          {item.imageUrl ? (
                             <div style={{ width: "100%", aspectRatio: 1, marginBottom: 8, borderRadius: 6, overflow: "hidden", background: "#1a1a1a" }}>
                               {/* eslint-disable-next-line @next/next/no-img-element */}
                               <img
-                                src={String((item as { imageUrl?: string | null }).imageUrl)}
+                                src={String(item.imageUrl)}
                                 alt={item.name}
                                 style={{ width: "100%", height: "100%", objectFit: "cover" }}
                               />
@@ -3100,9 +3187,91 @@ export default function PosRegisterClient() {
             <div style={{ flex: 1, overflow: "auto", padding: 24, background: "#1f1f1f" }}>
               
               {/* MAJOR OPTIONS AT TOP */}
-              
-              {/* Temperature & Size (if they exist) */}
-              {configuringItem.itemOptionGroups
+
+              {/* Mode + Size (hasSizes / sizesByMode - HOT/ICED/CONCENTRATED with mode-specific sizes) */}
+              {configuringItem.hasSizes && configuringItem.sizesByMode && (
+                <>
+                  <div style={{ marginBottom: 24 }}>
+                    <h3 style={{ fontSize: 18, marginBottom: 12, color: "#fff", fontWeight: "700", textTransform: "uppercase" }}>
+                      Mode
+                    </h3>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+                      {(["HOT", "ICED", "CONCENTRATED"] as const).map((mode) => {
+                        const sizes = configuringItem.sizesByMode![mode] ?? [];
+                        if (sizes.length === 0) return null;
+                        const isSelected = configBaseType === mode;
+                        return (
+                          <button
+                            key={mode}
+                            onClick={() => {
+                              setConfigBaseType(mode);
+                              const first = sizes[0];
+                              setConfigSizeOption(first ? { id: first.id, name: first.name } : null);
+                              if (!shotsTouchedByUser && configuringItem) {
+                                setConfigShotsQty(first?.name.includes("12") ? (configuringItem.defaultShots12oz ?? 0) : (configuringItem.defaultShots16oz ?? 0));
+                              }
+                            }}
+                            style={{
+                              padding: "14px 24px",
+                              border: `3px solid ${isSelected ? COLORS.primary : "#444"}`,
+                              borderRadius: 8,
+                              cursor: "pointer",
+                              background: isSelected ? COLORS.primary : "#2a2a2a",
+                              color: "#fff",
+                              fontWeight: "bold",
+                              fontSize: 16,
+                            }}
+                          >
+                            {mode.charAt(0) + mode.slice(1).toLowerCase()}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  {configBaseType && (configuringItem.sizesByMode![configBaseType]?.length ?? 0) > 0 && (
+                    <div style={{ marginBottom: 24 }}>
+                      <h3 style={{ fontSize: 18, marginBottom: 12, color: "#fff", fontWeight: "700", textTransform: "uppercase" }}>
+                        Size
+                      </h3>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+                        {configuringItem.sizesByMode![configBaseType].map((s) => {
+                          const isSelected = configSizeOption?.id === s.id;
+                          return (
+                            <button
+                              key={s.id}
+                              onClick={() => {
+                                setConfigSizeOption({ id: s.id, name: s.name });
+                                if (!shotsTouchedByUser && configuringItem) {
+                                  setConfigShotsQty(s.name.includes("12") ? (configuringItem.defaultShots12oz ?? 0) : (configuringItem.defaultShots16oz ?? 0));
+                                }
+                              }}
+                              style={{
+                                padding: "14px 24px",
+                                border: `3px solid ${isSelected ? COLORS.primary : "#444"}`,
+                                borderRadius: 8,
+                                cursor: "pointer",
+                                background: isSelected ? COLORS.primary : "#2a2a2a",
+                                color: "#fff",
+                                fontWeight: "bold",
+                                fontSize: 16,
+                                minWidth: 100,
+                              }}
+                            >
+                              {s.name}
+                              {s.priceCents != null && s.priceCents > 0 && (
+                                <div style={{ fontSize: 13, marginTop: 4, opacity: 0.9 }}>+{formatPesos(s.priceCents)}</div>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* Temperature & Size (option groups - when NOT using hasSizes/sizesByMode) */}
+              {(!configuringItem.hasSizes || !configuringItem.sizesByMode) && configuringItem.itemOptionGroups
                 .filter(({ group }) => 
                   group.name.toLowerCase().includes("temperature") || 
                   group.name.toLowerCase().includes("size")
@@ -3332,12 +3501,17 @@ export default function PosRegisterClient() {
                 <div style={{ marginBottom: 20 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                     <h3 style={{ fontSize: 16, margin: 0, color: "#ddd", fontWeight: "600" }}>Espresso Shots</h3>
-                    {configuringItem.shotsPricingMode === "ESPRESSO_FREE2_PAIR40" && (
+                    {configuringItem.shotPricingRule && (
+                      <span style={{ fontSize: 12, color: "#4ade80", fontWeight: "600" }}>
+                        Extra shots: ₱{(configuringItem.shotPricingRule.priceCentsPerBundle / 100).toFixed(0)} per {configuringItem.shotPricingRule.shotsPerBundle}
+                      </span>
+                    )}
+                    {!configuringItem.shotPricingRule && configuringItem.shotsPricingMode === "ESPRESSO_FREE2_PAIR40" && (
                       <span style={{ fontSize: 12, color: "#4ade80", fontWeight: "600" }}>
                         First 2 FREE • +₱40 per 2 shots after
                       </span>
                     )}
-                    {configuringItem.shotsPricingMode === "PAIR40_NO_FREE" && (
+                    {!configuringItem.shotPricingRule && configuringItem.shotsPricingMode === "PAIR40_NO_FREE" && (
                       <span style={{ fontSize: 12, color: "#fbbf24", fontWeight: "600" }}>
                         +₱40 per 2 shots
                       </span>
@@ -3385,7 +3559,12 @@ export default function PosRegisterClient() {
                     </button>
                     <span style={{ color: "#aaa", fontSize: 14, marginLeft: 8 }}>
                       {(() => {
-                        const upcharge = calculateShotsUpcharge(configShotsQty, configuringItem.shotsPricingMode);
+                        const sizeGroup = configuringItem.itemOptionGroups?.find((ig) => ig.group.name.toLowerCase().includes("size"));
+                        const sizeOptId = sizeGroup ? selectedOptions[sizeGroup.group.id]?.[0] : null;
+                        const sizeOpt = sizeGroup?.group.options.find((o) => o.id === sizeOptId);
+                        const is12oz = sizeOpt?.name?.includes("12") ?? false;
+                        const defaultShotsForSize = is12oz ? (configuringItem.defaultShots12oz ?? 0) : (configuringItem.defaultShots16oz ?? 0);
+                        const upcharge = calculateShotsUpcharge(configShotsQty, configuringItem.shotsPricingMode, defaultShotsForSize, configuringItem.shotPricingRule);
                         if (configShotsQty === 0) return null;
                         if (upcharge === 0) return <span style={{ color: "#4ade80" }}>(FREE)</span>;
                         return `(+${formatPesos(upcharge)})`;
@@ -3595,20 +3774,32 @@ export default function PosRegisterClient() {
 
               {/* Live Price Breakdown */}
               {(() => {
-                // Calculate live totals
-                const optionsTotal = configuringItem.itemOptionGroups.reduce((sum, { group }) => {
-                  const selected = selectedOptions[group.id] || [];
-                  return sum + selected.reduce((optSum, optId) => {
-                    const opt = group.options.find((o) => o.id === optId);
-                    return optSum + (opt?.priceDelta || 0);
+                // Base unit price: for hasSizes use selected size price; else basePrice + option deltas
+                let baseUnitPrice = configuringItem.basePrice;
+                let optionsTotal = 0;
+                if (configuringItem.hasSizes && configuringItem.sizesByMode && configBaseType && configSizeOption) {
+                  const sizeEntry = configuringItem.sizesByMode[configBaseType]?.find((s) => s.id === configSizeOption.id);
+                  baseUnitPrice = sizeEntry?.priceCents ?? configuringItem.basePrice;
+                } else {
+                  optionsTotal = configuringItem.itemOptionGroups.reduce((sum, { group }) => {
+                    const selected = selectedOptions[group.id] || [];
+                    return sum + selected.reduce((optSum, optId) => {
+                      const opt = group.options.find((o) => o.id === optId);
+                      return optSum + (opt?.priceDelta || 0);
+                    }, 0);
                   }, 0);
-                }, 0);
+                }
 
                 const itemDefaultMilk = configuringItem.defaultMilk || "FULL_CREAM";
                 const milkDelta = configMilk !== itemDefaultMilk ? 1000 : 0;
-                
-                // Use espresso pricing formula
-                const shotsDelta = calculateShotsUpcharge(configShotsQty, configuringItem.shotsPricingMode);
+
+                const sizeGroup = configuringItem.itemOptionGroups?.find((ig) => ig.group.name.toLowerCase().includes("size"));
+                const sizeOptId = sizeGroup ? selectedOptions[sizeGroup.group.id]?.[0] : null;
+                const sizeOpt = sizeGroup?.group.options.find((o) => o.id === sizeOptId);
+                const is12oz = sizeOpt?.name?.includes("12") ?? false;
+                const defaultShotsForSize = is12oz ? (configuringItem.defaultShots12oz ?? 0) : (configuringItem.defaultShots16oz ?? 0);
+
+                const shotsDelta = calculateShotsUpcharge(configShotsQty, configuringItem.shotsPricingMode, defaultShotsForSize, configuringItem.shotPricingRule);
                 
                 const surcharge = configTransactionType?.priceDeltaCents ?? 0;
                 
@@ -3647,13 +3838,19 @@ export default function PosRegisterClient() {
                         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, color: "#aaa" }}>
                           <span>
                             Espresso Shots ({configShotsQty})
-                            {configuringItem.shotsPricingMode === "ESPRESSO_FREE2_PAIR40" && configShotsQty <= 2 && (
+                            {configuringItem.shotPricingRule && configShotsQty <= defaultShotsForSize && (
                               <span style={{ color: "#4ade80", fontSize: 12, marginLeft: 4 }}>(FREE)</span>
                             )}
-                            {configuringItem.shotsPricingMode === "ESPRESSO_FREE2_PAIR40" && configShotsQty > 2 && (
+                            {configuringItem.shotPricingRule && configShotsQty > defaultShotsForSize && (
+                              <span style={{ fontSize: 12, marginLeft: 4 }}>({defaultShotsForSize} free, {configShotsQty - defaultShotsForSize} charged)</span>
+                            )}
+                            {!configuringItem.shotPricingRule && configuringItem.shotsPricingMode === "ESPRESSO_FREE2_PAIR40" && configShotsQty <= 2 && (
+                              <span style={{ color: "#4ade80", fontSize: 12, marginLeft: 4 }}>(FREE)</span>
+                            )}
+                            {!configuringItem.shotPricingRule && configuringItem.shotsPricingMode === "ESPRESSO_FREE2_PAIR40" && configShotsQty > 2 && (
                               <span style={{ fontSize: 12, marginLeft: 4 }}>(2 free, {configShotsQty - 2} charged)</span>
                             )}
-                            {configuringItem.shotsPricingMode === "PAIR40_NO_FREE" && (
+                            {!configuringItem.shotPricingRule && configuringItem.shotsPricingMode === "PAIR40_NO_FREE" && (
                               <span style={{ fontSize: 12, marginLeft: 4 }}>({Math.ceil(configShotsQty / 2)} pair{Math.ceil(configShotsQty / 2) !== 1 ? 's' : ''})</span>
                             )}
                           </span>
@@ -3695,17 +3892,19 @@ export default function PosRegisterClient() {
             <div style={{ padding: 16, borderTop: `2px solid ${COLORS.primary}`, background: "#0a0a0a", display: "flex", gap: 12 }}>
               <button
                 onClick={addToCart}
+                disabled={!!(configuringItem.hasSizes && configuringItem.sizesByMode && (!configBaseType || !configSizeOption))}
                 style={{
                   flex: 1,
                   padding: "16px 24px",
                   fontSize: 18,
                   fontWeight: "bold",
-                  background: COLORS.primary,
+                  background: (configuringItem.hasSizes && configuringItem.sizesByMode && (!configBaseType || !configSizeOption)) ? "#555" : COLORS.primary,
                   color: "#fff",
                   border: "none",
                   borderRadius: 8,
-                  cursor: "pointer",
+                  cursor: (configuringItem.hasSizes && configuringItem.sizesByMode && (!configBaseType || !configSizeOption)) ? "not-allowed" : "pointer",
                   transition: "all 0.2s",
+                  opacity: (configuringItem.hasSizes && configuringItem.sizesByMode && (!configBaseType || !configSizeOption)) ? 0.7 : 1,
                 }}
                 onMouseEnter={(e) => (e.currentTarget.style.background = COLORS.primaryDark)}
                 onMouseLeave={(e) => (e.currentTarget.style.background = COLORS.primary)}
