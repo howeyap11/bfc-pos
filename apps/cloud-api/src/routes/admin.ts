@@ -1,16 +1,10 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import { pipeline } from "node:stream/promises";
-import { createWriteStream } from "node:fs";
-import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { buffer } from "node:stream/consumers";
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
+import { uploadImage } from "../services/r2.service.js";
 import { bumpCatalogVersion } from "../lib/catalogVersion.js";
 import { getDrinkSizesOptionGroup, getDrinkSizesOptionIds } from "../lib/drinkSizes.js";
-
-const UPLOADS_ITEMS = join(process.cwd(), "uploads", "items");
-const UPLOADS_INGREDIENTS = join(process.cwd(), "uploads", "ingredients");
-const UPLOADS_SIZES = join(process.cwd(), "uploads", "sizes");
 
 function generateSlug(name: string): string {
   return name
@@ -241,12 +235,10 @@ export async function adminRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "NO_FILE" };
     }
-    await mkdir(UPLOADS_SIZES, { recursive: true });
     const ext = extFromMime(data.mimetype);
     const filename = `${randomBytes(12).toString("hex")}.${ext}`;
-    const filepath = join(UPLOADS_SIZES, filename);
-    await pipeline(data.file, createWriteStream(filepath));
-    const imageUrl = `/uploads/sizes/${filename}`;
+    const buf = await buffer(data.file);
+    const imageUrl = await uploadImage(buf, filename, data.mimetype);
     await bumpCatalogVersion(app.prisma);
     const updated = await app.prisma.menuSizeAvailability.update({
       where: { id },
@@ -663,12 +655,10 @@ export async function adminRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "NO_FILE" };
     }
-    await mkdir(UPLOADS_ITEMS, { recursive: true });
     const ext = extFromMime(data.mimetype);
     const filename = `${randomBytes(12).toString("hex")}.${ext}`;
-    const filepath = join(UPLOADS_ITEMS, filename);
-    await pipeline(data.file, createWriteStream(filepath));
-    const imageUrl = `/uploads/items/${filename}`;
+    const buf = await buffer(data.file);
+    const imageUrl = await uploadImage(buf, filename, data.mimetype);
     const version = await bumpCatalogVersion(app.prisma);
     await app.prisma.menuItem.update({ where: { id }, data: { imageUrl, version } });
     return { imageUrl };
@@ -1047,12 +1037,10 @@ export async function adminRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "NO_FILE" };
     }
-    await mkdir(UPLOADS_INGREDIENTS, { recursive: true });
     const ext = extFromMime(data.mimetype);
     const filename = `${randomBytes(12).toString("hex")}.${ext}`;
-    const filepath = join(UPLOADS_INGREDIENTS, filename);
-    await pipeline(data.file, createWriteStream(filepath));
-    const imageUrl = `/uploads/ingredients/${filename}`;
+    const buf = await buffer(data.file);
+    const imageUrl = await uploadImage(buf, filename, data.mimetype);
     const version = await bumpCatalogVersion(app.prisma);
     await app.prisma.ingredient.update({ where: { id }, data: { imageUrl, version } });
     return { imageUrl };

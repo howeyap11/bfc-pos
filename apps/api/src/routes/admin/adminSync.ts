@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+import { requireStaffHook } from "../../plugins/staffGuard.js";
 import { syncCatalogFromCloud, requireAdminRole } from "../../services/syncCatalog.service.js";
 
 function getBranchFromRequest(req: FastifyRequest): string {
@@ -12,7 +13,7 @@ export async function adminSyncRoutes(app: FastifyInstance) {
     "/admin/sync/catalog",
     {
       preHandler: [
-        app.requireStaff,
+        requireStaffHook,
         async (req: FastifyRequest, reply: FastifyReply) => {
           if (!requireAdminRole(req as { staff?: { role?: string } })) {
             return reply.code(403).send({

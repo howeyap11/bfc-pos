@@ -55,6 +55,7 @@ function MenuPageContent() {
   const [editCategoryId, setEditCategoryId] = useState<string | null>(null);
   const [editCategoryName, setEditCategoryName] = useState("");
   const [editCategorySlug, setEditCategorySlug] = useState("");
+  const [editCategoryError, setEditCategoryError] = useState("");
   const [editSubId, setEditSubId] = useState<string | null>(null);
   const [editSubName, setEditSubName] = useState("");
   const [saving, setSaving] = useState(false);
@@ -217,6 +218,7 @@ function MenuPageContent() {
     e.preventDefault();
     if (!editCategoryId || !editCategoryName.trim()) return;
     setError("");
+    setEditCategoryError("");
     setSaving(true);
     try {
       await api.patchCategory(editCategoryId, {
@@ -229,6 +231,31 @@ function MenuPageContent() {
       setTimeout(() => setSuccess(""), 3000);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDeleteCategory() {
+    if (!editCategoryId) return;
+    if (!confirm("Delete this category? This cannot be undone.")) return;
+    setEditCategoryError("");
+    setSaving(true);
+    try {
+      await api.deleteCategory(editCategoryId);
+      setEditCategoryId(null);
+      setSuccess("Category deleted");
+      refresh();
+      setTimeout(() => setSuccess(""), 3000);
+    } catch (err: unknown) {
+      const body = (err as { body?: { error?: string } })?.body;
+      if (body?.error === "CATEGORY_NOT_EMPTY") {
+        setEditCategoryError(
+          "Cannot delete category while it still contains sub-categories. Delete or move them first."
+        );
+      } else {
+        setError(err instanceof Error ? err.message : "Failed");
+      }
     } finally {
       setSaving(false);
     }
@@ -388,6 +415,7 @@ function MenuPageContent() {
                     setEditCategoryId(currentCategory.id);
                     setEditCategoryName(currentCategory.name);
                     setEditCategorySlug(currentCategory.slug);
+                    setEditCategoryError("");
                   }}
                   className="rounded px-3 py-1.5 text-sm text-gray-200 hover:bg-white/10"
                   style={{ border: `1px solid ${COLORS.borderLight}` }}
@@ -601,6 +629,9 @@ function MenuPageContent() {
         <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/50 p-4">
           <div className="w-full max-w-sm rounded-lg bg-white p-4 shadow-lg">
             <h3 className="mb-3 font-semibold">Edit Category</h3>
+            {editCategoryError && (
+              <p className="mb-3 text-sm text-red-600">{editCategoryError}</p>
+            )}
             <form onSubmit={handleEditCategory} className="space-y-3">
               <div>
                 <label className="block text-xs text-gray-600">Name</label>
@@ -620,10 +651,13 @@ function MenuPageContent() {
                   className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
                 />
               </div>
-              <div className="flex justify-end gap-2">
+              <div className="flex flex-wrap items-center justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setEditCategoryId(null)}
+                  onClick={() => {
+                    setEditCategoryId(null);
+                    setEditCategoryError("");
+                  }}
                   className="rounded border border-gray-300 px-3 py-1.5 text-sm"
                 >
                   Cancel
@@ -634,6 +668,14 @@ function MenuPageContent() {
                   className="rounded bg-blue-600 px-3 py-1.5 text-sm text-white disabled:opacity-50"
                 >
                   Save
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDeleteCategory}
+                  disabled={saving}
+                  className="rounded border border-red-600 bg-red-600 px-3 py-1.5 text-sm text-white hover:bg-red-700 disabled:opacity-50"
+                >
+                  Delete Category
                 </button>
               </div>
             </form>

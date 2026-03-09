@@ -1,10 +1,8 @@
 import "dotenv/config";
-import { join } from "node:path";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import jwt from "@fastify/jwt";
 import multipart from "@fastify/multipart";
-import fastifyStatic from "@fastify/static";
 import prismaPlugin from "./plugins/prisma.js";
 import inventoryPlugin from "./plugins/inventory.js";
 import { authRoutes } from "./routes/auth.js";
@@ -33,10 +31,6 @@ await app.register(jwt, {
   secret: process.env.JWT_SECRET ?? "dev-secret-change-in-production",
 });
 await app.register(multipart, { limits: { fileSize: 5 * 1024 * 1024 } }); // 5MB
-await app.register(fastifyStatic, {
-  root: join(process.cwd(), "uploads"),
-  prefix: "/uploads/",
-});
 await app.register(prismaPlugin);
 await app.register(inventoryPlugin);
 
