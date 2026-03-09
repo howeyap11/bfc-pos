@@ -1,5 +1,6 @@
 import "dotenv/config";
 import Fastify from "fastify";
+import { logR2Status } from "./services/r2.service.js";
 import cors from "@fastify/cors";
 import jwt from "@fastify/jwt";
 import multipart from "@fastify/multipart";
@@ -33,6 +34,8 @@ await app.register(jwt, {
 await app.register(multipart, { limits: { fileSize: 5 * 1024 * 1024 } }); // 5MB
 await app.register(prismaPlugin);
 await app.register(inventoryPlugin);
+
+logR2Status(app.log);
 
 app.get("/health", async () => ({ ok: true, ts: Date.now() }));
 

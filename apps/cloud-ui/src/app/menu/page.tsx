@@ -1,8 +1,26 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import {
+  DndContext,
+  closestCenter,
+  type DragEndEvent,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import {
+  arrayMove,
+  SortableContext,
+  horizontalListSortingStrategy,
+  rectSortingStrategy,
+  sortableKeyboardCoordinates,
+  useSortable,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import {
   api,
   type Category,
@@ -36,6 +54,88 @@ const TILE_COLORS = [
   { border: "#ec4899", accent: "#ec4899" },
 ];
 
+function SortableCategoryChip({
+  cat,
+  isSelected,
+  onSelect,
+}: {
+  cat: Category;
+  isSelected: boolean;
+  onSelect: () => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: cat.id,
+  });
+  const baseTransform = CSS.Transform.toString(transform);
+  const scale = isDragging ? " scale(1.02)" : "";
+  const style: React.CSSProperties = {
+    transform: baseTransform ? `${baseTransform}${scale}` : scale || undefined,
+    transition,
+    opacity: isDragging ? 0.9 : 1,
+    boxShadow: isDragging ? "0 8px 16px rgba(0,0,0,0.4)" : undefined,
+    background: isSelected ? COLORS.primary : COLORS.bgPanel,
+    color: isSelected ? "#000" : "#ddd",
+    border: `1px solid ${isSelected ? COLORS.primary : COLORS.borderLight}`,
+  };
+  return (
+    <button
+      ref={setNodeRef}
+      type="button"
+      onClick={onSelect}
+      {...attributes}
+      {...listeners}
+      className="shrink-0 rounded-full px-4 py-2 text-sm font-medium transition-all duration-200"
+      style={style}
+    >
+      {cat.name}
+    </button>
+  );
+}
+
+function SortableSubcategoryTile({
+  sub,
+  index,
+  isSelected,
+  onSelect,
+}: {
+  sub: SubCategory;
+  index: number;
+  isSelected: boolean;
+  onSelect: () => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: sub.id,
+  });
+  const colors = TILE_COLORS[index % TILE_COLORS.length];
+  const baseTransform = CSS.Transform.toString(transform);
+  const scale = isDragging ? " scale(1.03)" : "";
+  const lift = isSelected ? " translateY(-2px)" : "";
+  const style: React.CSSProperties = {
+    transform: baseTransform ? `${baseTransform}${scale}${lift}` : scale || lift || undefined,
+    transition,
+    opacity: isDragging ? 0.9 : 1,
+    boxShadow: isDragging ? "0 8px 20px rgba(0,0,0,0.5)" : undefined,
+    background: isSelected ? "#333" : COLORS.bgPanel,
+    border: `2px solid ${colors.border}`,
+  };
+  return (
+    <button
+      ref={setNodeRef}
+      type="button"
+      onClick={onSelect}
+      {...attributes}
+      {...listeners}
+      className="flex min-h-[100px] flex-col items-center justify-center rounded-lg p-4 transition-all duration-200"
+      style={style}
+    >
+      <span className="text-center text-sm font-bold uppercase tracking-wide text-white" style={{ lineHeight: 1.3 }}>
+        {sub.name}
+      </span>
+      <div className="mt-2 h-0.5 w-10 rounded" style={{ background: colors.accent }} />
+    </button>
+  );
+}
+
 function MenuPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -60,12 +160,13 @@ function MenuPageContent() {
   const [editSubName, setEditSubName] = useState("");
   const [saving, setSaving] = useState(false);
 
-  const [draggingCategoryId, setDraggingCategoryId] = useState<string | null>(null);
-  const [dragOverCategoryId, setDragOverCategoryId] = useState<string | null>(null);
-  const [draggingSubCategoryId, setDraggingSubCategoryId] = useState<string | null>(null);
-  const [dragOverSubCategoryId, setDragOverSubCategoryId] = useState<string | null>(null);
   const [draggingItemId, setDraggingItemId] = useState<string | null>(null);
   const [dragOverItemId, setDragOverItemId] = useState<string | null>(null);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
 
   const safeCategories = Array.isArray(categories) ? categories : [];
   const currentCategory = safeCategories.find((c) => c.id === selectedCategoryId);
@@ -123,6 +224,45 @@ function MenuPageContent() {
       refresh();
     }
   }
+
+  const sortedCategories = [...safeCategories].sort((a, b) => a.sortOrder - b.sortOrder);
+  const sortedSubcategories = [...subcategories].sort((a, b) => (a?.sortOrder ?? 0) - (b?.sortOrder ?? 0));
+
+  const handleCategoryDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      const sorted = [...safeCategories].sort((a, b) => a.sortOrder - b.sortOrder);
+      const oldIndex = sorted.findIndex((c) => c.id === active.id);
+      const newIndex = sorted.findIndex((c) => c.id === over.id);
+      if (oldIndex === -1 || newIndex === -1) return;
+      const next = arrayMove(sorted, oldIndex, newIndex).map((c, i) => ({
+        ...c,
+        sortOrder: i,
+      }));
+      persistCategoryOrder(next);
+    },
+    [safeCategories, persistCategoryOrder]
+  );
+
+  const handleSubcategoryDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id || !selectedCategoryId) return;
+      const subs = normalizeSubCategories(
+        safeCategories.find((c) => c.id === selectedCategoryId)?.subCategories ?? []
+      );
+      const sorted = [...subs].sort((a, b) => (a?.sortOrder ?? 0) - (b?.sortOrder ?? 0));
+      const oldIndex = sorted.findIndex((s) => s?.id === active.id);
+      const newIndex = sorted.findIndex((s) => s?.id === over.id);
+      if (oldIndex === -1 || newIndex === -1) return;
+      const next = arrayMove(sorted, oldIndex, newIndex).map((s, i) =>
+        s ? { ...s, sortOrder: i } : s
+      ) as SubCategory[];
+      persistSubCategoryOrder(selectedCategoryId, next);
+    },
+    [safeCategories, selectedCategoryId, persistSubCategoryOrder]
+  );
 
   async function persistItemOrder(subCategoryId: string, nextItems: MenuItem[]) {
     setItems((prev) => {
@@ -434,72 +574,62 @@ function MenuPageContent() {
           <p style={{ color: "#888" }}>Select a category above or add one.</p>
         ) : (
           <>
-            {/* CategoryRow: horizontal scrollable chips */}
+            {/* CategoryRow: horizontal scrollable chips (drag to reorder) */}
             <div className="mb-4 overflow-x-auto pb-2">
-              <div className="flex gap-2" style={{ minWidth: "min-content" }}>
-                {safeCategories
-                  .slice()
-                  .sort((a, b) => a.sortOrder - b.sortOrder)
-                  .map((cat) => (
-                    <button
-                      key={cat.id}
-                      type="button"
-                      onClick={() => selectCategory(cat.id)}
-                      className="shrink-0 rounded-full px-4 py-2 text-sm font-medium transition-colors"
-                      style={{
-                        background: selectedCategoryId === cat.id ? COLORS.primary : COLORS.bgPanel,
-                        color: selectedCategoryId === cat.id ? "#000" : "#ddd",
-                        border: `1px solid ${selectedCategoryId === cat.id ? COLORS.primary : COLORS.borderLight}`,
-                      }}
-                    >
-                      {cat.name}
-                    </button>
-                  ))}
-              </div>
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleCategoryDragEnd}
+              >
+                <SortableContext
+                  items={sortedCategories.map((c) => c.id)}
+                  strategy={horizontalListSortingStrategy}
+                >
+                  <div className="flex gap-2" style={{ minWidth: "min-content" }}>
+                    {sortedCategories.map((cat) => (
+                      <SortableCategoryChip
+                        key={cat.id}
+                        cat={cat}
+                        isSelected={selectedCategoryId === cat.id}
+                        onSelect={() => selectCategory(cat.id)}
+                      />
+                    ))}
+                  </div>
+                </SortableContext>
+              </DndContext>
             </div>
 
-            {/* Subcategory tiles (UTAK-style, like POS menu) */}
+            {/* Subcategory tiles (UTAK-style, drag to reorder) */}
             {subcategories.length === 0 ? (
               <p style={{ color: "#888", marginBottom: 16 }}>
                 No subcategories. Use &quot;Add Subcategory&quot; above.
               </p>
             ) : (
-              <div
-                className="mb-4 grid gap-4"
-                style={{ gridTemplateColumns: "repeat(3, 1fr)", maxWidth: 900 }}
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleSubcategoryDragEnd}
               >
-                {subcategories
-                  .slice()
-                  .sort((a, b) => a.sortOrder - b.sortOrder)
-                  .map((sub, index) => {
-                    const colors = TILE_COLORS[index % TILE_COLORS.length];
-                    const isSelected = selectedSubCategoryId === sub.id;
-                    return (
-                      <button
+                <SortableContext
+                  items={sortedSubcategories.map((s) => s.id)}
+                  strategy={rectSortingStrategy}
+                >
+                  <div
+                    className="mb-4 grid gap-4"
+                    style={{ gridTemplateColumns: "repeat(3, 1fr)", maxWidth: 900 }}
+                  >
+                    {sortedSubcategories.map((sub, index) => (
+                      <SortableSubcategoryTile
                         key={sub.id}
-                        type="button"
-                        onClick={() => selectSubcategory(sub.id)}
-                        className="flex min-h-[100px] flex-col items-center justify-center rounded-lg p-4 transition-all"
-                        style={{
-                          background: isSelected ? "#333" : COLORS.bgPanel,
-                          border: `2px solid ${colors.border}`,
-                          transform: isSelected ? "translateY(-2px)" : "translateY(0)",
-                        }}
-                      >
-                        <span
-                          className="text-center text-sm font-bold uppercase tracking-wide text-white"
-                          style={{ lineHeight: 1.3 }}
-                        >
-                          {sub.name}
-                        </span>
-                        <div
-                          className="mt-2 h-0.5 w-10 rounded"
-                          style={{ background: colors.accent }}
-                        />
-                      </button>
-                    );
-                  })}
-              </div>
+                        sub={sub}
+                        index={index}
+                        isSelected={selectedSubCategoryId === sub.id}
+                        onSelect={() => selectSubcategory(sub.id)}
+                      />
+                    ))}
+                  </div>
+                </SortableContext>
+              </DndContext>
             )}
 
             {/* Item grid under subcategories */}
