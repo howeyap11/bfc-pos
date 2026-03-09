@@ -134,15 +134,19 @@ export async function processTransactionSyncOutbox(
       });
       succeeded++;
     } catch (err) {
+      const attempts = item.attempts + 1;
+      const lastError = (err as Error)?.message ?? String(err);
+      // Keep PENDING for retry up to 10 attempts, then mark FAILED
+      const status = attempts >= 10 ? "FAILED" : "PENDING";
       await prisma.localOutbox.update({
         where: { id: item.id },
         data: {
-          status: "FAILED",
-          attempts: item.attempts + 1,
-          lastError: (err as Error)?.message ?? String(err),
+          status,
+          attempts,
+          lastError,
         },
       });
-      failed++;
+      if (status === "FAILED") failed++;
     }
   }
   return { processed: items.length, succeeded, failed };

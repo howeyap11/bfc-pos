@@ -4,24 +4,10 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import * as XLSX from "xlsx";
 import { api, type SyncedTransactionRow, type DailyReport, type MonthlyReport } from "@/lib/api";
-import { COLORS } from "@/lib/theme";
+import { COLORS, getPaymentBadgeColor } from "@/lib/theme";
 
 const TABS = ["Transactions", "Hourly", "Daily", "Monthly"] as const;
 type TabId = (typeof TABS)[number];
-
-const PAYMENT_COLORS: Record<string, string> = {
-  CASH: "#22c55e",
-  CARD: "#f97316",
-  GCASH: "#3b82f6",
-  PAYMONGO: "#6366f1",
-  FOODPANDA: "#ec4899",
-  GRABFOOD: "#10b981",
-  BFCAPP: "#f59e0b",
-};
-
-function getPaymentColor(method: string): string {
-  return PAYMENT_COLORS[method] ?? "#6b7280";
-}
 
 function formatPesos(cents: number): string {
   return `₱${(cents / 100).toFixed(2)}`;
@@ -276,32 +262,31 @@ export function TransactionsContent() {
               <table className="w-full border-collapse">
                 <thead>
                   <tr style={{ background: "#1a1a1a", borderBottom: `2px solid ${COLORS.borderLight}` }}>
-                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-white/70">Date</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-white/70">Date / ID / Payment</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-white/70">Time</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-white/70">Receipt No.</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-white/70">Receipt #</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-white/70">Cashier</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-white/70">Items</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-white/70">Payment</th>
                     <th className="px-4 py-3 text-right text-xs font-semibold uppercase text-white/70">Total</th>
                   </tr>
                 </thead>
                 <tbody>
                   {loading && transactions.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-4 py-8 text-center text-white/50">
+                      <td colSpan={6} className="px-4 py-8 text-center text-white/50">
                         Loading...
                       </td>
                     </tr>
                   ) : transactions.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-4 py-8 text-center text-white/50">
+                      <td colSpan={6} className="px-4 py-8 text-center text-white/50">
                         No transactions found. Ensure POS sync is configured (CLOUD_URL, STORE_SYNC_SECRET).
                       </td>
                     </tr>
                   ) : (
                     transactions.map((tx) => {
                       const methods = [...new Set(tx.payments.map((p) => p.method))];
-                      const primaryMethod = methods[0] || "CASH";
+                      const shortId = (tx.sourceTransactionId ?? tx.id).slice(-8);
                       return (
                         <tr
                           key={tx.id}
@@ -310,21 +295,57 @@ export function TransactionsContent() {
                             opacity: tx.status === "VOID" ? 0.5 : 1,
                           }}
                         >
-                          <td className="px-4 py-3 text-sm">{formatDate(tx.createdAt)}</td>
-                          <td className="px-4 py-3 text-sm">{formatTime(tx.createdAt)}</td>
-                          <td className="px-4 py-3 font-mono text-sm">{tx.transactionNo}</td>
-                          <td className="px-4 py-3 text-sm">{tx.cashierName || "—"}</td>
-                          <td className="px-4 py-3 text-sm">{tx.itemsCount}</td>
-                          <td className="px-4 py-3">
-                            <span
-                              className="inline-block rounded px-2 py-0.5 text-xs font-semibold text-white"
-                              style={{ background: getPaymentColor(primaryMethod) }}
-                            >
-                              {methods.length > 1 ? "SPLIT" : primaryMethod}
-                            </span>
+                          <td className="px-4 py-3 align-top" style={{ minWidth: 160 }}>
+                            <div className="text-sm text-white" style={{ marginBottom: 4 }}>{formatDate(tx.createdAt)}</div>
+                            <div className="text-xs font-mono text-white/60" style={{ marginBottom: 8 }}>{shortId}</div>
+                            <div className="flex flex-wrap gap-1">
+                              {methods.length > 1 ? (
+                                <>
+                                  <span
+                                    className="inline-block rounded px-2 py-0.5 text-xs font-semibold text-white"
+                                    style={{ background: "#6b7280" }}
+                                  >
+                                    SPLIT
+                                  </span>
+                                  {methods.map((m) => (
+                                    <span
+                                      key={m}
+                                      className="inline-block rounded px-2 py-0.5 text-xs font-semibold text-white"
+                                      style={{ background: getPaymentBadgeColor(m) }}
+                                    >
+                                      {m}
+                                    </span>
+                                  ))}
+                                </>
+                              ) : (
+                                <span
+                                  className="inline-block rounded px-2 py-0.5 text-xs font-semibold text-white"
+                                  style={{ background: getPaymentBadgeColor(methods[0] || "CASH") }}
+                                >
+                                  {methods[0] || "CASH"}
+                                </span>
+                              )}
+                            </div>
                           </td>
-                          <td className="px-4 py-3 text-right text-sm font-medium text-green-400">
-                            {formatPesos(tx.totalCents)}
+                          <td className="px-4 py-3 text-sm text-white align-top">{formatTime(tx.createdAt)}</td>
+                          <td className="px-4 py-3 font-mono text-sm font-semibold text-white align-top">#{tx.transactionNo}</td>
+                          <td className="px-4 py-3 text-sm text-white align-top">{tx.cashierName || "—"}</td>
+                          <td className="px-4 py-3 align-top" style={{ minWidth: 200 }}>
+                            <div className="flex flex-col gap-1">
+                              {tx.lineItems && tx.lineItems.length > 0 ? (
+                                tx.lineItems.map((line, idx) => (
+                                  <div key={idx} className="text-sm text-white flex justify-between gap-2">
+                                    <span className="font-medium">{line.qty}× {line.name}</span>
+                                    <span className="text-green-400 shrink-0">{formatPesos(line.lineTotal)}</span>
+                                  </div>
+                                ))
+                              ) : (
+                                <span className="text-sm text-white/60">—</span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-right align-top">
+                            <span className="text-sm font-semibold text-green-400">{formatPesos(tx.totalCents)}</span>
                           </td>
                         </tr>
                       );

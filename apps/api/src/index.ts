@@ -236,7 +236,7 @@ app.get("/items/:id", async (req) => {
     const defaultShots = (cloud as { defaultShots?: number | null }).defaultShots ?? 0;
 
     // Recipe consumption for future inventory deduction (optional)
-    const [recipeLines, recipeLineSizes] = await Promise.all([
+    const [recipeLines, recipeLineSizes, addOnLinks, substituteLinks, addOns, substitutes] = await Promise.all([
       app.prisma.cloudRecipeLine.findMany({
         where: { menuItemCloudId: cloud.cloudId, storeId, deletedAt: null },
         select: { ingredientCloudId: true, qtyPerItem: true, unitCode: true },
@@ -245,7 +245,20 @@ app.get("/items/:id", async (req) => {
         where: { menuItemCloudId: cloud.cloudId, storeId, deletedAt: null },
         select: { ingredientCloudId: true, baseType: true, sizeCode: true, qtyPerItem: true, unitCode: true },
       }),
+      app.prisma.cloudMenuItemAddOn.findMany({
+        where: { menuItemCloudId: cloud.cloudId, storeId },
+      }),
+      app.prisma.cloudMenuItemSubstitute.findMany({
+        where: { menuItemCloudId: cloud.cloudId, storeId },
+      }),
+      app.prisma.cloudAddOn.findMany({ where: { storeId }, orderBy: { sortOrder: "asc" } }),
+      app.prisma.cloudSubstitute.findMany({ where: { storeId }, orderBy: { sortOrder: "asc" } }),
     ]);
+    const addOnIds = new Set(addOnLinks.map((l) => l.addOnCloudId));
+    const substituteIds = new Set(substituteLinks.map((l) => l.substituteCloudId));
+    const itemAddOns = addOns.filter((a) => addOnIds.has(a.cloudId)).map((a) => ({ id: a.cloudId, name: a.name, priceCents: a.priceCents }));
+    const itemSubstitutes = substitutes.filter((s) => substituteIds.has(s.cloudId)).map((s) => ({ id: s.cloudId, name: s.name, priceCents: s.priceCents }));
+    const defaultSubId = (cloud as { defaultSubstituteCloudId?: string | null }).defaultSubstituteCloudId ?? null;
 
     return {
       id: cloud.cloudId,
@@ -257,6 +270,9 @@ app.get("/items/:id", async (req) => {
       serveVessel: cloud.serveVessel,
       defaultSizeOptionId: (cloud as { defaultSizeOptionCloudId?: string | null }).defaultSizeOptionCloudId ?? null,
       defaultMilk: "FULL_CREAM",
+      defaultSubstituteCloudId: defaultSubId,
+      substitutes: itemSubstitutes.length > 0 ? itemSubstitutes : undefined,
+      addOns: itemAddOns.length > 0 ? itemAddOns : undefined,
       supportsShots: (cloud as { supportsShots?: boolean }).supportsShots ?? false,
       defaultShots12oz: defaultShots,
       defaultShots16oz: defaultShots,

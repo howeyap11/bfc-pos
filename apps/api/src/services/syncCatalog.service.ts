@@ -159,6 +159,10 @@ type SyncResponse = {
   menuItemSizePrices?: CloudMenuItemSizePrice[];
   transactionTypes?: CloudTransactionType[];
   shotPricingRules?: CloudShotPricingRule[];
+  addOns?: { id: string; name: string; priceCents: number; sortOrder: number }[];
+  substitutes?: { id: string; name: string; priceCents: number; sortOrder: number }[];
+  menuItemAddOns?: { itemId: string; addOnId: string }[];
+  menuItemSubstitutes?: { itemId: string; substituteId: string }[];
 };
 
 export type SyncCatalogResult = {
@@ -218,6 +222,10 @@ export async function syncCatalogFromCloud(
       recipeLineSizesReceived: (data.recipeLineSizes ?? []).length,
       transactionTypesReceived: (data.transactionTypes ?? []).length,
       shotPricingRulesReceived: (data.shotPricingRules ?? []).length,
+      addOnsReceived: (data.addOns ?? []).length,
+      substitutesReceived: (data.substitutes ?? []).length,
+      menuItemAddOnsReceived: (data.menuItemAddOns ?? []).length,
+      menuItemSubstitutesReceived: (data.menuItemSubstitutes ?? []).length,
       latestVersion: data.latestVersion,
     });
   } catch (err) {
@@ -260,6 +268,7 @@ export async function syncCatalogFromCloud(
             hasSizes: (i as any).hasSizes ?? false,
             supportsShots: i.supportsShots ?? false,
             defaultShots: i.defaultShots ?? null,
+            defaultSubstituteCloudId: (i as { defaultSubstituteId?: string | null }).defaultSubstituteId ?? null,
           },
           update: {
             name: i.name,
@@ -277,6 +286,7 @@ export async function syncCatalogFromCloud(
             hasSizes: (i as any).hasSizes ?? false,
             supportsShots: i.supportsShots ?? false,
             defaultShots: i.defaultShots ?? null,
+            defaultSubstituteCloudId: (i as { defaultSubstituteId?: string | null }).defaultSubstituteId ?? null,
           },
         });
         itemsUpserted++;
@@ -489,6 +499,64 @@ export async function syncCatalogFromCloud(
           },
         });
         shotPricingRulesUpserted++;
+      }
+
+      // Sync add-ons and substitutes
+      for (const a of data.addOns ?? []) {
+        await tx.cloudAddOn.upsert({
+          where: { cloudId: a.id },
+          create: {
+            cloudId: a.id,
+            storeId,
+            name: a.name,
+            priceCents: a.priceCents ?? 0,
+            sortOrder: a.sortOrder ?? 0,
+          },
+          update: {
+            name: a.name,
+            priceCents: a.priceCents ?? 0,
+            sortOrder: a.sortOrder ?? 0,
+          },
+        });
+      }
+      for (const s of data.substitutes ?? []) {
+        await tx.cloudSubstitute.upsert({
+          where: { cloudId: s.id },
+          create: {
+            cloudId: s.id,
+            storeId,
+            name: s.name,
+            priceCents: s.priceCents ?? 0,
+            sortOrder: s.sortOrder ?? 0,
+          },
+          update: {
+            name: s.name,
+            priceCents: s.priceCents ?? 0,
+            sortOrder: s.sortOrder ?? 0,
+          },
+        });
+      }
+      await tx.cloudMenuItemAddOn.deleteMany({ where: { storeId } });
+      const addOnLinks = data.menuItemAddOns ?? [];
+      if (addOnLinks.length > 0) {
+        await tx.cloudMenuItemAddOn.createMany({
+          data: addOnLinks.map((l) => ({
+            storeId,
+            menuItemCloudId: l.itemId,
+            addOnCloudId: l.addOnId,
+          })),
+        });
+      }
+      await tx.cloudMenuItemSubstitute.deleteMany({ where: { storeId } });
+      const subLinks = data.menuItemSubstitutes ?? [];
+      if (subLinks.length > 0) {
+        await tx.cloudMenuItemSubstitute.createMany({
+          data: subLinks.map((l) => ({
+            storeId,
+            menuItemCloudId: l.itemId,
+            substituteCloudId: l.substituteId,
+          })),
+        });
       }
 
       for (const o of data.menuOptions ?? []) {

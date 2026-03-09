@@ -22,7 +22,10 @@ export type CartItem = {
   shotsQty?: number;
   defaultShotsForSize?: number;
   shotsUpchargeCents?: number;
-  fulfillment: "FOR_HERE" | "TAKE_OUT" | "FOODPANDA";
+  /** @deprecated Use transactionTypeCode + surchargeCents. Kept for backward compat. */
+  fulfillment?: "FOR_HERE" | "TAKE_OUT" | "FOODPANDA";
+  transactionTypeCode?: string;
+  transactionTypeLabel?: string;
   optionTotalCents: number;
   surchargeCents: number;
   discountPct: number;

@@ -61,12 +61,9 @@ export async function uploadTransactionToCloud(
     voidReason: tx.voidReason ?? null,
   };
 
-  // Temporary debug log
-  console.log("[TransactionSync] Transaction queued for cloud sync", { transactionId: tx.id, status: tx.status });
-
   try {
     // Temporary debug log
-    console.log("[TransactionSync] Transaction upload attempt", { transactionId: tx.id, url });
+    console.log("[TransactionSync] Transaction upload attempt", { transactionId: tx.id, status: tx.status, url });
 
     const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload) });
 

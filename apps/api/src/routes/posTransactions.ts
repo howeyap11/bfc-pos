@@ -461,6 +461,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         lineItemsList
       );
       if (!uploadResult.ok) {
+        console.log("[TransactionSync] Transaction queued for cloud sync (retry)", { transactionId: transaction.id });
         await enqueueOutbox(app.prisma, {
           storeId: transaction.storeId,
           topic: "transaction.cloud.sync",
@@ -566,6 +567,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     const lineItemsList = voided.lineItems.map((l) => ({ name: l.name, qty: l.qty, lineTotal: l.lineTotal }));
     const uploadResult = await uploadTransactionToCloud(app.prisma, voided, paymentsList, lineItemsList);
     if (!uploadResult.ok) {
+      console.log("[TransactionSync] Transaction queued for cloud sync (retry)", { transactionId: voided.id });
       await enqueueOutbox(app.prisma, {
         storeId: voided.storeId,
         topic: "transaction.cloud.sync",

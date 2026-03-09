@@ -50,6 +50,9 @@ type Item = {
   defaultEspressoShots?: number;
 };
 
+type SubstituteOption = { id: string; name: string; priceCents: number };
+type AddOnOption = { id: string; name: string; priceCents: number };
+
 type ItemDetail = {
   id: string;
   name: string;
@@ -57,6 +60,9 @@ type ItemDetail = {
   imageUrl?: string | null;
   foodpandaSurchargeCents?: number;
   defaultMilk?: MilkType;
+  defaultSubstituteCloudId?: string | null;
+  substitutes?: SubstituteOption[];
+  addOns?: AddOnOption[];
   supportsShots?: boolean;
   isEspressoDrink?: boolean;
   shotsPricingMode?: ShotsPricingMode | null;
@@ -83,6 +89,13 @@ type ItemDetail = {
   }>;
 };
 
+type TransactionType = {
+  id: string;
+  code: string;
+  label: string;
+  priceDeltaCents: number;
+};
+
 type CartItem = {
   tempId: string;
   itemId: string;
@@ -101,9 +114,13 @@ type CartItem = {
   shotsQty?: number; // Espresso shots quantity
   defaultShotsForSize?: number; // Default shots for selected size (for comparison)
   shotsUpchargeCents?: number; // Espresso shots upcharge (snapshot)
-  fulfillment: "FOR_HERE" | "TAKE_OUT" | "FOODPANDA"; // Per-line fulfillment
+  /** Transaction type (cloud-synced). Replaces legacy fulfillment. */
+  transactionTypeCode: string;
+  transactionTypeLabel: string;
+  /** @deprecated Use transactionTypeCode/transactionTypeLabel. Kept for formatLineItemModifiers fallback. */
+  fulfillment?: string;
   optionTotalCents: number; // Sum of all option price deltas
-  surchargeCents: number; // Per-line surcharge (e.g., ₱20 for FOODPANDA)
+  surchargeCents: number; // Per-line surcharge from transaction type priceDeltaCents
   // Existing discount fields
   discountPct: number;
   discountAmount: number;
@@ -491,9 +508,9 @@ function CartItemEditorModal({
     importantModifiers.push(`${item.shotsQty} Shot${item.shotsQty > 1 ? "s" : ""}`);
   }
 
-  // Add fulfillment
-  const fulfillmentLabel = item.fulfillment === "FOR_HERE" ? "For Here" : item.fulfillment === "TAKE_OUT" ? "Take Out" : "Foodpanda";
-  importantModifiers.push(fulfillmentLabel);
+  // Add transaction type (cloud-synced; fallback to legacy fulfillment)
+  const txLabel = item.transactionTypeLabel ?? (item.fulfillment === "FOR_HERE" ? "For Here" : item.fulfillment === "TAKE_OUT" ? "Take Out" : "Foodpanda");
+  importantModifiers.push(txLabel);
 
   item.selectedOptions.forEach((opt) => {
     const optName = opt.name.toUpperCase();
@@ -1263,16 +1280,16 @@ function formatLineItemModifiers(item: CartItem) {
   // 4) Other modifiers (syrups, extras)
   otherOptions.forEach(opt => secondaryParts.push(opt));
   
-  // 5) Fulfillment
-  const fulfillmentLabel = item.fulfillment === "FOR_HERE" ? "For Here" : 
-                           item.fulfillment === "TAKE_OUT" ? "Take Out" : "Foodpanda";
-  
+  // 5) Transaction type (cloud-synced; fallback to legacy fulfillment for display)
+  const txCode = item.transactionTypeCode ?? item.fulfillment ?? "FOR_HERE";
+  const transactionTypeLabel = item.transactionTypeLabel ?? (item.fulfillment === "FOR_HERE" ? "For Here" : item.fulfillment === "TAKE_OUT" ? "Take Out" : "Foodpanda");
+  const transactionTypeColor = txCode === "FOR_HERE" ? "#10b981" : txCode === "TO_GO" || txCode === "TAKE_OUT" ? "#f59e0b" : "#ec4899";
+
   return {
     primaryText: primaryParts.join(" "), // e.g., "16oz ICED"
     secondaryParts, // e.g., ["sub oatmilk", "2 shots", "Vanilla Syrup"]
-    fulfillmentLabel,
-    fulfillmentColor: item.fulfillment === "FOR_HERE" ? "#10b981" : 
-                      item.fulfillment === "TAKE_OUT" ? "#f59e0b" : "#ec4899",
+    fulfillmentLabel: transactionTypeLabel,
+    fulfillmentColor: transactionTypeColor,
   };
 }
 
@@ -1446,7 +1463,7 @@ export default function PosRegisterClient() {
   const [configMilk, setConfigMilk] = useState<MilkType>("FULL_CREAM");
   const [configShotsQty, setConfigShotsQty] = useState<number>(0);
   const [shotsTouchedByUser, setShotsTouchedByUser] = useState<boolean>(false); // Track manual shot changes
-  const [configFulfillment, setConfigFulfillment] = useState<"FOR_HERE" | "TAKE_OUT" | "FOODPANDA">("FOR_HERE");
+  const [configTransactionType, setConfigTransactionType] = useState<TransactionType | null>(null);
   const [configNote, setConfigNote] = useState<string>("");
 
   // Cart item editing
@@ -1475,11 +1492,20 @@ export default function PosRegisterClient() {
   // QR Order tracking
   const [qrOrderId, setQrOrderId] = useState<string | null>(null);
   
+  // Transaction types (cloud-synced)
+  const [transactionTypes, setTransactionTypes] = useState<TransactionType[]>([]);
+
   // Staff session
   const [activeStaff, setActiveStaff] = useState<{ id: string; name: string; role: string; staffKey: string } | null>(null);
   const [staffList, setStaffList] = useState<Array<{ id: string; name: string; role: string; passcode: string; key: string }>>([]);
   const [showStaffModal, setShowStaffModal] = useState(false);
   const [staffBusy, setStaffBusy] = useState<string | null>(null);
+
+  const DEFAULT_TRANSACTION_TYPES: TransactionType[] = [
+    { id: "_FOR_HERE", code: "FOR_HERE", label: "For Here", priceDeltaCents: 0 },
+    { id: "_TO_GO", code: "TO_GO", label: "To Go", priceDeltaCents: 0 },
+    { id: "_FOODPANDA", code: "FOODPANDA", label: "FoodPanda", priceDeltaCents: 2000 },
+  ];
 
   // Debug render logging
   console.log("[RENDER]", {
@@ -1504,9 +1530,23 @@ export default function PosRegisterClient() {
     });
   }, [activeStaff]);
 
+  async function loadTransactionTypes() {
+    try {
+      const data = await fetchJson("/api/transaction-types", { cache: "no-store" });
+      if (Array.isArray(data) && data.length > 0) {
+        setTransactionTypes(data);
+      } else {
+        setTransactionTypes(DEFAULT_TRANSACTION_TYPES);
+      }
+    } catch {
+      setTransactionTypes(DEFAULT_TRANSACTION_TYPES);
+    }
+  }
+
   useEffect(() => {
     loadMenu();
     loadStoreConfig();
+    loadTransactionTypes();
     checkActiveStaff();
     loadStaffList();
     
@@ -1880,7 +1920,14 @@ export default function PosRegisterClient() {
       });
       setSelectedOptions(defaults);
       setConfigQty(1);
-      setConfigMilk(item.defaultMilk || "FULL_CREAM");
+      // Default milk: from cloud defaultSubstituteCloudId when substitutes exist, else defaultMilk
+      if (item.substitutes && item.substitutes.length > 0 && item.defaultSubstituteCloudId) {
+        const defaultSub = item.substitutes.find((s) => s.id === item.defaultSubstituteCloudId);
+        const milkFromName = defaultSub?.name.toUpperCase().includes("OAT") ? "OAT" : defaultSub?.name.toUpperCase().includes("ALMOND") ? "ALMOND" : defaultSub?.name.toUpperCase().includes("SOY") ? "SOY" : "FULL_CREAM";
+        setConfigMilk(milkFromName);
+      } else {
+        setConfigMilk((item as { defaultMilk?: MilkType }).defaultMilk || "FULL_CREAM");
+      }
       
       // Determine initial shots based on selected size
       // Default size is 16oz (set above in defaults)
@@ -1912,7 +1959,8 @@ export default function PosRegisterClient() {
       
       setConfigShotsQty(initialShots);
       setShotsTouchedByUser(false); // Reset touch tracking
-      setConfigFulfillment("FOR_HERE"); // Changed default to FOR_HERE
+      const txTypes = transactionTypes.length > 0 ? transactionTypes : DEFAULT_TRANSACTION_TYPES;
+      setConfigTransactionType(txTypes[0] ?? null);
       setConfigNote("");
       
       // Switch to CUSTOMIZE view
@@ -1930,7 +1978,8 @@ export default function PosRegisterClient() {
     setConfigMilk("FULL_CREAM");
     setConfigShotsQty(0);
     setShotsTouchedByUser(false); // Reset touch tracking
-    setConfigFulfillment("FOR_HERE"); // Reset to FOR_HERE default
+    const txTypes = transactionTypes.length > 0 ? transactionTypes : DEFAULT_TRANSACTION_TYPES;
+    setConfigTransactionType(txTypes[0] ?? null);
     setConfigNote("");
     
     // Switch back to BROWSE view
@@ -2025,7 +2074,7 @@ export default function PosRegisterClient() {
     let optionTotalCents = 0;
 
     configuringItem.itemOptionGroups.forEach(({ group }) => {
-      const selected = selectedOptions[group.id] || [];
+      const selected = selectedOptions[group.id] ?? [];
       selected.forEach((optId) => {
         const opt = group.options.find((o) => o.id === optId);
         if (opt) {
@@ -2039,20 +2088,42 @@ export default function PosRegisterClient() {
         }
       });
     });
+    // Add-ons (cloud-synced)
+    if (configuringItem.addOns && configuringItem.addOns.length > 0) {
+      const selectedAddonIds = selectedOptions["addons"] ?? [];
+      selectedAddonIds.forEach((addonId) => {
+        const addon = configuringItem.addOns!.find((a) => a.id === addonId);
+        if (addon) {
+          opts.push({
+            id: addon.id,
+            name: addon.name,
+            groupName: "Add-ons",
+            priceDelta: addon.priceCents,
+          });
+          optionTotalCents += addon.priceCents;
+        }
+      });
+    }
 
-    // Add milk price delta (₱10 for non-default milk)
-    const itemDefaultMilk = configuringItem.defaultMilk || "FULL_CREAM";
-    const milkPriceDelta = configMilk !== itemDefaultMilk ? 1000 : 0; // 1000 cents = ₱10
+    // Add milk price delta (cloud substitute priceCents when available, else ₱10 for non-default)
+    let milkPriceDelta = 0;
+    if (configuringItem.substitutes && configuringItem.substitutes.length > 0) {
+      const defaultId = configuringItem.defaultSubstituteCloudId ?? configuringItem.substitutes[0]?.id;
+      const selectedSub = configuringItem.substitutes.find((s) => s.name.toUpperCase().includes(configMilk === "OAT" ? "OAT" : configMilk === "ALMOND" ? "ALMOND" : configMilk === "SOY" ? "SOY" : "CREAM"));
+      const defaultSub = defaultId ? configuringItem.substitutes.find((s) => s.id === defaultId) : configuringItem.substitutes[0];
+      milkPriceDelta = selectedSub ? selectedSub.priceCents - (defaultSub?.priceCents ?? 0) : 0;
+    } else {
+      const itemDefaultMilk = configuringItem.defaultMilk || "FULL_CREAM";
+      milkPriceDelta = configMilk !== itemDefaultMilk ? 1000 : 0;
+    }
     optionTotalCents += milkPriceDelta;
 
     // Calculate espresso shots upcharge using business rules
     const shotsUpchargeCents = calculateShotsUpcharge(configShotsQty, configuringItem.shotsPricingMode);
     optionTotalCents += shotsUpchargeCents;
 
-    // Calculate per-line surcharge (use item-specific surcharge, fallback to 2000)
-    const surchargeCents = configFulfillment === "FOODPANDA" 
-      ? (configuringItem.foodpandaSurchargeCents ?? 2000) 
-      : 0;
+    // Per-line surcharge from selected transaction type (cloud-synced priceDeltaCents)
+    const surchargeCents = configTransactionType?.priceDeltaCents ?? 0;
 
     // Determine default shots for the selected size
     const selectedSize = opts.find(o => 
@@ -2076,7 +2147,8 @@ export default function PosRegisterClient() {
       shotsQty: configShotsQty,
       defaultShotsForSize,
       shotsUpchargeCents, // Snapshot the calculated upcharge
-      fulfillment: configFulfillment,
+      transactionTypeCode: configTransactionType?.code ?? "FOR_HERE",
+      transactionTypeLabel: configTransactionType?.label ?? "For Here",
       optionTotalCents,
       surchargeCents,
       discountPct: 0,
@@ -3323,23 +3395,28 @@ export default function PosRegisterClient() {
                 </div>
               )}
 
-              {/* Milk Substitute Section */}
+              {/* Milk Substitute Section (cloud-synced when substitutes exist) */}
               <div style={{ marginBottom: 20 }}>
                 <h3 style={{ fontSize: 16, marginBottom: 10, color: "#ddd", fontWeight: "600" }}>
                   Milk Substitute
                 </h3>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {(["FULL_CREAM", "OAT", "ALMOND", "SOY"] as MilkType[]).map((milk) => {
-                    const isSelected = configMilk === milk;
-                    const itemDefaultMilk = configuringItem.defaultMilk || "FULL_CREAM";
-                    const priceDelta = milk !== itemDefaultMilk ? 1000 : 0;
-                    const label = milk === "FULL_CREAM" ? "Full Cream" : milk === "OAT" ? "Oat Milk" : milk === "ALMOND" ? "Almond Milk" : "Soy Milk";
-                    const isDefault = milk === itemDefaultMilk;
-                    
+                  {(configuringItem.substitutes && configuringItem.substitutes.length > 0
+                    ? configuringItem.substitutes
+                    : ([{ id: "FULL_CREAM", name: "Full Cream", priceCents: 0 }, { id: "OAT", name: "Oat Milk", priceCents: 1000 }, { id: "ALMOND", name: "Almond Milk", priceCents: 1000 }, { id: "SOY", name: "Soy Milk", priceCents: 1000 }] as const)
+                  ).map((s) => {
+                    const id = s.id;
+                    const name = s.name;
+                    const priceCents = s.priceCents;
+                    const nameUpper = name.toUpperCase();
+                    const milkType: MilkType = nameUpper.includes("OAT") ? "OAT" : nameUpper.includes("ALMOND") ? "ALMOND" : nameUpper.includes("SOY") ? "SOY" : "FULL_CREAM";
+                    const defaultId = configuringItem.defaultSubstituteCloudId ?? (configuringItem.substitutes?.[0]?.id ?? "FULL_CREAM");
+                    const isDefault = id === defaultId;
+                    const isSelected = configMilk === milkType;
                     return (
                       <button
-                        key={milk}
-                        onClick={() => setConfigMilk(milk)}
+                        key={id}
+                        onClick={() => setConfigMilk(milkType)}
                         style={{
                           padding: "10px 16px",
                           border: `2px solid ${isSelected ? COLORS.primary : "#444"}`,
@@ -3353,14 +3430,55 @@ export default function PosRegisterClient() {
                           position: "relative",
                         }}
                       >
-                        {label}
+                        {name}
                         {isDefault && <span style={{ fontSize: 11, color: "#aaa", marginLeft: 4 }}>(default)</span>}
-                        {priceDelta > 0 && ` (+${formatPesos(priceDelta)})`}
+                        {priceCents > 0 && ` (+${formatPesos(priceCents)})`}
                       </button>
                     );
                   })}
                 </div>
               </div>
+
+              {/* Add-ons (cloud-synced) */}
+              {configuringItem.addOns && configuringItem.addOns.length > 0 && (
+                <div style={{ marginBottom: 20 }}>
+                  <h3 style={{ fontSize: 16, marginBottom: 10, color: "#ddd", fontWeight: "600" }}>Add-ons</h3>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {configuringItem.addOns.map((addon) => {
+                      const addonGroupId = "addons";
+                      const current = selectedOptions[addonGroupId] ?? [];
+                      const isSelected = current.includes(addon.id);
+                      return (
+                        <button
+                          key={addon.id}
+                          onClick={() => {
+                            setSelectedOptions((prev) => {
+                              const cur = prev[addonGroupId] ?? [];
+                              if (cur.includes(addon.id)) {
+                                return { ...prev, [addonGroupId]: cur.filter((id) => id !== addon.id) };
+                              }
+                              return { ...prev, [addonGroupId]: [...cur, addon.id] };
+                            });
+                          }}
+                          style={{
+                            padding: "10px 16px",
+                            border: `2px solid ${isSelected ? COLORS.primary : "#444"}`,
+                            borderRadius: 6,
+                            cursor: "pointer",
+                            background: isSelected ? COLORS.primary : "#2a2a2a",
+                            color: "#fff",
+                            fontWeight: isSelected ? "bold" : "normal",
+                            fontSize: 14,
+                          }}
+                        >
+                          {addon.name}
+                          {addon.priceCents > 0 && ` (+${formatPesos(addon.priceCents)})`}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {/* Other Option Groups (not temperature/size/sauce/syrup/foam) */}
               {configuringItem.itemOptionGroups
@@ -3405,23 +3523,21 @@ export default function PosRegisterClient() {
                   </div>
                 ))}
 
-              {/* Fulfillment Section */}
+              {/* Transaction Type Section (cloud-synced) */}
               <div style={{ marginBottom: 20, paddingTop: 16, borderTop: `2px solid ${COLORS.primary}` }}>
                 <h3 style={{ fontSize: 17, marginBottom: 10, color: COLORS.primary, fontWeight: "700" }}>
-                  Fulfillment <span style={{ color: "#ef4444", fontSize: 18 }}>*</span>
+                  Transaction Type <span style={{ color: "#ef4444", fontSize: 18 }}>*</span>
                   <span style={{ fontSize: 12, color: "#aaa", fontWeight: "normal", marginLeft: 8 }}>
                     (Required per item)
                   </span>
                 </h3>
-                <div style={{ display: "flex", gap: 8 }}>
-                  {(["FOR_HERE", "TAKE_OUT", "FOODPANDA"] as const).map((fulfillment) => {
-                    const isSelected = configFulfillment === fulfillment;
-                    const label = fulfillment === "FOR_HERE" ? "For Here" : fulfillment === "TAKE_OUT" ? "Take Out" : "Foodpanda";
-                    const surcharge = fulfillment === "FOODPANDA" ? (configuringItem.foodpandaSurchargeCents ?? 2000) : 0;
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {(transactionTypes.length > 0 ? transactionTypes : DEFAULT_TRANSACTION_TYPES).map((tx) => {
+                    const isSelected = configTransactionType?.code === tx.code;
                     return (
                       <button
-                        key={fulfillment}
-                        onClick={() => setConfigFulfillment(fulfillment)}
+                        key={tx.id}
+                        onClick={() => setConfigTransactionType(tx)}
                         style={{
                           flex: 1,
                           padding: "12px 16px",
@@ -3435,8 +3551,8 @@ export default function PosRegisterClient() {
                           fontSize: 14,
                         }}
                       >
-                        {label}
-                        {surcharge > 0 && ` (+${formatPesos(surcharge)})`}
+                        {tx.label}
+                        {tx.priceDeltaCents > 0 && ` (+${formatPesos(tx.priceDeltaCents)})`}
                       </button>
                     );
                   })}
@@ -3494,7 +3610,7 @@ export default function PosRegisterClient() {
                 // Use espresso pricing formula
                 const shotsDelta = calculateShotsUpcharge(configShotsQty, configuringItem.shotsPricingMode);
                 
-                const surcharge = configFulfillment === "FOODPANDA" ? (configuringItem.foodpandaSurchargeCents ?? 2000) : 0;
+                const surcharge = configTransactionType?.priceDeltaCents ?? 0;
                 
                 const unitPrice = configuringItem.basePrice + optionsTotal + milkDelta + shotsDelta;
                 const lineTotal = (unitPrice + surcharge) * configQty;

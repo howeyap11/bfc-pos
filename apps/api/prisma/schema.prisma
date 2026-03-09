@@ -1021,6 +1021,7 @@ model CloudMenuItem {
   hasSizes         Boolean   @default(false)
   supportsShots    Boolean   @default(false)
   defaultShots     Int?
+  defaultSubstituteCloudId String?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
@@ -1171,6 +1172,60 @@ model CloudMenuSizeAvailability {
   @@unique([storeId, sizeCloudId, mode])
   @@index([storeId])
   @@index([sizeCloudId])
+}
+
+model CloudAddOn {
+  id         String   @id @default(cuid())
+  cloudId    String   @unique
+  storeId    String   @default("store_1")
+  name       String
+  priceCents Int      @default(0)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([storeId])
+}
+
+model CloudSubstitute {
+  id         String   @id @default(cuid())
+  cloudId    String   @unique
+  storeId    String   @default("store_1")
+  name       String
+  priceCents Int      @default(0)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([storeId])
+}
+
+model CloudMenuItemAddOn {
+  id               String @id @default(cuid())
+  storeId          String @default("store_1")
+  menuItemCloudId  String
+  addOnCloudId     String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([storeId, menuItemCloudId, addOnCloudId])
+  @@index([storeId])
+  @@index([menuItemCloudId])
+  @@index([addOnCloudId])
+}
+
+model CloudMenuItemSubstitute {
+  id                String @id @default(cuid())
+  storeId           String @default("store_1")
+  menuItemCloudId   String
+  substituteCloudId String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([storeId, menuItemCloudId, substituteCloudId])
+  @@index([storeId])
+  @@index([menuItemCloudId])
+  @@index([substituteCloudId])
 }
 
 model CloudTransactionType {
