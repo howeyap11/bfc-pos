@@ -12,50 +12,9 @@ import { requireStaffHook } from "../plugins/staffGuard";
 import { verifyAdminPin } from "../services/adminPin.service";
 import { enqueueOutbox } from "../services/outbox.service";
 import { ensureItemForCloudId } from "../services/catalogCache.service";
+import { uploadTransactionToCloud } from "../services/transactionSync.service";
 
 const STORE_ID = "store_1";
-const CLOUD_URL = process.env.CLOUD_URL ?? "";
-const STORE_SYNC_SECRET = process.env.STORE_SYNC_SECRET ?? "";
-
-/** Push transaction to cloud (best-effort, non-blocking). */
-async function syncTransactionToCloud(
-  app: FastifyInstance,
-  tx: { id: string; storeId: string; transactionNo: number; status: string; source: string; serviceType: string; totalCents: number; subtotalCents: number; discountCents: number; createdAt: Date; createdBy: string | null; voidedAt: Date | null; voidReason: string | null },
-  payments: { method: string; amountCents: number }[],
-  lineItems: { name: string; qty: number; lineTotal: number }[]
-) {
-  if (!CLOUD_URL?.trim()) return;
-  const url = `${CLOUD_URL.replace(/\/$/, "")}/sync/transactions`;
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (STORE_SYNC_SECRET) headers["X-Store-Sync-Key"] = STORE_SYNC_SECRET;
-  const payload = {
-    storeId: tx.storeId,
-    sourceTransactionId: tx.id,
-    transactionNo: tx.transactionNo,
-    status: tx.status,
-    source: tx.source,
-    serviceType: tx.serviceType,
-    cashierName: tx.createdBy ?? null,
-    totalCents: tx.totalCents,
-    subtotalCents: tx.subtotalCents,
-    discountCents: tx.discountCents,
-    itemsCount: lineItems.reduce((s, l) => s + l.qty, 0),
-    payments,
-    lineItems,
-    createdAt: tx.createdAt.toISOString(),
-    voidedAt: tx.voidedAt?.toISOString() ?? null,
-    voidReason: tx.voidReason ?? null,
-  };
-  try {
-    const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload) });
-    if (!res.ok) {
-      const text = await res.text();
-      app.log.warn({ status: res.status, body: text.slice(0, 200), transactionId: tx.id }, "[Sync] Transaction sync failed");
-    }
-  } catch (err) {
-    app.log.warn({ err, transactionId: tx.id }, "[Sync] Transaction sync error");
-  }
-}
 
 function sum(nums: number[]) {
   return nums.reduce((a, b) => a + b, 0);
@@ -495,12 +454,19 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       // Sync to cloud (best effort, non-blocking)
       const paymentsList = allPayments.map((p) => ({ method: p.method, amountCents: p.amountCents }));
       const lineItemsList = transaction.lineItems.map((l) => ({ name: l.name, qty: l.qty, lineTotal: l.lineTotal }));
-      syncTransactionToCloud(
-        app,
+      const uploadResult = await uploadTransactionToCloud(
+        app.prisma,
         { ...transaction, status: "PAID" },
         paymentsList,
         lineItemsList
-      ).catch(() => {});
+      );
+      if (!uploadResult.ok) {
+        await enqueueOutbox(app.prisma, {
+          storeId: transaction.storeId,
+          topic: "transaction.cloud.sync",
+          payload: { transactionId: transaction.id },
+        });
+      }
       // Inventory auto-deduction (best effort): do not block sale on failure
       const staff = (req as { staff?: { id: string } }).staff;
       const lineItems = transaction.lineItems
@@ -598,7 +564,14 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     // Sync void to cloud
     const paymentsList = voided.payments.map((p) => ({ method: p.method, amountCents: p.amountCents }));
     const lineItemsList = voided.lineItems.map((l) => ({ name: l.name, qty: l.qty, lineTotal: l.lineTotal }));
-    syncTransactionToCloud(app, voided, paymentsList, lineItemsList).catch(() => {});
+    const uploadResult = await uploadTransactionToCloud(app.prisma, voided, paymentsList, lineItemsList);
+    if (!uploadResult.ok) {
+      await enqueueOutbox(app.prisma, {
+        storeId: voided.storeId,
+        topic: "transaction.cloud.sync",
+        payload: { transactionId: voided.id },
+      });
+    }
 
     await app.prisma.auditLog.create({
       data: {

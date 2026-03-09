@@ -62,7 +62,7 @@ export async function adminRoutes(app: FastifyInstance) {
     const parsed = z.object({ pin: z.string().length(4, "PIN must be 4 digits").regex(/^\d{4}$/, "PIN must be 4 digits").refine((v) => v[0] !== "0", "PIN cannot start with 0") }).safeParse(req.body);
     if (!parsed.success) {
       reply.code(400);
-      return { error: "INVALID_PIN", message: parsed.error.errors.map((e) => e.message).join("; ") };
+      return { error: "INVALID_PIN", message: parsed.error.issues.map((issue) => issue.message).join("; ") };
     }
     const hash = await hashPassword(parsed.data.pin);
     await app.prisma.storeSetting.upsert({

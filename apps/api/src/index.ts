@@ -19,6 +19,7 @@ import { drawerRoutes } from "./routes/drawer";
 import { adminSyncRoutes } from "./routes/admin/adminSync";
 import { ensureItemForCloudId } from "./services/catalogCache.service";
 import { syncCatalogFromCloud } from "./services/syncCatalog.service.js";
+import { startSyncScheduler, runTransactionSyncFlush } from "./services/syncScheduler.js";
 
 const app = Fastify({ logger: true });
 
@@ -428,6 +429,9 @@ app.post("/orders", async (req) => {
 const port = parseInt(process.env.PORT ?? "4000", 10);
 await app.listen({ host: "0.0.0.0", port });
 
+// Start sync scheduler: catalog every 5min, transaction flush every 30s
+startSyncScheduler(app);
+
 // Sync catalog from cloud on startup (non-blocking; fails gracefully if CLOUD_URL unset or cloud unreachable)
 syncCatalogFromCloud(app.prisma, "default")
   .then((outcome) => {
@@ -440,3 +444,6 @@ syncCatalogFromCloud(app.prisma, "default")
   .catch((err) => {
     app.log.warn({ err }, "Catalog sync failed on startup");
   });
+
+// Startup transaction flush once after 5s delay
+setTimeout(() => runTransactionSyncFlush(app).catch(() => {}), 5000);

@@ -1,5 +1,8 @@
 import { requireStaffHook } from "../plugins/staffGuard";
+import { verifyAdminPin } from "../services/adminPin.service";
 import { enqueueOutbox } from "../services/outbox.service";
+import { ensureItemForCloudId } from "../services/catalogCache.service";
+import { uploadTransactionToCloud } from "../services/transactionSync.service";
 const STORE_ID = "store_1";
 function sum(nums) {
     return nums.reduce((a, b) => a + b, 0);
@@ -108,12 +111,24 @@ export async function posTransactionsRoutes(app) {
             select: { transactionNo: true },
         });
         const nextNo = (last?.transactionNo ?? 0) + 1;
-        const itemIds = [...new Set(body.items.map((i) => i.itemId))];
+        // itemId from POS is cloudId (from CloudMenuItem); resolve to Item.id for storage + inventory
+        const cloudIds = [...new Set(body.items.map((i) => i.itemId))];
         const optionIds = [...new Set(body.items.flatMap((i) => i.optionIds ?? []))];
+        const resolvedIds = [];
+        for (const cid of cloudIds) {
+            try {
+                const itemId = await ensureItemForCloudId(app.prisma, cid);
+                resolvedIds.push(itemId);
+            }
+            catch {
+                throw new Error(`Invalid itemId: ${cid}`);
+            }
+        }
         const dbItems = await app.prisma.item.findMany({
-            where: { id: { in: itemIds } },
+            where: { id: { in: resolvedIds } },
             select: {
                 id: true,
+                cloudId: true,
                 name: true,
                 basePrice: true,
                 defaultMilk: true,
@@ -121,13 +136,50 @@ export async function posTransactionsRoutes(app) {
                 foodpandaSurchargeCents: true,
             },
         });
-        const itemMap = new Map(dbItems.map((i) => [i.id, i]));
+        // Map by both id and cloudId so we can look up from body itemId (cloudId)
+        const itemMap = new Map();
+        for (const i of dbItems) {
+            itemMap.set(i.id, i);
+            if (i.cloudId)
+                itemMap.set(i.cloudId, i);
+        }
+        const cloudItems = await app.prisma.cloudMenuItem.findMany({
+            where: { cloudId: { in: cloudIds }, storeId: STORE_ID },
+            select: { cloudId: true, isDrink: true, serveVessel: true },
+        });
+        const cloudItemMap = new Map(cloudItems.map((c) => [c.cloudId, c]));
         const dbOptions = await app.prisma.option.findMany({
             where: { id: { in: optionIds } },
             select: { id: true, name: true, priceDelta: true, group: { select: { name: true } } },
         });
         const optionMap = new Map(dbOptions.map((o) => [o.id, o]));
+        const cloudOptions = await app.prisma.cloudMenuOption.findMany({
+            where: { cloudId: { in: optionIds }, storeId: STORE_ID },
+        });
+        const cloudGroupIds = [...new Set(cloudOptions.map((o) => o.groupCloudId))];
+        const cloudGroups = await app.prisma.cloudMenuOptionGroup.findMany({
+            where: { cloudId: { in: cloudGroupIds }, storeId: STORE_ID },
+            select: { cloudId: true, name: true },
+        });
+        const cloudGroupNameMap = new Map(cloudGroups.map((g) => [g.cloudId, g.name]));
+        const cloudOptionMap = new Map(cloudOptions.map((o) => [
+            o.cloudId,
+            { name: o.name, priceDelta: o.priceDelta, groupName: cloudGroupNameMap.get(o.groupCloudId) ?? "" },
+        ]));
         const discountCents = Math.max(0, Math.trunc(Number(body.discountCents ?? 0)));
+        // Load per-size pricing for sized items (baseType + size selection)
+        const sizedItems = body.items.filter((it) => it.baseType && it.sizeLabel);
+        const sizePriceMap = new Map();
+        if (sizedItems.length > 0) {
+            const sizedCloudIds = [...new Set(sizedItems.map((i) => i.itemId))];
+            const sizePrices = await app.prisma.cloudMenuItemSizePrice.findMany({
+                where: { storeId: STORE_ID, menuItemCloudId: { in: sizedCloudIds } },
+            });
+            for (const p of sizePrices) {
+                const key = `${p.menuItemCloudId}|${p.baseType}|${p.sizeCode}`;
+                sizePriceMap.set(key, p.priceCents);
+            }
+        }
         // Determine service type, source
         // NOTE: Service fees are now per-line (lineSurchargeCents), not transaction-level
         const serviceTypeInput = body.serviceType ?? "DINE_IN";
@@ -145,14 +197,14 @@ export async function posTransactionsRoutes(app) {
             serviceType = "DINE_IN";
             source = "POS";
         }
-        // Build line snapshots + totals
+        // Build line snapshots + totals (it.itemId is cloudId)
         const lineSnapshots = body.items.map((it) => {
             const dbItem = itemMap.get(it.itemId);
             if (!dbItem)
                 throw new Error(`Invalid itemId: ${it.itemId}`);
             const qty = Math.max(1, Math.trunc(it.qty || 1));
             const optIds = it.optionIds ?? [];
-            const deltas = optIds.map((oid) => optionMap.get(oid)?.priceDelta ?? 0);
+            const deltas = optIds.map((oid) => optionMap.get(oid)?.priceDelta ?? cloudOptionMap.get(oid)?.priceDelta ?? 0);
             let modifiersCents = sum(deltas);
             // Add espresso shots upcharge (server-side recalculation for money safety)
             const shotsQty = it.shotsQty ?? 0;
@@ -165,15 +217,26 @@ export async function posTransactionsRoutes(app) {
             const lineSurchargeCents = it.surchargeCents ?? 0;
             // Per-line discount
             const lineDiscountCents = Math.max(0, Math.trunc(Number(it.discountAmount ?? 0)));
-            const unitPrice = dbItem.basePrice; // base only
+            // Base unit price: if line has size selection and per-size price exists, use it; otherwise fall back to item basePrice.
+            let unitPrice = dbItem.basePrice;
+            if (it.baseType && it.sizeLabel) {
+                const key = `${it.itemId}|${it.baseType}|${it.sizeLabel}`;
+                const sizedPrice = sizePriceMap.get(key);
+                if (typeof sizedPrice === "number" && sizedPrice >= 0) {
+                    unitPrice = sizedPrice;
+                }
+            }
             const lineSubtotal = (unitPrice + modifiersCents) * qty + (lineSurchargeCents * qty);
             const lineTotal = Math.max(0, lineSubtotal - lineDiscountCents);
             // Build options JSON including shots and milk for audit trail
             const optionsData = optIds.map((oid) => {
                 const o = optionMap.get(oid);
-                return o
-                    ? { id: oid, name: o.name, group: o.group?.name, priceDelta: o.priceDelta }
-                    : { id: oid, missing: true };
+                const co = cloudOptionMap.get(oid);
+                if (o)
+                    return { id: oid, name: o.name, group: o.group?.name, priceDelta: o.priceDelta };
+                if (co)
+                    return { id: oid, name: co.name, group: co.groupName, priceDelta: co.priceDelta };
+                return { id: oid, missing: true };
             });
             if (shotsQty > 0) {
                 optionsData.push({
@@ -181,6 +244,9 @@ export async function posTransactionsRoutes(app) {
                     qty: shotsQty,
                     upchargeCents: shotsUpchargeCents
                 });
+            }
+            if (it.baseType && it.sizeLabel) {
+                optionsData.push({ type: "size", baseType: it.baseType, sizeLabel: it.sizeLabel });
             }
             if (it.milkChoice && it.milkChoice !== dbItem.defaultMilk) {
                 optionsData.push({
@@ -205,6 +271,7 @@ export async function posTransactionsRoutes(app) {
                 });
             }
             const optionsJson = JSON.stringify(optionsData);
+            const cloudItem = cloudItemMap.get(it.itemId);
             return {
                 itemId: dbItem.id,
                 name: dbItem.name,
@@ -214,6 +281,8 @@ export async function posTransactionsRoutes(app) {
                 lineTotal,
                 note: it.note?.trim() || null,
                 optionsJson,
+                isDrink: cloudItem?.isDrink ?? null,
+                serveVessel: cloudItem?.serveVessel ?? null,
             };
         });
         const subtotalCents = sum(lineSnapshots.map((l) => l.lineTotal));
@@ -306,11 +375,47 @@ export async function posTransactionsRoutes(app) {
                 where: { id: transaction.id },
                 data: { status: "PAID" },
             });
+            // Sync to cloud (best effort, non-blocking)
+            const paymentsList = allPayments.map((p) => ({ method: p.method, amountCents: p.amountCents }));
+            const lineItemsList = transaction.lineItems.map((l) => ({ name: l.name, qty: l.qty, lineTotal: l.lineTotal }));
+            const uploadResult = await uploadTransactionToCloud(app.prisma, { ...transaction, status: "PAID" }, paymentsList, lineItemsList);
+            if (!uploadResult.ok) {
+                await enqueueOutbox(app.prisma, {
+                    storeId: transaction.storeId,
+                    topic: "transaction.cloud.sync",
+                    payload: { transactionId: transaction.id },
+                });
+            }
             // Inventory auto-deduction (best effort): do not block sale on failure
             const staff = req.staff;
             const lineItems = transaction.lineItems
                 .filter((l) => l.itemId)
-                .map((l) => ({ itemId: l.itemId, qty: l.qty }));
+                .map((l) => {
+                let baseType;
+                let sizeCode;
+                if (l.optionsJson) {
+                    try {
+                        const opts = JSON.parse(l.optionsJson);
+                        const sizeOpt = opts.find((o) => o.type === "size" && o.baseType && o.sizeLabel);
+                        if (sizeOpt) {
+                            const bt = sizeOpt.baseType;
+                            if (bt === "HOT" || bt === "ICED" || bt === "CONCENTRATED") {
+                                baseType = bt;
+                                sizeCode = sizeOpt.sizeLabel;
+                            }
+                        }
+                    }
+                    catch {
+                        // Ignore malformed JSON; fall back to non-sized recipes
+                    }
+                }
+                return {
+                    itemId: l.itemId,
+                    qty: l.qty,
+                    baseType,
+                    sizeCode,
+                };
+            });
             if (lineItems.length > 0) {
                 try {
                     await app.inventoryService.consumeForSale({
@@ -365,6 +470,17 @@ export async function posTransactionsRoutes(app) {
             },
             include: { payments: true, lineItems: true },
         });
+        // Sync void to cloud
+        const paymentsList = voided.payments.map((p) => ({ method: p.method, amountCents: p.amountCents }));
+        const lineItemsList = voided.lineItems.map((l) => ({ name: l.name, qty: l.qty, lineTotal: l.lineTotal }));
+        const uploadResult = await uploadTransactionToCloud(app.prisma, voided, paymentsList, lineItemsList);
+        if (!uploadResult.ok) {
+            await enqueueOutbox(app.prisma, {
+                storeId: voided.storeId,
+                topic: "transaction.cloud.sync",
+                payload: { transactionId: voided.id },
+            });
+        }
         await app.prisma.auditLog.create({
             data: {
                 storeId: STORE_ID,
@@ -380,15 +496,13 @@ export async function posTransactionsRoutes(app) {
     app.post("/pos/transactions/:id/refund", async (req, reply) => {
         const { id } = req.params;
         const body = req.body;
-        // Validate admin PIN
         const adminPin = body?.adminPin?.trim();
         if (!adminPin) {
             reply.code(400);
             return { error: "MISSING_ADMIN_PIN" };
         }
-        // Check if staff is admin (hardcoded PIN for now, can be enhanced)
-        const ADMIN_PIN = "1234";
-        if (adminPin !== ADMIN_PIN) {
+        const pinResult = await verifyAdminPin(adminPin, app.prisma);
+        if (!pinResult.valid) {
             reply.code(403);
             return { error: "INVALID_ADMIN_PIN" };
         }

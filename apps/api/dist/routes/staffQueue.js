@@ -1,8 +1,8 @@
 import { z } from "zod";
-import { PrepArea, OrderStatus } from "@prisma/client";
 const QueueQuery = z.object({
     area: z.enum(["BAR", "KITCHEN"]),
 });
+const ACTIVE_STATUSES = ["PLACED", "IN_PREP", "READY"];
 export const staffQueueRoutes = async (app) => {
     app.get("/queue", { preHandler: app.requireStaff }, async (req, reply) => {
         const parsed = QueueQuery.safeParse(req.query);
@@ -10,18 +10,12 @@ export const staffQueueRoutes = async (app) => {
             return reply.code(400).send({ error: "INVALID_QUERY", details: parsed.error.flatten() });
         }
         const { area } = parsed.data;
-        // NOTE:
-        // - We hide ACCEPTED in UI, but DB still may contain it. We can exclude it from queue.
-        // - Queue statuses: pending(PLACED), IN_PREP, READY
-        const activeStatuses = [OrderStatus.PLACED, OrderStatus.IN_PREP, OrderStatus.READY];
-        // Build WHERE without union typing
         const where = {
-            status: { in: activeStatuses },
+            status: { in: [...ACTIVE_STATUSES] },
         };
-        // Kitchen should only show orders that contain kitchen items
         if (area === "KITCHEN") {
             where.items = {
-                some: { item: { category: { prepArea: PrepArea.KITCHEN } } },
+                some: { item: { category: { prepArea: "KITCHEN" } } },
             };
         }
         const orders = await app.prisma.order.findMany({
@@ -31,7 +25,7 @@ export const staffQueueRoutes = async (app) => {
                 table: { include: { zone: true } },
                 items: {
                     ...(area === "KITCHEN"
-                        ? { where: { item: { category: { prepArea: PrepArea.KITCHEN } } } }
+                        ? { where: { item: { category: { prepArea: "KITCHEN" } } } }
                         : {}),
                     include: {
                         item: { include: { category: true } },
