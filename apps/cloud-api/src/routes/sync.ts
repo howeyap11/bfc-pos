@@ -46,9 +46,9 @@ export async function syncRoutes(app: FastifyInstance) {
       const [
         catalogVersion,
         items,
-        ingredients,
-        recipeLines,
-        recipeLineSizes,
+        ingredientsVersioned,
+        recipeLinesVersioned,
+        recipeLineSizesVersioned,
         categories,
         subCategories,
         menuOptionGroups,
@@ -90,6 +90,53 @@ export async function syncRoutes(app: FastifyInstance) {
       ]);
 
       const latestVersion = catalogVersion?.latestVersion ?? 0;
+
+      // Delta sync: include related entities for changed items (recipe lines, recipe line sizes, referenced ingredients)
+      // because editing an item bumps only its version, not related rows' versions
+      let recipeLines: typeof recipeLinesVersioned = recipeLinesVersioned;
+      let recipeLineSizes: typeof recipeLineSizesVersioned = recipeLineSizesVersioned;
+      let ingredients: typeof ingredientsVersioned = ingredientsVersioned;
+      if (sinceVersion > 0 && items.length > 0) {
+        const changedItemIds = items.map((i) => i.id);
+        const [recipeLinesForItems, recipeLineSizesForItems] = await Promise.all([
+          app.prisma.recipeLine.findMany({ where: { menuItemId: { in: changedItemIds } } }),
+          app.prisma.recipeLineSize.findMany({ where: { menuItemId: { in: changedItemIds } } }),
+        ]);
+        const rlById = new Map(recipeLinesVersioned.map((r) => [r.id, r]));
+        for (const r of recipeLinesForItems) {
+          if (!rlById.has(r.id)) rlById.set(r.id, r);
+        }
+        recipeLines = Array.from(rlById.values());
+        const rlsById = new Map(recipeLineSizesVersioned.map((r) => [r.id, r]));
+        for (const r of recipeLineSizesForItems) {
+          if (!rlsById.has(r.id)) rlsById.set(r.id, r);
+        }
+        recipeLineSizes = Array.from(rlsById.values());
+        const refIngIds = new Set([
+          ...recipeLines.map((r) => r.ingredientId),
+          ...recipeLineSizes.map((r) => r.ingredientId),
+        ]);
+        const existingIngIds = new Set(ingredientsVersioned.map((i) => i.id));
+        const missingIngIds = [...refIngIds].filter((id) => !existingIngIds.has(id));
+        if (missingIngIds.length > 0) {
+          const extraIngredients = await app.prisma.ingredient.findMany({
+            where: { id: { in: missingIngIds } },
+          });
+          ingredients = [...ingredientsVersioned, ...extraIngredients];
+        }
+      }
+
+      app.log.info({
+        sinceVersion,
+        latestVersion,
+        changedItems: items.length,
+        recipeLines: recipeLines.length,
+        recipeLineSizes: recipeLineSizes.length,
+        ingredients: ingredients.length,
+        transactionTypes: transactionTypes.length,
+        menuOptionGroups: menuOptionGroups.length,
+        menuItemOptionGroups: menuItemOptionGroups.length,
+      }, "[Sync] Catalog delta counts");
 
       return {
         latestVersion,

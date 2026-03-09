@@ -88,10 +88,14 @@ model MenuItem {
   defaultSize MenuItemSize? @relation("MenuItemDefaultSize", fields: [defaultSizeId], references: [id], onDelete: SetNull)
   defaultSizeOption MenuOption? @relation("MenuItemDefaultSizeOption", fields: [defaultSizeOptionId], references: [id], onDelete: SetNull)
 
-  recipeLines         RecipeLine[]
-  recipeLinesBySize   RecipeLineSize[]
-  optionGroupLinks    MenuItemOptionGroup[]
-  sizes               MenuItemSize[]
+  recipeLines           RecipeLine[]
+  recipeLinesBySize     RecipeLineSize[]
+  optionGroupLinks      MenuItemOptionGroup[]
+  addOnLinks            MenuItemAddOn[]
+  substituteLinks       MenuItemSubstitute[]
+  defaultSubstitute     Substitute?  @relation("MenuItemDefaultSubstitute", fields: [defaultSubstituteId], references: [id], onDelete: SetNull)
+  defaultSubstituteId   String?
+  sizes                 MenuItemSize[]
   drinkSizeConfigs    MenuItemDrinkSizeConfig[]
   drinkModeDefaults   MenuItemDrinkModeDefault[]
   sizePrices          MenuItemSizePrice[]
@@ -101,6 +105,98 @@ model MenuItem {
   @@index([subCategoryId])
   @@index([defaultSizeId])
   @@index([defaultSizeOptionId])
+  @@index([defaultSubstituteId])
+}
+
+model AddOn {
+  id         String   @id @default(cuid())
+  name       String
+  priceCents Int      @default(0)
+  isActive   Boolean  @default(true)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  recipeLines     AddOnRecipeLine[]
+  menuItemLinks   MenuItemAddOn[]
+
+  @@index([sortOrder])
+}
+
+model AddOnRecipeLine {
+  id           String   @id @default(cuid())
+  addOnId      String
+  ingredientId String
+  qtyPerItem   Decimal  @db.Decimal(20, 10)
+  unitCode     String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  addOn      AddOn      @relation(fields: [addOnId], references: [id], onDelete: Cascade)
+  ingredient Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+
+  @@unique([addOnId, ingredientId])
+  @@index([addOnId])
+  @@index([ingredientId])
+}
+
+model MenuItemAddOn {
+  id      String @id @default(cuid())
+  itemId  String
+  addOnId String
+
+  item  MenuItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  addOn AddOn    @relation(fields: [addOnId], references: [id], onDelete: Cascade)
+
+  @@unique([itemId, addOnId])
+  @@index([itemId])
+  @@index([addOnId])
+}
+
+model Substitute {
+  id         String   @id @default(cuid())
+  name       String
+  priceCents Int      @default(0)
+  isActive   Boolean  @default(true)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  recipeLines     SubstituteRecipeLine[]
+  menuItemLinks   MenuItemSubstitute[]
+  asDefaultFor    MenuItem[] @relation("MenuItemDefaultSubstitute")
+
+  @@index([sortOrder])
+}
+
+model SubstituteRecipeLine {
+  id           String   @id @default(cuid())
+  substituteId String
+  ingredientId String
+  qtyPerItem   Decimal  @db.Decimal(20, 10)
+  unitCode     String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  substitute Substitute @relation(fields: [substituteId], references: [id], onDelete: Cascade)
+  ingredient Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+
+  @@unique([substituteId, ingredientId])
+  @@index([substituteId])
+  @@index([ingredientId])
+}
+
+model MenuItemSubstitute {
+  id           String @id @default(cuid())
+  itemId       String
+  substituteId String
+
+  item      MenuItem   @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  substitute Substitute @relation(fields: [substituteId], references: [id], onDelete: Cascade)
+
+  @@unique([itemId, substituteId])
+  @@index([itemId])
+  @@index([substituteId])
 }
 
 model MenuItemSize {
@@ -178,9 +274,10 @@ model MenuOptionGroup {
   multi            Boolean      @default(false)
   defaultOptionId  String?
 
-  isSizeGroup Boolean @default(false)
-  isSystem    Boolean @default(false)
-  isDeletable Boolean @default(true)
+  isSizeGroup           Boolean @default(false)
+  isSystem              Boolean @default(false)
+  isDeletable           Boolean @default(true)
+  trackRecipeConsumption Boolean @default(false)
 
   items          MenuItemOptionGroup[]
   options        MenuOption[]
@@ -219,8 +316,26 @@ model MenuOption {
   drinkModeDefaults       MenuItemDrinkModeDefault[]
   sizePrices              MenuItemSizePrice[]
   asDefaultForGroups      MenuOptionGroup[]   @relation("GroupDefaultOption")
+  recipeLines             OptionChoiceRecipeLine[]
 
   @@index([groupId])
+}
+
+model OptionChoiceRecipeLine {
+  id           String   @id @default(cuid())
+  optionId     String
+  ingredientId String
+  qtyPerItem   Decimal  @db.Decimal(20, 10)
+  unitCode     String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  option     MenuOption  @relation(fields: [optionId], references: [id], onDelete: Cascade)
+  ingredient Ingredient  @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+
+  @@unique([optionId, ingredientId])
+  @@index([optionId])
+  @@index([ingredientId])
 }
 
 model MenuItemOptionGroup {
@@ -393,10 +508,13 @@ model Ingredient {
   warehouseUnitName     String?
   warehouseUnitToBase   Decimal?  @db.Decimal(20, 10)
 
-  category        IngredientCategory?  @relation(fields: [categoryId], references: [id], onDelete: SetNull)
-  recipeLines     RecipeLine[]
-  recipeLinesSize RecipeLineSize[]
-  stockMovements  StockMovement[]
+  category              IngredientCategory?  @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  recipeLines           RecipeLine[]
+  recipeLinesSize       RecipeLineSize[]
+  optionChoiceRecipeLines OptionChoiceRecipeLine[]
+  addOnRecipeLines      AddOnRecipeLine[]
+  substituteRecipeLines SubstituteRecipeLine[]
+  stockMovements        StockMovement[]
   stockTransferLines      StockTransferLine[]
   reconciliationLines     InventoryReconciliationLine[]
 

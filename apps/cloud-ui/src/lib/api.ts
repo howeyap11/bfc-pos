@@ -145,8 +145,27 @@ export type MenuOptionGroup = {
   isSizeGroup?: boolean;
   isSystem?: boolean;
   isDeletable?: boolean;
-  options?: MenuOption[];
+  trackRecipeConsumption?: boolean;
+  options?: (MenuOption & { recipeLines?: { ingredientId: string; qtyPerItem: number | string; unitCode: string; ingredient?: { id: string; name: string; unitCode: string } }[] })[];
   sections?: MenuOptionGroupSection[];
+};
+
+export type AddOn = {
+  id: string;
+  name: string;
+  priceCents: number;
+  isActive: boolean;
+  sortOrder: number;
+  recipeLines?: { ingredientId: string; qtyPerItem: number | string; unitCode: string; ingredient?: { id: string; name: string; unitCode: string } }[];
+};
+
+export type Substitute = {
+  id: string;
+  name: string;
+  priceCents: number;
+  isActive: boolean;
+  sortOrder: number;
+  recipeLines?: { ingredientId: string; qtyPerItem: number | string; unitCode: string; ingredient?: { id: string; name: string; unitCode: string } }[];
 };
 export type MenuOption = {
   id: string;
@@ -393,6 +412,7 @@ export const api = {
       categoryId?: string | null;
       subCategoryId?: string | null;
       defaultSizeOptionId?: string | null;
+      defaultSubstituteId?: string | null;
       hasSizes?: boolean;
       supportsShots?: boolean;
       defaultShots?: number | null;
@@ -471,8 +491,18 @@ export const api = {
   createOptionGroup(body: { name: string; required?: boolean; multi?: boolean; isSizeGroup?: boolean }): Promise<MenuOptionGroup> {
     return apiFetch("/admin/option-groups", { method: "POST", body: JSON.stringify(body) });
   },
-  patchOptionGroup(id: string, body: { name?: string; required?: boolean; multi?: boolean; isSizeGroup?: boolean; defaultOptionId?: string | null }): Promise<MenuOptionGroup> {
+  patchOptionGroup(id: string, body: { name?: string; required?: boolean; multi?: boolean; isSizeGroup?: boolean; defaultOptionId?: string | null; trackRecipeConsumption?: boolean }): Promise<MenuOptionGroup> {
     return apiFetch(`/admin/option-groups/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+  },
+  getOptionRecipe(groupId: string, optionId: string): Promise<{ lines: { ingredientId: string; qtyPerItem: number; unitCode: string; ingredient?: { name: string } }[] }> {
+    return apiFetch(`/admin/option-groups/${groupId}/options/${optionId}/recipe`);
+  },
+  putOptionRecipe(
+    groupId: string,
+    optionId: string,
+    lines: { ingredientId: string; qtyPerItem: number; unitCode: string }[]
+  ): Promise<{ lines: unknown[] }> {
+    return apiFetch(`/admin/option-groups/${groupId}/options/${optionId}/recipe`, { method: "PUT", body: JSON.stringify({ lines }) });
   },
   deleteOptionGroup(id: string): Promise<void> {
     return apiFetch(`/admin/option-groups/${id}`, { method: "DELETE" });
@@ -499,6 +529,51 @@ export const api = {
     return apiFetch(`/admin/items/${itemId}/option-groups`, {
       method: "PUT",
       body: JSON.stringify({ groupIds }),
+    });
+  },
+  getAddOns(): Promise<AddOn[]> {
+    return apiFetch("/admin/add-ons");
+  },
+  createAddOn(body: { name: string; priceCents?: number; isActive?: boolean }): Promise<AddOn> {
+    return apiFetch("/admin/add-ons", { method: "POST", body: JSON.stringify(body) });
+  },
+  patchAddOn(id: string, body: { name?: string; priceCents?: number; isActive?: boolean }): Promise<AddOn> {
+    return apiFetch(`/admin/add-ons/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+  },
+  deleteAddOn(id: string): Promise<{ ok: boolean }> {
+    return apiFetch(`/admin/add-ons/${id}`, { method: "DELETE" });
+  },
+  getAddOnRecipe(id: string): Promise<{ lines: { ingredientId: string; qtyPerItem: number; unitCode: string; ingredient?: { name: string } }[] }> {
+    return apiFetch(`/admin/add-ons/${id}/recipe`);
+  },
+  putAddOnRecipe(id: string, lines: { ingredientId: string; qtyPerItem: number; unitCode: string }[]): Promise<{ lines: unknown[] }> {
+    return apiFetch(`/admin/add-ons/${id}/recipe`, { method: "PUT", body: JSON.stringify({ lines }) });
+  },
+  getSubstitutes(): Promise<Substitute[]> {
+    return apiFetch("/admin/substitutes");
+  },
+  createSubstitute(body: { name: string; priceCents?: number; isActive?: boolean }): Promise<Substitute> {
+    return apiFetch("/admin/substitutes", { method: "POST", body: JSON.stringify(body) });
+  },
+  patchSubstitute(id: string, body: { name?: string; priceCents?: number; isActive?: boolean }): Promise<Substitute> {
+    return apiFetch(`/admin/substitutes/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+  },
+  deleteSubstitute(id: string): Promise<{ ok: boolean }> {
+    return apiFetch(`/admin/substitutes/${id}`, { method: "DELETE" });
+  },
+  getSubstituteRecipe(id: string): Promise<{ lines: { ingredientId: string; qtyPerItem: number; unitCode: string; ingredient?: { name: string } }[] }> {
+    return apiFetch(`/admin/substitutes/${id}/recipe`);
+  },
+  putSubstituteRecipe(id: string, lines: { ingredientId: string; qtyPerItem: number; unitCode: string }[]): Promise<{ lines: unknown[] }> {
+    return apiFetch(`/admin/substitutes/${id}/recipe`, { method: "PUT", body: JSON.stringify({ lines }) });
+  },
+  putItemAddOns(itemId: string, addOnIds: string[]): Promise<{ addOnLinks: { addOn: AddOn }[] }> {
+    return apiFetch(`/admin/items/${itemId}/add-ons`, { method: "PUT", body: JSON.stringify({ addOnIds }) });
+  },
+  putItemSubstitutes(itemId: string, substituteIds: string[], defaultSubstituteId: string | null): Promise<{ substituteLinks: { substitute: Substitute }[]; defaultSubstituteId: string | null; defaultSubstitute: Substitute | null }> {
+    return apiFetch(`/admin/items/${itemId}/substitutes`, {
+      method: "PUT",
+      body: JSON.stringify({ substituteIds, defaultSubstituteId }),
     });
   },
 

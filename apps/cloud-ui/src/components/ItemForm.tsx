@@ -14,6 +14,8 @@ import {
   type DrinkSizesByModePayload,
   type MenuItemSizePrice,
   type RecipeLineSize,
+  type AddOn,
+  type Substitute,
   normalizeCategoriesResponse,
   normalizeSubCategories,
 } from "@/lib/api";
@@ -157,6 +159,11 @@ export default function ItemForm({
   const [defaultShots, setDefaultShots] = useState(1);
   const [modifierGroups, setModifierGroups] = useState<{ id: string; name: string; required?: boolean; defaultOption?: { id: string; name: string } | null; options?: { id: string; name: string }[] }[]>([]);
   const [selectedModifierGroupIds, setSelectedModifierGroupIds] = useState<string[]>([]);
+  const [addOns, setAddOns] = useState<AddOn[]>([]);
+  const [selectedAddOnIds, setSelectedAddOnIds] = useState<string[]>([]);
+  const [substitutes, setSubstitutes] = useState<Substitute[]>([]);
+  const [selectedSubstituteIds, setSelectedSubstituteIds] = useState<string[]>([]);
+  const [defaultSubstituteId, setDefaultSubstituteId] = useState<string | null>(null);
 
   const [recipeLines, setRecipeLines] = useState<
     { ingredientId: string; qtyPerItem: number; unitCode: string }[]
@@ -184,6 +191,12 @@ export default function ItemForm({
 
   useEffect(() => {
     api.getModifierGroups().then(setModifierGroups).catch(() => {});
+  }, []);
+  useEffect(() => {
+    api.getAddOns().then(setAddOns).catch(() => {});
+  }, []);
+  useEffect(() => {
+    api.getSubstitutes().then(setSubstitutes).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -281,6 +294,12 @@ export default function ItemForm({
           setDefaultShots(item.defaultShots ?? 1);
           const links = (item as { optionGroupLinks?: { groupId: string; group?: { isSizeGroup?: boolean } }[] }).optionGroupLinks ?? [];
           setSelectedModifierGroupIds(links.filter((l) => !l.group?.isSizeGroup).map((l) => l.groupId));
+          const addOnLinks = (item as { addOnLinks?: { addOnId: string }[] }).addOnLinks ?? [];
+          setSelectedAddOnIds(addOnLinks.map((l) => l.addOnId));
+          const subLinks = (item as { substituteLinks?: { substituteId: string }[] }).substituteLinks ?? [];
+          setSelectedSubstituteIds(subLinks.map((l) => l.substituteId));
+          const defSub = (item as { defaultSubstituteId?: string | null }).defaultSubstituteId ?? null;
+          setDefaultSubstituteId(defSub);
 
           setRecipeLines(
             (recipe?.lines ?? []).map((r: any) => ({
@@ -558,6 +577,11 @@ export default function ItemForm({
       priceCents = Math.round(peso * 100);
     }
 
+    if (selectedSubstituteIds.length > 0 && !defaultSubstituteId) {
+      setError("Default milk is required when substitutes are enabled. Select a default substitute.");
+      return;
+    }
+
     setSaving(true);
     try {
       if (mode === "create") {
@@ -580,6 +604,8 @@ export default function ItemForm({
         });
         if (imageFile) await api.uploadItemImage(item.id, imageFile);
         await api.putItemOptionGroups(item.id, selectedModifierGroupIds);
+        await api.putItemAddOns(item.id, selectedAddOnIds);
+        await api.putItemSubstitutes(item.id, selectedSubstituteIds, defaultSubstituteId);
         onSuccess?.();
       } else if (itemId) {
         await api.updateItem(itemId, {
@@ -602,6 +628,8 @@ export default function ItemForm({
         });
         if (imageFile) await api.uploadItemImage(itemId, imageFile);
         await api.putItemOptionGroups(itemId, selectedModifierGroupIds);
+        await api.putItemAddOns(itemId, selectedAddOnIds);
+        await api.putItemSubstitutes(itemId, selectedSubstituteIds, defaultSubstituteId);
         onSuccess?.();
       }
     } catch (err: any) {
@@ -951,6 +979,112 @@ export default function ItemForm({
           <p className="mt-2 text-xs text-gray-500">
             <Link href="/menu-settings/modifiers" className="text-teal-600 hover:underline">
               Manage modifier sections →
+            </Link>
+          </p>
+        </div>
+      )}
+
+      {addOns.length > 0 && (
+        <div className="rounded border border-gray-200 bg-gray-50 p-3">
+          <h3 className="mb-2 text-sm font-medium text-gray-700">Add-ons</h3>
+          <p className="mb-3 text-xs text-gray-500">
+            Optional extras from Menu Settings (e.g. extra milk, syrup). Customers can add these for an extra charge.
+          </p>
+          <div className="flex flex-wrap gap-3">
+            {addOns.filter((a) => a.isActive).map((addOn) => {
+              const checked = selectedAddOnIds.includes(addOn.id);
+              return (
+                <label
+                  key={addOn.id}
+                  className="flex cursor-pointer items-center gap-2 rounded border border-gray-200 bg-white px-3 py-2 text-sm hover:bg-gray-50"
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setSelectedAddOnIds((prev) => [...prev, addOn.id]);
+                      } else {
+                        setSelectedAddOnIds((prev) => prev.filter((id) => id !== addOn.id));
+                      }
+                    }}
+                    className="rounded border-gray-300"
+                  />
+                  <span className="font-medium">{addOn.name}</span>
+                  <span className="text-gray-500 text-xs">₱{((addOn.priceCents ?? 0) / 100).toFixed(2)}</span>
+                </label>
+              );
+            })}
+          </div>
+          <p className="mt-2 text-xs text-gray-500">
+            <Link href="/menu-settings/add-ons" className="text-teal-600 hover:underline">
+              Manage add-ons →
+            </Link>
+          </p>
+        </div>
+      )}
+
+      {substitutes.length > 0 && (
+        <div className="rounded border border-gray-200 bg-gray-50 p-3">
+          <h3 className="mb-2 text-sm font-medium text-gray-700">Substitutes (milk)</h3>
+          <p className="mb-3 text-xs text-gray-500">
+            Milk substitutes from Menu Settings. When enabled, default milk is required.
+          </p>
+          <div className="flex flex-wrap gap-3">
+            {substitutes.filter((s) => s.isActive).map((sub) => {
+              const checked = selectedSubstituteIds.includes(sub.id);
+              return (
+                <label
+                  key={sub.id}
+                  className="flex cursor-pointer items-center gap-2 rounded border border-gray-200 bg-white px-3 py-2 text-sm hover:bg-gray-50"
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        const next = [...selectedSubstituteIds, sub.id];
+                        setSelectedSubstituteIds(next);
+                        if (!defaultSubstituteId || !next.includes(defaultSubstituteId)) setDefaultSubstituteId(sub.id);
+                      } else {
+                        const next = selectedSubstituteIds.filter((id) => id !== sub.id);
+                        setSelectedSubstituteIds(next);
+                        if (defaultSubstituteId === sub.id) setDefaultSubstituteId(next[0] ?? null);
+                      }
+                    }}
+                    className="rounded border-gray-300"
+                  />
+                  <span className="font-medium">{sub.name}</span>
+                  <span className="text-gray-500 text-xs">₱{((sub.priceCents ?? 0) / 100).toFixed(2)}</span>
+                </label>
+              );
+            })}
+          </div>
+          {selectedSubstituteIds.length > 0 && (
+            <div className="mt-3">
+              <label className="mb-1 block text-xs font-medium text-gray-600">Default milk (required)</label>
+              <select
+                value={defaultSubstituteId ?? ""}
+                onChange={(e) => setDefaultSubstituteId(e.target.value || null)}
+                className="w-full max-w-xs rounded border border-gray-300 px-3 py-2 text-sm"
+              >
+                <option value="">— Select default —</option>
+                {substitutes
+                  .filter((s) => selectedSubstituteIds.includes(s.id))
+                  .map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+              </select>
+              {selectedSubstituteIds.length > 0 && !defaultSubstituteId && (
+                <p className="mt-1 text-xs text-red-600">Default milk is required when substitutes are enabled.</p>
+              )}
+            </div>
+          )}
+          <p className="mt-2 text-xs text-gray-500">
+            <Link href="/menu-settings/substitutes" className="text-teal-600 hover:underline">
+              Manage substitutes →
             </Link>
           </p>
         </div>

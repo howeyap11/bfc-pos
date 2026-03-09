@@ -2,8 +2,12 @@
 
 import { useEffect, useState } from "react";
 import { api, type MenuOptionGroup, type MenuOption } from "@/lib/api";
+import { SearchableIngredientSelect } from "@/components/SearchableIngredientSelect";
+import type { Ingredient, IngredientCategory } from "@/lib/api";
 
 export default function ModifiersPage() {
+  const [ingredients, setIngredients] = useState<Ingredient[]>([]);
+  const [ingredientCategories, setIngredientCategories] = useState<IngredientCategory[]>([]);
   const [groups, setGroups] = useState<MenuOptionGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -25,6 +29,21 @@ export default function ModifiersPage() {
   useEffect(() => {
     refresh();
   }, []);
+
+  useEffect(() => {
+    Promise.all([api.getIngredients(), api.getIngredientCategories()])
+      .then(([ings, cats]) => {
+        setIngredients(ings ?? []);
+        setIngredientCategories(cats ?? []);
+      })
+      .catch(() => {});
+  }, []);
+
+  const [recipeModal, setRecipeModal] = useState<{ groupId: string; optionId: string; optionName: string } | null>(null);
+  const [recipeLines, setRecipeLines] = useState<{ ingredientId: string; qtyPerItem: number; unitCode: string }[]>([]);
+  const [recipeSaving, setRecipeSaving] = useState(false);
+  const [newIngredientId, setNewIngredientId] = useState("");
+  const [newQty, setNewQty] = useState("");
 
   async function handleCreateSection(e: React.FormEvent) {
     e.preventDefault();
@@ -59,6 +78,63 @@ export default function ModifiersPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed");
     }
+  }
+
+  async function handleSetTrackRecipe(g: MenuOptionGroup, trackRecipeConsumption: boolean) {
+    setError("");
+    setSuccess("");
+    try {
+      await api.patchOptionGroup(g.id, { trackRecipeConsumption });
+      setSuccess("Updated");
+      refresh();
+      setTimeout(() => setSuccess(""), 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed");
+    }
+  }
+
+  function openRecipeModal(groupId: string, option: MenuOption) {
+    setRecipeModal({ groupId, optionId: option.id, optionName: option.name });
+    const lines = (option as MenuOption & { recipeLines?: { ingredientId: string; qtyPerItem: number | string; unitCode: string }[] }).recipeLines ?? [];
+    setRecipeLines(lines.map((r) => ({
+      ingredientId: r.ingredientId,
+      qtyPerItem: typeof r.qtyPerItem === "string" ? parseFloat(r.qtyPerItem) || 0 : r.qtyPerItem,
+      unitCode: r.unitCode,
+    })));
+    setNewIngredientId("");
+    setNewQty("");
+  }
+
+  async function saveOptionRecipe() {
+    if (!recipeModal) return;
+    setRecipeSaving(true);
+    setError("");
+    try {
+      await api.putOptionRecipe(recipeModal.groupId, recipeModal.optionId, recipeLines);
+      setRecipeModal(null);
+      setSuccess("Recipe saved");
+      refresh();
+      setTimeout(() => setSuccess(""), 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save recipe");
+    } finally {
+      setRecipeSaving(false);
+    }
+  }
+
+  function addRecipeLine() {
+    if (!newIngredientId || !newQty) return;
+    const qty = parseFloat(newQty);
+    if (Number.isNaN(qty) || qty <= 0) return;
+    const ing = ingredients.find((i) => i.id === newIngredientId);
+    const unitCode = ing?.unitCode ?? "oz";
+    setRecipeLines((prev) => [...prev, { ingredientId: newIngredientId, qtyPerItem: qty, unitCode }]);
+    setNewIngredientId("");
+    setNewQty("");
+  }
+
+  function removeRecipeLine(ingredientId: string) {
+    setRecipeLines((prev) => prev.filter((r) => r.ingredientId !== ingredientId));
   }
 
   async function handleSetDefaultOption(g: MenuOptionGroup, defaultOptionId: string | null) {
@@ -184,6 +260,24 @@ export default function ModifiersPage() {
                       />
                     </button>
                   </label>
+                  <label className="flex items-center gap-1.5 text-sm text-gray-600">
+                    <span>Track recipe</span>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={!!g.trackRecipeConsumption}
+                      onClick={() => handleSetTrackRecipe(g, !g.trackRecipeConsumption)}
+                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full transition-colors ${
+                        g.trackRecipeConsumption ? "bg-teal-600" : "bg-gray-300"
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                          g.trackRecipeConsumption ? "translate-x-4" : "translate-x-0.5"
+                        } mt-0.5`}
+                      />
+                    </button>
+                  </label>
                   <label className="flex items-center gap-2 text-sm text-gray-600">
                     <span>Default</span>
                     <select
@@ -217,6 +311,15 @@ export default function ModifiersPage() {
                   >
                     <span className="font-medium text-gray-900">{o.name}</span>
                     <div className="flex items-center gap-2">
+                      {g.trackRecipeConsumption && (
+                        <button
+                          type="button"
+                          onClick={() => openRecipeModal(g.id, o)}
+                          className="rounded border border-gray-300 px-2 py-0.5 text-xs hover:bg-gray-50"
+                        >
+                          Recipe
+                        </button>
+                      )}
                       <span className="text-gray-500">
                         ₱{((o.priceDelta ?? 0) / 100).toFixed(2)}
                       </span>
@@ -270,6 +373,72 @@ export default function ModifiersPage() {
               No modifier sections yet. Add one above.
             </p>
           )}
+        </div>
+      )}
+
+      {recipeModal && (
+        <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/50 p-4">
+          <div className="max-h-[80vh] w-full max-w-lg overflow-y-auto rounded-lg bg-white p-4 shadow-lg">
+            <h3 className="mb-4 font-semibold">Recipe for {recipeModal.optionName}</h3>
+            <p className="mb-4 text-xs text-gray-500">Ingredient consumption when this choice is selected.</p>
+            <div className="mb-4 flex gap-2">
+              <div className="flex-1">
+                <SearchableIngredientSelect
+                  value={newIngredientId}
+                  onChange={(id) => setNewIngredientId(id)}
+                  ingredients={ingredients}
+                  ingredientCategories={ingredientCategories}
+                  excludeIds={recipeLines.map((r) => r.ingredientId)}
+                  placeholder="Add ingredient"
+                />
+              </div>
+              <input
+                type="number"
+                step="0.01"
+                min="0.01"
+                value={newQty}
+                onChange={(e) => setNewQty(e.target.value)}
+                placeholder="Qty"
+                className="w-20 rounded border px-2 py-1.5 text-sm"
+              />
+              <button
+                type="button"
+                onClick={addRecipeLine}
+                disabled={!newIngredientId || !newQty}
+                className="rounded bg-teal-600 px-3 py-1.5 text-sm text-white disabled:opacity-50"
+              >
+                Add
+              </button>
+            </div>
+            <ul className="mb-4 space-y-1 text-sm">
+              {recipeLines.map((r) => (
+                <li key={r.ingredientId} className="flex items-center justify-between rounded bg-gray-50 px-2 py-1">
+                  <span>{ingredients.find((i) => i.id === r.ingredientId)?.name ?? r.ingredientId}</span>
+                  <span>{r.qtyPerItem} {r.unitCode}</span>
+                  <button type="button" onClick={() => removeRecipeLine(r.ingredientId)} className="text-red-500">
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setRecipeModal(null)}
+                className="rounded border border-gray-300 px-3 py-1.5 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={saveOptionRecipe}
+                disabled={recipeSaving}
+                className="rounded bg-teal-600 px-3 py-1.5 text-sm text-white disabled:opacity-50"
+              >
+                {recipeSaving ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

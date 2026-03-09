@@ -399,16 +399,8 @@ export async function syncCatalogFromCloud(
         where: { storeId, cloudId: { notIn: [...validMenuSizeCloudIds] } },
       });
       for (const ms of data.menuSizes ?? []) {
-        // #region agent log
-        fetch('http://127.0.0.1:7330/ingest/e360f4f2-ab8d-4cc6-b94b-f45235f7b95a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'347516'},body:JSON.stringify({sessionId:'347516',location:'syncCatalog.service.ts:menuSize',message:'menuSize payload',data:{id:ms.id,groupId:ms.groupId,hasGroupId:typeof (ms as any).groupId,keys:Object.keys(ms)},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
-        // #endregion
         const groupCloudId = (ms as { groupId?: string }).groupId ?? null;
-        if (!groupCloudId) {
-          // #region agent log
-          fetch('http://127.0.0.1:7330/ingest/e360f4f2-ab8d-4cc6-b94b-f45235f7b95a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'347516'},body:JSON.stringify({sessionId:'347516',location:'syncCatalog.service.ts:menuSizeSkip',message:'skipping menuSize missing groupId',data:{id:ms.id},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
-          // #endregion
-          continue;
-        }
+        if (!groupCloudId) continue; // Skip sizes without groupId (cloud data integrity guard)
         await tx.cloudMenuSize.upsert({
           where: { cloudId: ms.id },
           create: {

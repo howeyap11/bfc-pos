@@ -5,9 +5,11 @@ import { usePathname } from "next/navigation";
 
 const TABS = [
   { href: "/menu-settings/sizes", label: "Sizes" },
+  { href: "/menu-settings/modifiers", label: "Modifiers" },
+  { href: "/menu-settings/add-ons", label: "Add-ons" },
+  { href: "/menu-settings/substitutes", label: "Substitutes" },
   { href: "/menu-settings/shots", label: "Shots" },
   { href: "/menu-settings/transaction-types", label: "Transaction Types" },
-  { href: "/menu-settings/modifiers", label: "Modifiers" },
 ];
 
 export function MenuSettingsNav() {
