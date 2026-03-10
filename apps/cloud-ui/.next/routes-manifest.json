@@ -104,6 +104,12 @@
       "namedRegex": "^/menu\\-settings(?:/)?$"
     },
     {
+      "page": "/menu-settings/add-ons",
+      "regex": "^/menu\\-settings/add\\-ons(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/menu\\-settings/add\\-ons(?:/)?$"
+    },
+    {
       "page": "/menu-settings/modifiers",
       "regex": "^/menu\\-settings/modifiers(?:/)?$",
       "routeKeys": {},
@@ -122,6 +128,12 @@
       "namedRegex": "^/menu\\-settings/sizes(?:/)?$"
     },
     {
+      "page": "/menu-settings/substitutes",
+      "regex": "^/menu\\-settings/substitutes(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/menu\\-settings/substitutes(?:/)?$"
+    },
+    {
       "page": "/menu-settings/transaction-types",
       "regex": "^/menu\\-settings/transaction\\-types(?:/)?$",
       "routeKeys": {},
@@ -138,6 +150,60 @@
       "regex": "^/reports(?:/)?$",
       "routeKeys": {},
       "namedRegex": "^/reports(?:/)?$"
+    },
+    {
+      "page": "/settings",
+      "regex": "^/settings(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/settings(?:/)?$"
+    },
+    {
+      "page": "/settings/business-details",
+      "regex": "^/settings/business\\-details(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/settings/business\\-details(?:/)?$"
+    },
+    {
+      "page": "/settings/customer-display",
+      "regex": "^/settings/customer\\-display(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/settings/customer\\-display(?:/)?$"
+    },
+    {
+      "page": "/settings/devices",
+      "regex": "^/settings/devices(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/settings/devices(?:/)?$"
+    },
+    {
+      "page": "/settings/online-store",
+      "regex": "^/settings/online\\-store(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/settings/online\\-store(?:/)?$"
+    },
+    {
+      "page": "/settings/password-pins",
+      "regex": "^/settings/password\\-pins(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/settings/password\\-pins(?:/)?$"
+    },
+    {
+      "page": "/settings/receipts",
+      "regex": "^/settings/receipts(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/settings/receipts(?:/)?$"
+    },
+    {
+      "page": "/settings/sales-inventory",
+      "regex": "^/settings/sales\\-inventory(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/settings/sales\\-inventory(?:/)?$"
+    },
+    {
+      "page": "/settings/subscription",
+      "regex": "^/settings/subscription(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/settings/subscription(?:/)?$"
     },
     {
       "page": "/transactions",

@@ -610,7 +610,7 @@ export default function ItemForm({
         if (imageFile) await api.uploadItemImage(item.id, imageFile);
         await api.putItemOptionGroups(item.id, selectedModifierGroupIds);
         await api.putItemAddOnGroups(item.id, selectedAddOnGroupIds);
-        await api.putItemSubstituteGroups(item.id, selectedSubstituteGroupIds, defaultSubstituteOptionId);
+        await api.putItemSubstitutes(item.id, selectedSubstituteIds, defaultSubstituteId);
         onSuccess?.();
       } else if (itemId) {
         await api.updateItem(itemId, {
