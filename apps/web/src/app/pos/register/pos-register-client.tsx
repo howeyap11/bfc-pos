@@ -446,8 +446,11 @@ function CartItemEditorModal({
   const [discountTag, setDiscountTag] = useState<"SNR" | "PWD" | null>(item.discountTag || null);
   const [note, setNote] = useState(item.note || "");
 
-  // Calculate line subtotal (before discount)
-  const unitPrice = item.basePrice + (item.optionTotalCents || 0);
+  // Calculate line subtotal (before discount): base + options + shots upcharge
+  const unitPrice =
+    item.basePrice +
+    (item.optionTotalCents || 0) +
+    (item.shotsUpchargeCents || 0);
   const lineSubtotal = unitPrice * qty;
 
   // Helper to round to 2 decimals
@@ -1894,6 +1897,15 @@ export default function PosRegisterClient() {
 
       setConfiguringItem(item);
 
+      // [DEBUG] Temporary - remove after verifying size UI
+      if (process.env.NODE_ENV !== "production" && (item as { hasSizes?: boolean }).hasSizes) {
+        const sm = (item as { sizesByMode?: Record<string, unknown[]> }).sizesByMode;
+        const hot = sm?.HOT?.length ?? 0;
+        const iced = sm?.ICED?.length ?? 0;
+        const conc = sm?.CONCENTRATED?.length ?? 0;
+        console.log("[openItemConfig] itemId:", item.id, "hasSizes:", true, "HOT:", hot, "ICED:", iced, "CONCENTRATED:", conc);
+      }
+
       // For hasSizes + sizesByMode: init mode and size
       if ((item as { hasSizes?: boolean }).hasSizes && (item as { sizesByMode?: Record<string, Array<{ id: string; name: string; priceCents?: number }>> }).sizesByMode) {
         const sm = (item as { sizesByMode: Record<string, Array<{ id: string; name: string }>> }).sizesByMode;
@@ -2265,12 +2277,15 @@ export default function PosRegisterClient() {
   }
 
   function calculateLineTotal(item: CartItem) {
-    // Base price + all option deltas (including milk, shots, etc.)
-    const unitPrice = item.basePrice + (item.optionTotalCents || 0);
+    // Base price (or size price for hasSizes) + options (milk, add-ons, etc.) + shots upcharge
+    const unitPrice =
+      item.basePrice +
+      (item.optionTotalCents || 0) +
+      (item.shotsUpchargeCents || 0);
     const subtotal = unitPrice * item.qty;
     const discount = item.discountAmount || 0;
     const surchargeCents = item.surchargeCents || 0;
-    return Math.max(0, subtotal - discount + (surchargeCents * item.qty));
+    return Math.max(0, subtotal - discount + surchargeCents * item.qty);
   }
 
   function calculateSubtotal() {
@@ -3178,7 +3193,13 @@ export default function PosRegisterClient() {
               <div style={{ flex: 1 }}>
                 <h2 style={{ margin: 0, fontSize: 20, color: "#fff" }}>{configuringItem.name}</h2>
                 <p style={{ margin: 0, marginTop: 4, fontSize: 16, color: COLORS.primary, fontWeight: "600" }}>
-                  Base: {formatPesos(configuringItem.basePrice)}
+                  {configuringItem.hasSizes && configBaseType && configSizeOption
+                    ? (() => {
+                        const sizeEntry = configuringItem.sizesByMode?.[configBaseType]?.find((s) => s.id === configSizeOption.id);
+                        const base = sizeEntry?.priceCents ?? configuringItem.basePrice;
+                        return `Base: ${formatPesos(base)}`;
+                      })()
+                    : `Base: ${formatPesos(configuringItem.basePrice)}`}
                 </p>
               </div>
             </div>
@@ -3188,86 +3209,72 @@ export default function PosRegisterClient() {
               
               {/* MAJOR OPTIONS AT TOP */}
 
-              {/* Mode + Size (hasSizes / sizesByMode - HOT/ICED/CONCENTRATED with mode-specific sizes) */}
+              {/* Temperature + Size (hasSizes / sizesByMode - all sections visible, no toggle) */}
               {configuringItem.hasSizes && configuringItem.sizesByMode && (
-                <>
-                  <div style={{ marginBottom: 24 }}>
-                    <h3 style={{ fontSize: 18, marginBottom: 12, color: "#fff", fontWeight: "700", textTransform: "uppercase" }}>
-                      Mode
-                    </h3>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
-                      {(["HOT", "ICED", "CONCENTRATED"] as const).map((mode) => {
-                        const sizes = configuringItem.sizesByMode![mode] ?? [];
-                        if (sizes.length === 0) return null;
-                        const isSelected = configBaseType === mode;
-                        return (
-                          <button
-                            key={mode}
-                            onClick={() => {
-                              setConfigBaseType(mode);
-                              const first = sizes[0];
-                              setConfigSizeOption(first ? { id: first.id, name: first.name } : null);
-                              if (!shotsTouchedByUser && configuringItem) {
-                                setConfigShotsQty(first?.name.includes("12") ? (configuringItem.defaultShots12oz ?? 0) : (configuringItem.defaultShots16oz ?? 0));
-                              }
-                            }}
-                            style={{
-                              padding: "14px 24px",
-                              border: `3px solid ${isSelected ? COLORS.primary : "#444"}`,
-                              borderRadius: 8,
-                              cursor: "pointer",
-                              background: isSelected ? COLORS.primary : "#2a2a2a",
-                              color: "#fff",
-                              fontWeight: "bold",
-                              fontSize: 16,
-                            }}
-                          >
-                            {mode.charAt(0) + mode.slice(1).toLowerCase()}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                  {configBaseType && (configuringItem.sizesByMode![configBaseType]?.length ?? 0) > 0 && (
-                    <div style={{ marginBottom: 24 }}>
-                      <h3 style={{ fontSize: 18, marginBottom: 12, color: "#fff", fontWeight: "700", textTransform: "uppercase" }}>
-                        Size
-                      </h3>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
-                        {configuringItem.sizesByMode![configBaseType].map((s) => {
-                          const isSelected = configSizeOption?.id === s.id;
-                          return (
-                            <button
-                              key={s.id}
-                              onClick={() => {
-                                setConfigSizeOption({ id: s.id, name: s.name });
-                                if (!shotsTouchedByUser && configuringItem) {
-                                  setConfigShotsQty(s.name.includes("12") ? (configuringItem.defaultShots12oz ?? 0) : (configuringItem.defaultShots16oz ?? 0));
-                                }
-                              }}
-                              style={{
-                                padding: "14px 24px",
-                                border: `3px solid ${isSelected ? COLORS.primary : "#444"}`,
-                                borderRadius: 8,
-                                cursor: "pointer",
-                                background: isSelected ? COLORS.primary : "#2a2a2a",
-                                color: "#fff",
-                                fontWeight: "bold",
-                                fontSize: 16,
-                                minWidth: 100,
-                              }}
-                            >
-                              {s.name}
-                              {s.priceCents != null && s.priceCents > 0 && (
-                                <div style={{ fontSize: 13, marginTop: 4, opacity: 0.9 }}>+{formatPesos(s.priceCents)}</div>
-                              )}
-                            </button>
-                          );
-                        })}
+                <div style={{ marginBottom: 24 }}>
+                  <h3 style={{ fontSize: 18, marginBottom: 12, color: "#fff", fontWeight: "700", textTransform: "uppercase" }}>
+                    Temperature
+                  </h3>
+                  {(["HOT", "ICED", "CONCENTRATED"] as const).map((mode) => {
+                    const sizes = configuringItem.sizesByMode![mode] ?? [];
+                    if (sizes.length === 0) return null;
+                    const tempColors: Record<string, string> = {
+                      HOT: COLORS.tempHot ?? "#dc2626",
+                      ICED: COLORS.tempIced ?? "#2563eb",
+                      CONCENTRATED: COLORS.tempConcentrated ?? "#92400e",
+                    };
+                    const accent = tempColors[mode] ?? "#444";
+                    const isSelectedInSection = configBaseType === mode;
+                    return (
+                      <div key={mode} style={{ marginBottom: 16 }}>
+                        <div
+                          style={{
+                            fontSize: 14,
+                            fontWeight: "700",
+                            color: accent,
+                            marginBottom: 8,
+                            textTransform: "uppercase",
+                          }}
+                        >
+                          {mode.charAt(0) + mode.slice(1).toLowerCase()}
+                        </div>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+                          {sizes.map((s) => {
+                            const isSelected = configBaseType === mode && configSizeOption?.id === s.id;
+                            return (
+                              <button
+                                key={s.id}
+                                onClick={() => {
+                                  setConfigBaseType(mode);
+                                  setConfigSizeOption({ id: s.id, name: s.name });
+                                  if (!shotsTouchedByUser && configuringItem) {
+                                    setConfigShotsQty(s.name.includes("12") ? (configuringItem.defaultShots12oz ?? 0) : (configuringItem.defaultShots16oz ?? 0));
+                                  }
+                                }}
+                                style={{
+                                  padding: "14px 24px",
+                                  border: `3px solid ${isSelected ? accent : "#444"}`,
+                                  borderRadius: 8,
+                                  cursor: "pointer",
+                                  background: isSelected ? accent : "#2a2a2a",
+                                  color: "#fff",
+                                  fontWeight: "bold",
+                                  fontSize: 16,
+                                  minWidth: 100,
+                                }}
+                              >
+                                {s.name}
+                                {s.priceCents != null && s.priceCents > 0 && (
+                                  <div style={{ fontSize: 13, marginTop: 4, opacity: 0.9 }}>{formatPesos(s.priceCents)}</div>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
-                    </div>
-                  )}
-                </>
+                    );
+                  })}
+                </div>
               )}
 
               {/* Temperature & Size (option groups - when NOT using hasSizes/sizesByMode) */}
@@ -3774,7 +3781,7 @@ export default function PosRegisterClient() {
 
               {/* Live Price Breakdown */}
               {(() => {
-                // Base unit price: for hasSizes use selected size price; else basePrice + option deltas
+                // Base unit price: for hasSizes use selected size price (it SETS base, not adds); else basePrice + option deltas
                 let baseUnitPrice = configuringItem.basePrice;
                 let optionsTotal = 0;
                 if (configuringItem.hasSizes && configuringItem.sizesByMode && configBaseType && configSizeOption) {
@@ -3796,14 +3803,15 @@ export default function PosRegisterClient() {
                 const sizeGroup = configuringItem.itemOptionGroups?.find((ig) => ig.group.name.toLowerCase().includes("size"));
                 const sizeOptId = sizeGroup ? selectedOptions[sizeGroup.group.id]?.[0] : null;
                 const sizeOpt = sizeGroup?.group.options.find((o) => o.id === sizeOptId);
-                const is12oz = sizeOpt?.name?.includes("12") ?? false;
+                const is12oz = configSizeOption?.name?.includes("12") ?? sizeOpt?.name?.includes("12") ?? false;
                 const defaultShotsForSize = is12oz ? (configuringItem.defaultShots12oz ?? 0) : (configuringItem.defaultShots16oz ?? 0);
 
                 const shotsDelta = calculateShotsUpcharge(configShotsQty, configuringItem.shotsPricingMode, defaultShotsForSize, configuringItem.shotPricingRule);
                 
                 const surcharge = configTransactionType?.priceDeltaCents ?? 0;
                 
-                const unitPrice = configuringItem.basePrice + optionsTotal + milkDelta + shotsDelta;
+                // Size price replaces base; add only extras (options, milk, shots)
+                const unitPrice = baseUnitPrice + optionsTotal + milkDelta + shotsDelta;
                 const lineTotal = (unitPrice + surcharge) * configQty;
 
                 return (
@@ -3819,8 +3827,8 @@ export default function PosRegisterClient() {
                     </h3>
                     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, color: "#aaa" }}>
-                        <span>Base Price:</span>
-                        <span style={{ color: "#fff" }}>{formatPesos(configuringItem.basePrice)}</span>
+                        <span>{configuringItem.hasSizes && configSizeOption ? "Base (Size):" : "Base Price:"}</span>
+                        <span style={{ color: "#fff" }}>{formatPesos(baseUnitPrice)}</span>
                       </div>
                       {optionsTotal > 0 && (
                         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, color: "#aaa" }}>
@@ -4839,7 +4847,17 @@ function TransactionSuccessPanel({
 
                 {/* Price */}
                 <strong style={{ fontSize: 14, color: "#4ade80", fontWeight: "600", flexShrink: 0 }}>
-                  {formatPesos(((item.basePrice || 0) + (item.optionTotalCents || 0)) * (item.qty || 1))}
+                  {formatPesos(
+                    Math.max(
+                      0,
+                      ((item.basePrice || 0) +
+                        (item.optionTotalCents || 0) +
+                        (item.shotsUpchargeCents || 0)) *
+                        (item.qty || 1) -
+                        (item.discountAmount || 0) +
+                        ((item.surchargeCents || 0) * (item.qty || 1))
+                    )
+                  )}
                 </strong>
               </div>
             </div>

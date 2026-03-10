@@ -209,14 +209,27 @@ app.get("/items/:id", async (req) => {
       Array<{ id: string; name: string; priceCents?: number }>
     > = { HOT: [], ICED: [], CONCENTRATED: [] };
     for (const c of drinkConfigs) {
+      const modeKey = (c.mode || "").toUpperCase();
+      if (!MODES.includes(modeKey as (typeof MODES)[number])) continue;
       const name = optionNameMap.get(c.optionCloudId);
-      if (name && sizesByMode[c.mode]) {
-        const key = `${c.mode}|${c.optionCloudId}`;
-        const priceCents = priceMap.get(key);
-        sizesByMode[c.mode].push({ id: c.optionCloudId, name, priceCents: priceCents ?? undefined });
+      if (name) {
+        const priceKey = `${modeKey}|${c.optionCloudId}`;
+        const priceCents = priceMap.get(priceKey);
+        sizesByMode[modeKey].push({ id: c.optionCloudId, name, priceCents: priceCents ?? undefined });
       }
     }
     const hasSizes = drinkConfigs.length > 0 || cloud.hasSizes;
+
+    // [DEBUG] Temporary - remove after verifying size UI
+    if (process.env.NODE_ENV !== "production" && drinkConfigs.length > 0) {
+      const hot = sizesByMode.HOT?.length ?? 0;
+      const iced = sizesByMode.ICED?.length ?? 0;
+      const conc = sizesByMode.CONCENTRATED?.length ?? 0;
+      app.log.info(
+        { itemId: cloud.cloudId, drinkConfigs: drinkConfigs.length, hasSizes, hot, iced, conc },
+        "[items/:id] sizesByMode counts"
+      );
+    }
 
     const itemOptionGroups = links.map((link) => {
       const g = groupMap.get(link.groupCloudId);
@@ -277,12 +290,20 @@ app.get("/items/:id", async (req) => {
         where: { menuItemCloudId: cloud.cloudId, storeId },
       }),
       app.prisma.cloudAddOn.findMany({ where: { storeId }, orderBy: { sortOrder: "asc" } }),
-      app.prisma.cloudSubstitute.findMany({ where: { storeId }, orderBy: { sortOrder: "asc" } }),
+      app.prisma.cloudSubstitute.findMany({ where: { storeId }, include: { prices: true }, orderBy: { sortOrder: "asc" } }),
     ]);
     const addOnIds = new Set(addOnLinks.map((l) => l.addOnCloudId));
     const substituteIds = new Set(substituteLinks.map((l) => l.substituteCloudId));
     const itemAddOns = addOns.filter((a) => addOnIds.has(a.cloudId)).map((a) => ({ id: a.cloudId, name: a.name, priceCents: a.priceCents }));
-    const itemSubstitutes = substitutes.filter((s) => substituteIds.has(s.cloudId)).map((s) => ({ id: s.cloudId, name: s.name, priceCents: s.priceCents }));
+    const itemSubstitutes = substitutes.filter((s) => substituteIds.has(s.cloudId)).map((s) => {
+      const sub = s as { cloudId: string; name: string; priceCents: number; prices?: Array<{ sizeCloudId: string; mode: string; priceCents: number }> };
+      return {
+        id: sub.cloudId,
+        name: sub.name,
+        priceCents: sub.priceCents,
+        prices: (sub.prices ?? []).map((p) => ({ sizeCloudId: p.sizeCloudId, mode: p.mode, priceCents: p.priceCents })),
+      };
+    });
     const defaultSubId = (cloud as { defaultSubstituteCloudId?: string | null }).defaultSubstituteCloudId ?? null;
 
     return {

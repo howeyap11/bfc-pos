@@ -1149,7 +1149,8 @@ model CloudMenuSize {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  availability CloudMenuSizeAvailability[]
+  availability      CloudMenuSizeAvailability[]
+  substitutePrices  CloudSubstitutePrice[]
 
   @@index([storeId])
   @@index([groupCloudId])
@@ -1197,7 +1198,29 @@ model CloudSubstitute {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
+  prices CloudSubstitutePrice[]
+
   @@index([storeId])
+}
+
+model CloudSubstitutePrice {
+  id                String   @id @default(cuid())
+  storeId           String   @default("store_1")
+  substituteCloudId String
+  sizeCloudId       String
+  mode              String   // ICED | HOT | CONCENTRATED
+  priceCents        Int
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  substitute CloudSubstitute @relation(fields: [substituteCloudId], references: [cloudId], onDelete: Cascade)
+  size       CloudMenuSize   @relation(fields: [sizeCloudId], references: [cloudId], onDelete: Cascade)
+
+
+  @@unique([storeId, substituteCloudId, sizeCloudId, mode])
+  @@index([storeId])
+  @@index([substituteCloudId])
+  @@index([sizeCloudId])
 }
 
 model CloudMenuItemAddOn {

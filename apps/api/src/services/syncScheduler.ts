@@ -17,7 +17,8 @@ export async function runCatalogSync(app: FastifyInstance): Promise<void> {
       app.log.warn({ error: outcome.error, code: outcome.code }, "Catalog sync failed");
     }
   } catch (err) {
-    app.log.warn({ err }, "Catalog sync error");
+    const msg = err instanceof Error ? err.message : String(err);
+    app.log.warn({ err, message: msg }, "Catalog sync error");
   } finally {
     catalogInFlight = false;
   }
@@ -36,7 +37,8 @@ export async function runTransactionSyncFlush(app: FastifyInstance): Promise<voi
       app.log.info({ processed, succeeded, failed }, "Transaction sync outbox processed");
     }
   } catch (err) {
-    app.log.warn({ err }, "Transaction sync flush error");
+    const msg = err instanceof Error ? err.message : String(err);
+    app.log.warn({ err, message: msg }, "Transaction sync flush error");
   } finally {
     transactionFlushInFlight = false;
   }

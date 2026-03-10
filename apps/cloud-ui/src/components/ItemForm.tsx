@@ -15,8 +15,7 @@ import {
   type MenuItemSizePrice,
   type RecipeLineSize,
   type AddOnGroup,
-  type SubstituteGroup,
-  type SubstituteOption,
+  type Substitute,
   normalizeCategoriesResponse,
   normalizeSubCategories,
 } from "@/lib/api";
@@ -162,9 +161,9 @@ export default function ItemForm({
   const [selectedModifierGroupIds, setSelectedModifierGroupIds] = useState<string[]>([]);
   const [addOnGroups, setAddOnGroups] = useState<AddOnGroup[]>([]);
   const [selectedAddOnGroupIds, setSelectedAddOnGroupIds] = useState<string[]>([]);
-  const [substituteGroups, setSubstituteGroups] = useState<SubstituteGroup[]>([]);
-  const [selectedSubstituteGroupIds, setSelectedSubstituteGroupIds] = useState<string[]>([]);
-  const [defaultSubstituteOptionId, setDefaultSubstituteOptionId] = useState<string | null>(null);
+  const [substitutes, setSubstitutes] = useState<Substitute[]>([]);
+  const [selectedSubstituteIds, setSelectedSubstituteIds] = useState<string[]>([]);
+  const [defaultSubstituteId, setDefaultSubstituteId] = useState<string | null>(null);
 
   const [recipeLines, setRecipeLines] = useState<
     { ingredientId: string; qtyPerItem: number; unitCode: string }[]
@@ -197,7 +196,7 @@ export default function ItemForm({
     api.getAddOnGroups().then(setAddOnGroups).catch(() => {});
   }, []);
   useEffect(() => {
-    api.getSubstituteGroups().then(setSubstituteGroups).catch(() => {});
+    api.getSubstitutes().then(setSubstitutes).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -297,10 +296,15 @@ export default function ItemForm({
           setSelectedModifierGroupIds(links.filter((l) => !l.group?.isSizeGroup).map((l) => l.groupId));
           const addOnGroupLinks = (item as { addOnGroupLinks?: { groupId: string }[] }).addOnGroupLinks ?? [];
           setSelectedAddOnGroupIds(addOnGroupLinks.map((l) => l.groupId));
-          const subGroupLinks = (item as { substituteGroupLinks?: { groupId: string }[] }).substituteGroupLinks ?? [];
-          setSelectedSubstituteGroupIds(subGroupLinks.map((l) => l.groupId));
-          const defOpt = (item as { defaultSubstituteOptionId?: string | null }).defaultSubstituteOptionId ?? null;
-          setDefaultSubstituteOptionId(defOpt);
+          const subLinks = (item as { substituteLinks?: { substituteId: string }[] }).substituteLinks ?? [];
+          if (subLinks.length > 0) {
+            setSelectedSubstituteIds(subLinks.map((l) => l.substituteId));
+            const defId = (item as { defaultSubstituteId?: string | null }).defaultSubstituteId ?? null;
+            setDefaultSubstituteId(defId);
+          } else {
+            setSelectedSubstituteIds([]);
+            setDefaultSubstituteId(null);
+          }
 
           setRecipeLines(
             (recipe?.lines ?? []).map((r: any) => ({
@@ -578,8 +582,8 @@ export default function ItemForm({
       priceCents = Math.round(peso * 100);
     }
 
-    if (selectedSubstituteGroupIds.length > 0 && !defaultSubstituteOptionId) {
-      setError("Default milk is required when substitutes are enabled. Select a default substitute.");
+    if (selectedSubstituteIds.length > 0 && !defaultSubstituteId) {
+      setError("Default milk is required when substitutes are enabled. Select a default from the dropdown.");
       return;
     }
 
@@ -630,7 +634,7 @@ export default function ItemForm({
         if (imageFile) await api.uploadItemImage(itemId, imageFile);
         await api.putItemOptionGroups(itemId, selectedModifierGroupIds);
         await api.putItemAddOnGroups(itemId, selectedAddOnGroupIds);
-        await api.putItemSubstituteGroups(itemId, selectedSubstituteGroupIds, defaultSubstituteOptionId);
+        await api.putItemSubstitutes(itemId, selectedSubstituteIds, defaultSubstituteId);
         onSuccess?.();
       }
     } catch (err: any) {
@@ -1025,19 +1029,18 @@ export default function ItemForm({
         </div>
       )}
 
-      {substituteGroups.length > 0 && (
+      {substitutes.length > 0 && (
         <div className="rounded border border-gray-200 bg-gray-50 p-3">
-          <h3 className="mb-2 text-sm font-medium text-gray-700">Substitute Groups (milk)</h3>
+          <h3 className="mb-2 text-sm font-medium text-gray-700">Milk substitutes</h3>
           <p className="mb-3 text-xs text-gray-500">
-            Milk substitute groups. When enabled, default milk is required.
+            Choose allowed milk types and a default (free). Pricing comes from Menu Settings → Substitutes.
           </p>
           <div className="flex flex-wrap gap-3">
-            {substituteGroups.filter((g) => g.isActive).map((g) => {
-              const checked = selectedSubstituteGroupIds.includes(g.id);
-              const optionsInGroup = (g.options ?? []).filter((o) => o.isActive);
+            {substitutes.filter((s) => s.isActive).map((s) => {
+              const checked = selectedSubstituteIds.includes(s.id);
               return (
                 <label
-                  key={g.id}
+                  key={s.id}
                   className="flex cursor-pointer items-center gap-2 rounded border border-gray-200 bg-white px-3 py-2 text-sm hover:bg-gray-50"
                 >
                   <input
@@ -1045,54 +1048,47 @@ export default function ItemForm({
                     checked={checked}
                     onChange={(e) => {
                       if (e.target.checked) {
-                        const next = [...selectedSubstituteGroupIds, g.id];
-                        setSelectedSubstituteGroupIds(next);
-                        const firstOpt = optionsInGroup[0];
-                        if (firstOpt && !defaultSubstituteOptionId) setDefaultSubstituteOptionId(firstOpt.id);
+                        const next = [...selectedSubstituteIds, s.id];
+                        setSelectedSubstituteIds(next);
+                        if (!defaultSubstituteId) setDefaultSubstituteId(s.id);
                       } else {
-                        const next = selectedSubstituteGroupIds.filter((id) => id !== g.id);
-                        setSelectedSubstituteGroupIds(next);
-                        const defOptInRemaining = substituteGroups
-                          .filter((sg) => next.includes(sg.id))
-                          .flatMap((sg) => sg.options ?? [])
-                          .find((o) => o.id === defaultSubstituteOptionId);
-                        if (!defOptInRemaining) setDefaultSubstituteOptionId(null);
+                        const next = selectedSubstituteIds.filter((id) => id !== s.id);
+                        setSelectedSubstituteIds(next);
+                        if (defaultSubstituteId === s.id) setDefaultSubstituteId(next[0] ?? null);
                       }
                     }}
                     className="rounded border-gray-300"
                   />
-                  <span className="font-medium">{g.name}</span>
-                  <span className="text-gray-500 text-xs">({optionsInGroup.length} options)</span>
+                  <span className="font-medium">{s.name}</span>
                 </label>
               );
             })}
           </div>
-          {selectedSubstituteGroupIds.length > 0 && (
+          {selectedSubstituteIds.length > 0 && (
             <div className="mt-3">
-              <label className="mb-1 block text-xs font-medium text-gray-600">Default milk (required)</label>
+              <label className="mb-1 block text-xs font-medium text-gray-600">Default milk (required, free)</label>
               <select
-                value={defaultSubstituteOptionId ?? ""}
-                onChange={(e) => setDefaultSubstituteOptionId(e.target.value || null)}
+                value={defaultSubstituteId ?? ""}
+                onChange={(e) => setDefaultSubstituteId(e.target.value || null)}
                 className="w-full max-w-xs rounded border border-gray-300 px-3 py-2 text-sm"
               >
                 <option value="">— Select default —</option>
-                {substituteGroups
-                  .filter((g) => selectedSubstituteGroupIds.includes(g.id))
-                  .flatMap((g) => (g.options ?? []).filter((o) => o.isActive))
-                  .map((o) => (
-                    <option key={o.id} value={o.id}>
-                      {o.name}
+                {substitutes
+                  .filter((s) => selectedSubstituteIds.includes(s.id) && s.isActive)
+                  .map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
                     </option>
                   ))}
               </select>
-              {selectedSubstituteGroupIds.length > 0 && !defaultSubstituteOptionId && (
+              {selectedSubstituteIds.length > 0 && !defaultSubstituteId && (
                 <p className="mt-1 text-xs text-red-600">Default milk is required when substitutes are enabled.</p>
               )}
             </div>
           )}
           <p className="mt-2 text-xs text-gray-500">
             <Link href="/menu-settings/substitutes" className="text-teal-600 hover:underline">
-              Manage substitute groups →
+              Manage milk substitutes & pricing →
             </Link>
           </p>
         </div>

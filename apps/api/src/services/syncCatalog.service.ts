@@ -189,8 +189,24 @@ type SyncResponse = {
       recipeLines?: Array<{ ingredientId: string; qtyPerItem: string; unitCode: string }>;
     }>;
   }>;
+  substitutes?: Array<{
+    id: string;
+    name: string;
+    priceCents: number;
+    isActive: boolean;
+    sortOrder: number;
+    recipeLines?: Array<{ ingredientId: string; qtyPerItem: string; unitCode: string }>;
+  }>;
+  substitutePrices?: Array<{
+    id: string;
+    substituteId: string;
+    sizeId: string;
+    mode: string;
+    priceCents: number;
+  }>;
   menuItemAddOnGroups?: { itemId: string; groupId: string }[];
   menuItemSubstituteGroups?: { itemId: string; groupId: string }[];
+  menuItemSubstitutes?: { itemId: string; substituteId: string }[];
   storeSettings?: { adminPinHash: string | null };
 };
 
@@ -217,14 +233,34 @@ export async function syncCatalogFromCloud(
   }
 
   let data: SyncResponse;
+
+  // 1) Local: read sync state (fails if Prisma models undefined)
+  let sinceVersion: number;
   try {
+    if (!prisma.syncState) {
+      return {
+        ok: false,
+        error: "Local sync persistence error: Prisma client missing SyncState model. Run: cd apps/api && pnpm exec prisma generate",
+        code: 500,
+      };
+    }
     const syncState = await prisma.syncState.upsert({
       where: { branchId },
       create: { branchId, catalogVersion: 0 },
       update: {},
     });
-    const sinceVersion = syncState.catalogVersion;
+    sinceVersion = syncState.catalogVersion;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      error: `Local sync persistence error: ${msg}`,
+      code: 500,
+    };
+  }
 
+  // 2) Network: fetch from cloud (cloud unreachable vs local Prisma)
+  try {
     const url = `${CLOUD_URL.replace(/\/$/, "")}/sync/catalog?sinceVersion=${sinceVersion}`;
     const res = await fetch(url, {
       method: "GET",
@@ -253,6 +289,9 @@ export async function syncCatalogFromCloud(
       shotPricingRulesReceived: (data.shotPricingRules ?? []).length,
       addOnGroupsReceived: (data.addOnGroups ?? []).length,
       substituteGroupsReceived: (data.substituteGroups ?? []).length,
+      substitutesReceived: (data.substitutes ?? []).length,
+      substitutePricesReceived: (data.substitutePrices ?? []).length,
+      menuItemSubstitutesReceived: (data.menuItemSubstitutes ?? []).length,
       menuItemAddOnGroupsReceived: (data.menuItemAddOnGroups ?? []).length,
       menuItemSubstituteGroupsReceived: (data.menuItemSubstituteGroups ?? []).length,
       latestVersion: data.latestVersion,
@@ -297,7 +336,7 @@ export async function syncCatalogFromCloud(
             hasSizes: (i as any).hasSizes ?? false,
             supportsShots: i.supportsShots ?? false,
             defaultShots: i.defaultShots ?? null,
-            defaultSubstituteCloudId: (i as { defaultSubstituteOptionId?: string | null }).defaultSubstituteOptionId ?? (i as { defaultSubstituteId?: string | null }).defaultSubstituteId ?? null,
+            defaultSubstituteCloudId: (i as { defaultSubstituteId?: string | null }).defaultSubstituteId ?? (i as { defaultSubstituteOptionId?: string | null }).defaultSubstituteOptionId ?? null,
           },
           update: {
             name: i.name,
@@ -315,7 +354,7 @@ export async function syncCatalogFromCloud(
             hasSizes: (i as any).hasSizes ?? false,
             supportsShots: i.supportsShots ?? false,
             defaultShots: i.defaultShots ?? null,
-            defaultSubstituteCloudId: (i as { defaultSubstituteOptionId?: string | null }).defaultSubstituteOptionId ?? (i as { defaultSubstituteId?: string | null }).defaultSubstituteId ?? null,
+            defaultSubstituteCloudId: (i as { defaultSubstituteId?: string | null }).defaultSubstituteId ?? (i as { defaultSubstituteOptionId?: string | null }).defaultSubstituteOptionId ?? null,
           },
         });
         itemsUpserted++;
@@ -331,7 +370,7 @@ export async function syncCatalogFromCloud(
             data: enabled.map((c) => ({
               storeId,
               menuItemCloudId: i.id,
-              mode: c.mode,
+              mode: (c.mode || "").toUpperCase(),
               optionCloudId: c.optionId,
             })),
           });
@@ -557,58 +596,84 @@ export async function syncCatalogFromCloud(
       }
       await tx.cloudMenuItemAddOn.deleteMany({ where: { storeId } });
       const addOnGroupLinks = data.menuItemAddOnGroups ?? [];
+      const addOnRows: Array<{ storeId: string; menuItemCloudId: string; addOnCloudId: string }> = [];
       for (const l of addOnGroupLinks) {
         const opts = addOnOptionsByGroup.get(l.groupId) ?? [];
-        if (opts.length > 0) {
-          await tx.cloudMenuItemAddOn.createMany({
-            data: opts.map((o) => ({
-              storeId,
-              menuItemCloudId: l.itemId,
-              addOnCloudId: o.id,
-            })),
-            skipDuplicates: true,
-          });
+        for (const o of opts) {
+          addOnRows.push({ storeId, menuItemCloudId: l.itemId, addOnCloudId: o.id });
         }
+      }
+      const dedupedAddOnRows = Array.from(
+        new Map(addOnRows.map((r) => [`${r.storeId}:${r.menuItemCloudId}:${r.addOnCloudId}`, r])).values()
+      );
+      if (dedupedAddOnRows.length > 0) {
+        await tx.cloudMenuItemAddOn.createMany({ data: dedupedAddOnRows });
       }
 
-      // Sync substitutes from groups (flatten options to CloudSubstitute)
+      // Sync substitutes: prefer flat substitutes over groups
+      const flatSubstitutes = data.substitutes ?? [];
       const substituteGroups = data.substituteGroups ?? [];
-      for (const g of substituteGroups) {
-        for (const o of g.options ?? []) {
+
+      if (flatSubstitutes.length > 0) {
+        for (const s of flatSubstitutes) {
           await tx.cloudSubstitute.upsert({
-            where: { cloudId: o.id },
-            create: {
-              cloudId: o.id,
-              storeId,
-              name: o.name,
-              priceCents: o.priceCents ?? 0,
-              sortOrder: o.sortOrder ?? 0,
-            },
-            update: {
-              name: o.name,
-              priceCents: o.priceCents ?? 0,
-              sortOrder: o.sortOrder ?? 0,
-            },
+            where: { cloudId: s.id },
+            create: { cloudId: s.id, storeId, name: s.name, priceCents: s.priceCents ?? 0, sortOrder: s.sortOrder ?? 0 },
+            update: { name: s.name, priceCents: s.priceCents ?? 0, sortOrder: s.sortOrder ?? 0 },
           });
         }
-      }
-      const subOptionsByGroup = new Map<string, Array<{ id: string }>>();
-      for (const g of substituteGroups) {
-        subOptionsByGroup.set(g.id, g.options?.map((o) => ({ id: o.id })) ?? []);
-      }
-      await tx.cloudMenuItemSubstitute.deleteMany({ where: { storeId } });
-      const subGroupLinks = data.menuItemSubstituteGroups ?? [];
-      for (const l of subGroupLinks) {
-        const opts = subOptionsByGroup.get(l.groupId) ?? [];
-        if (opts.length > 0) {
-          await tx.cloudMenuItemSubstitute.createMany({
-            data: opts.map((o) => ({
+        await tx.cloudSubstitutePrice.deleteMany({ where: { storeId } });
+        const substitutePrices = data.substitutePrices ?? [];
+        if (substitutePrices.length > 0) {
+          await tx.cloudSubstitutePrice.createMany({
+            data: substitutePrices.map((p) => ({
               storeId,
-              menuItemCloudId: l.itemId,
-              substituteCloudId: o.id,
+              substituteCloudId: p.substituteId,
+              sizeCloudId: p.sizeId,
+              mode: p.mode,
+              priceCents: p.priceCents,
             })),
-            skipDuplicates: true,
           });
+        }
+        await tx.cloudMenuItemSubstitute.deleteMany({ where: { storeId } });
+        const subLinks = data.menuItemSubstitutes ?? [];
+        const subRows: Array<{ storeId: string; menuItemCloudId: string; substituteCloudId: string }> = subLinks.map((l) => ({
+          storeId, menuItemCloudId: l.itemId, substituteCloudId: l.substituteId,
+        }));
+        const dedupedSubRows = Array.from(
+          new Map(subRows.map((r) => [`${r.storeId}:${r.menuItemCloudId}:${r.substituteCloudId}`, r])).values()
+        );
+        if (dedupedSubRows.length > 0) {
+          await tx.cloudMenuItemSubstitute.createMany({ data: dedupedSubRows });
+        }
+      } else {
+        for (const g of substituteGroups) {
+          for (const o of g.options ?? []) {
+            await tx.cloudSubstitute.upsert({
+              where: { cloudId: o.id },
+              create: { cloudId: o.id, storeId, name: o.name, priceCents: o.priceCents ?? 0, sortOrder: o.sortOrder ?? 0 },
+              update: { name: o.name, priceCents: o.priceCents ?? 0, sortOrder: o.sortOrder ?? 0 },
+            });
+          }
+        }
+        const subOptionsByGroup = new Map<string, Array<{ id: string }>>();
+        for (const g of substituteGroups) {
+          subOptionsByGroup.set(g.id, g.options?.map((o) => ({ id: o.id })) ?? []);
+        }
+        await tx.cloudMenuItemSubstitute.deleteMany({ where: { storeId } });
+        const subGroupLinks = data.menuItemSubstituteGroups ?? [];
+        const subRows: Array<{ storeId: string; menuItemCloudId: string; substituteCloudId: string }> = [];
+        for (const l of subGroupLinks) {
+          const opts = subOptionsByGroup.get(l.groupId) ?? [];
+          for (const o of opts) {
+            subRows.push({ storeId, menuItemCloudId: l.itemId, substituteCloudId: o.id });
+          }
+        }
+        const dedupedSubRows = Array.from(
+          new Map(subRows.map((r) => [`${r.storeId}:${r.menuItemCloudId}:${r.substituteCloudId}`, r])).values()
+        );
+        if (dedupedSubRows.length > 0) {
+          await tx.cloudMenuItemSubstitute.createMany({ data: dedupedSubRows });
         }
       }
 
@@ -805,7 +870,7 @@ export async function syncCatalogFromCloud(
     const msg = err instanceof Error ? err.message : String(err);
     return {
       ok: false,
-      error: `Sync failed: ${msg}`,
+      error: `Local sync persistence error: ${msg}`,
       code: 500,
     };
   }

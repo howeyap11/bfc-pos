@@ -26,6 +26,11 @@ export const COLORS = {
   success: "#22c55e",
   error: "#ef4444",
   warning: "#f59e0b",
+
+  // Temperature (Mode) Colors
+  tempHot: "#dc2626",
+  tempIced: "#2563eb",
+  tempConcentrated: "#92400e",
   
   // Payment Method Colors (UTAK Style)
   paymentCash: "#22c55e",

@@ -2445,10 +2445,13 @@ export async function adminRoutes(app: FastifyInstance) {
     return { lines };
   });
 
-  // Substitutes CRUD
+  // Substitutes CRUD (flat milk types - primary architecture)
   app.get("/substitutes", async () => {
     return app.prisma.substitute.findMany({
-      include: { recipeLines: { include: { ingredient: true } } },
+      include: {
+        recipeLines: { include: { ingredient: true } },
+        prices: { include: { size: true } },
+      },
       orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
     });
   });
@@ -2564,6 +2567,125 @@ export async function adminRoutes(app: FastifyInstance) {
       include: { ingredient: true },
     });
     return { lines };
+  });
+
+  // Substitute prices by size + mode (primary pricing for milk substitutes)
+  const drinkModeSchema = z.enum(["ICED", "HOT", "CONCENTRATED"]);
+  app.put("/substitutes/:id/prices", async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    const { id } = req.params;
+    const sub = await app.prisma.substitute.findUnique({ where: { id } });
+    if (!sub) {
+      reply.code(404);
+      return { error: "NOT_FOUND", message: "Substitute not found" };
+    }
+    const parsed = z.object({
+      prices: z.array(z.object({
+        sizeId: z.string(),
+        mode: drinkModeSchema,
+        priceCents: z.number().int().min(0),
+      })),
+    }).safeParse(req.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "INVALID_BODY", details: parsed.error.flatten() };
+    }
+    const sizesGroup = await app.prisma.menuSettingGroup.findUnique({ where: { key: SIZES_GROUP_KEY }, include: { menuSizes: true } });
+    if (!sizesGroup) {
+      reply.code(404);
+      return { error: "SIZES_GROUP_NOT_FOUND", message: "Sizes group not found. Run db:seed." };
+    }
+    const validSizeIds = new Set(sizesGroup.menuSizes.map((s) => s.id));
+    for (const p of parsed.data.prices) {
+      if (!validSizeIds.has(p.sizeId)) {
+        reply.code(400);
+        return { error: "INVALID_SIZE_ID", message: `Size id ${p.sizeId} is not in Menu Settings > Sizes` };
+      }
+    }
+    await bumpCatalogVersion(app.prisma);
+    await app.prisma.substitutePrice.deleteMany({ where: { substituteId: id } });
+    if (parsed.data.prices.length > 0) {
+      await app.prisma.substitutePrice.createMany({
+        data: parsed.data.prices.map((p) => ({ substituteId: id, sizeId: p.sizeId, mode: p.mode, priceCents: p.priceCents })),
+        skipDuplicates: true,
+      });
+    }
+    const prices = await app.prisma.substitutePrice.findMany({
+      where: { substituteId: id },
+      include: { size: true },
+    });
+    return { prices };
+  });
+
+  // Link item to flat substitutes + default milk: PUT /admin/items/:id/substitutes (primary)
+  app.put("/items/:id/substitutes", async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    const { id } = req.params;
+    const parsed = z.object({
+      substituteIds: z.array(z.string()),
+      defaultSubstituteId: z.string().nullable(),
+    }).safeParse(req.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "INVALID_BODY", details: parsed.error.flatten() };
+    }
+    const item = await app.prisma.menuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
+    if (!item) {
+      reply.code(404);
+      return { error: "NOT_FOUND", message: "Item not found" };
+    }
+    if (item.deletedAt) {
+      reply.code(400);
+      return { error: "ITEM_DELETED", message: "Cannot edit a deleted item. Restore it first." };
+    }
+    if (parsed.data.substituteIds.length > 0) {
+      const defaultId = parsed.data.defaultSubstituteId;
+      if (!defaultId) {
+        reply.code(400);
+        return { error: "DEFAULT_MILK_REQUIRED", message: "Default milk is required when substitutes are enabled. Set defaultSubstituteId." };
+      }
+      const defaultSub = await app.prisma.substitute.findUnique({ where: { id: defaultId }, select: { id: true, isActive: true } });
+      if (!defaultSub) {
+        reply.code(400);
+        return { error: "DEFAULT_NOT_FOUND", message: "Default substitute not found" };
+      }
+      if (!defaultSub.isActive) {
+        reply.code(400);
+        return { error: "DEFAULT_INACTIVE", message: "Default milk must be active" };
+      }
+      if (!parsed.data.substituteIds.includes(defaultId)) {
+        reply.code(400);
+        return { error: "DEFAULT_MUST_BE_ALLOWED", message: "Default milk must be one of the allowed substitutes for this item" };
+      }
+      const subs = await app.prisma.substitute.findMany({ where: { id: { in: parsed.data.substituteIds } }, select: { id: true, isActive: true } });
+      if (subs.length !== parsed.data.substituteIds.length) {
+        reply.code(400);
+        return { error: "INVALID_SUBSTITUTE", message: "One or more substitutes not found" };
+      }
+    }
+    await app.prisma.menuItemSubstitute.deleteMany({ where: { itemId: id } });
+    if (parsed.data.substituteIds.length > 0) {
+      await app.prisma.menuItemSubstitute.createMany({
+        data: parsed.data.substituteIds.map((substituteId) => ({ itemId: id, substituteId })),
+        skipDuplicates: true,
+      });
+      await app.prisma.menuItem.update({
+        where: { id },
+        data: { defaultSubstituteId: parsed.data.defaultSubstituteId },
+      });
+    } else {
+      await app.prisma.menuItem.update({
+        where: { id },
+        data: { defaultSubstituteId: null },
+      });
+    }
+    const links = await app.prisma.menuItemSubstitute.findMany({
+      where: { itemId: id },
+      include: { substitute: { include: { recipeLines: { include: { ingredient: true } }, prices: { include: { size: true } } } } },
+    });
+    const updated = await app.prisma.menuItem.findUnique({
+      where: { id },
+      select: { defaultSubstituteId: true, defaultSubstitute: true },
+    });
+    return { substituteLinks: links, defaultSubstituteId: updated?.defaultSubstituteId ?? null, defaultSubstitute: updated?.defaultSubstitute ?? null };
   });
 
   // Link item to option groups: PUT /admin/items/:id/option-groups

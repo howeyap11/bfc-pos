@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { COLORS } from "@/lib/theme";
 
 type Category = {
   id: string;
@@ -603,13 +604,21 @@ export default function PosCartClient() {
 
             {selectingItem.hasSizes && selectingItem.sizesByMode ? (
               <>
-                <p style={{ fontSize: 13, color: "#666", marginBottom: 12 }}>Choose base type and size</p>
+                <p style={{ fontSize: 13, color: "#666", marginBottom: 12 }}>Temperature & Size</p>
                 {(["HOT", "ICED", "CONCENTRATED"] as const).map((mode) => {
                   const sizes = selectingItem.sizesByMode![mode];
                   if (!sizes || sizes.length === 0) return null;
+                  const tempColors: Record<string, string> = {
+                    HOT: COLORS.tempHot ?? "#dc2626",
+                    ICED: COLORS.tempIced ?? "#2563eb",
+                    CONCENTRATED: COLORS.tempConcentrated ?? "#92400e",
+                  };
+                  const accent = tempColors[mode] ?? "#333";
                   return (
                     <div key={mode} style={{ marginBottom: 16 }}>
-                      <h3 style={{ marginBottom: 8 }}>{mode.charAt(0) + mode.slice(1).toLowerCase()}</h3>
+                      <h3 style={{ marginBottom: 8, color: accent, fontWeight: "700" }}>
+                        {mode.charAt(0) + mode.slice(1).toLowerCase()}
+                      </h3>
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                         {sizes.map((opt) => {
                           const isSelected = selectedBaseType === mode && selectedSizeOption?.id === opt.id;
@@ -623,14 +632,20 @@ export default function PosCartClient() {
                               }}
                               style={{
                                 padding: "8px 12px",
-                                border: `2px solid ${isSelected ? "#00a" : "#ddd"}`,
+                                border: `2px solid ${isSelected ? accent : "#ddd"}`,
                                 borderRadius: 4,
-                                background: isSelected ? "#eef" : "#fff",
+                                background: isSelected ? `${accent}20` : "#fff",
                                 cursor: "pointer",
                                 fontWeight: isSelected ? "bold" : "normal",
+                                color: isSelected ? accent : "#333",
                               }}
                             >
                               {opt.name}
+                              {opt.priceCents != null && opt.priceCents > 0 && (
+                                <span style={{ fontSize: 12, marginLeft: 4, opacity: 0.9 }}>
+                                  {formatPesos(opt.priceCents)}
+                                </span>
+                              )}
                             </button>
                           );
                         })}

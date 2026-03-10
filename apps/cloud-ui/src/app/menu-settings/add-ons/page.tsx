@@ -17,6 +17,7 @@ export default function AddOnsPage() {
   const [newOptionGroupId, setNewOptionGroupId] = useState<string | null>(null);
   const [newOptionName, setNewOptionName] = useState("");
   const [newOptionPrice, setNewOptionPrice] = useState("");
+  const [editGroup, setEditGroup] = useState<{ group: AddOnGroup; name: string } | null>(null);
   const [editOption, setEditOption] = useState<{ groupId: string; option: AddOnOption } | null>(null);
   const [editOptionName, setEditOptionName] = useState("");
   const [editOptionPrice, setEditOptionPrice] = useState("");
@@ -58,6 +59,24 @@ export default function AddOnsPage() {
       setTimeout(() => setSuccess(""), 2000);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed");
+    } finally { setSaving(false); }
+  }
+
+  async function handleUpdateGroupName(e: React.FormEvent) {
+    if (!editGroup) return;
+    e.preventDefault();
+    const name = editGroup.name.trim();
+    if (!name) return;
+    setSaving(true);
+    setError("");
+    try {
+      await api.patchAddOnGroup(editGroup.group.id, { name });
+      setEditGroup(null);
+      setSuccess("Group title updated");
+      refresh();
+      setTimeout(() => setSuccess(""), 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update");
     } finally { setSaving(false); }
   }
 
@@ -196,10 +215,27 @@ export default function AddOnsPage() {
           {groups.map((g) => (
             <div key={g.id} className="rounded-lg border border-gray-200 bg-gray-50 p-4">
               <div className="flex items-center justify-between">
-                <button type="button" onClick={() => setExpandedGroupId(expandedGroupId === g.id ? null : g.id)} className="flex items-center gap-2 text-left">
-                  <span className="font-medium text-gray-900">{g.name}</span>
-                  <span className="text-gray-500 text-sm">({(g.options ?? []).length} options)</span>
-                </button>
+                {editGroup?.group.id === g.id ? (
+                  <form onSubmit={handleUpdateGroupName} className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={editGroup.name}
+                      onChange={(e) => setEditGroup({ ...editGroup, name: e.target.value })}
+                      className="rounded border border-gray-300 px-2 py-1 text-sm font-medium"
+                      autoFocus
+                    />
+                    <button type="submit" disabled={saving || !editGroup.name.trim()} className="rounded bg-teal-600 px-2 py-1 text-xs text-white disabled:opacity-50">Save</button>
+                    <button type="button" onClick={() => setEditGroup(null)} className="text-gray-500 text-xs hover:underline">Cancel</button>
+                  </form>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <button type="button" onClick={() => setExpandedGroupId(expandedGroupId === g.id ? null : g.id)} className="text-left">
+                      <span className="font-medium text-gray-900">{g.name}</span>
+                      <span className="ml-2 text-gray-500 text-sm">({(g.options ?? []).length} options)</span>
+                    </button>
+                    <button type="button" onClick={() => setEditGroup({ group: g, name: g.name })} className="rounded border px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-100" title="Edit group title">Edit title</button>
+                  </div>
+                )}
                 <button type="button" onClick={() => handleDeleteGroup(g)} className="text-red-600 hover:underline text-sm">Delete Group</button>
               </div>
               {expandedGroupId === g.id && (

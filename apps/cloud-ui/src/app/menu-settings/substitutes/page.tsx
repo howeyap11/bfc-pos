@@ -1,41 +1,46 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, type SubstituteGroup, type SubstituteOption, type Ingredient, type IngredientCategory } from "@/lib/api";
+import { api, type Substitute, type MenuSize, type Ingredient, type IngredientCategory } from "@/lib/api";
 import { SearchableIngredientSelect } from "@/components/SearchableIngredientSelect";
 
+type DrinkMode = "ICED" | "HOT" | "CONCENTRATED";
+const MODES: DrinkMode[] = ["ICED", "HOT", "CONCENTRATED"];
+const MODE_LABELS: Record<DrinkMode, string> = { ICED: "Iced", HOT: "Hot", CONCENTRATED: "Concentrated" };
+
 export default function SubstitutesPage() {
-  const [groups, setGroups] = useState<SubstituteGroup[]>([]);
+  const [substitutes, setSubstitutes] = useState<Substitute[]>([]);
+  const [sizes, setSizes] = useState<MenuSize[]>([]);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [ingredientCategories, setIngredientCategories] = useState<IngredientCategory[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [saving, setSaving] = useState(false);
-  const [newGroupName, setNewGroupName] = useState("");
-  const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null);
-  const [newOptionGroupId, setNewOptionGroupId] = useState<string | null>(null);
-  const [newOptionName, setNewOptionName] = useState("");
-  const [newOptionPrice, setNewOptionPrice] = useState("");
-  const [editOption, setEditOption] = useState<{ groupId: string; option: SubstituteOption } | null>(null);
-  const [editOptionName, setEditOptionName] = useState("");
-  const [editOptionPrice, setEditOptionPrice] = useState("");
-  const [editOptionActive, setEditOptionActive] = useState(true);
-  const [recipeModal, setRecipeModal] = useState<{ groupId: string; option: SubstituteOption } | null>(null);
+  const [newName, setNewName] = useState("");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [editSub, setEditSub] = useState<{ sub: Substitute; name: string } | null>(null);
+  const [recipeModal, setRecipeModal] = useState<Substitute | null>(null);
   const [recipeLines, setRecipeLines] = useState<{ ingredientId: string; qtyPerItem: number; unitCode: string }[]>([]);
   const [recipeSaving, setRecipeSaving] = useState(false);
   const [newIngredientId, setNewIngredientId] = useState("");
   const [newQty, setNewQty] = useState("");
+  const [priceModal, setPriceModal] = useState<Substitute | null>(null);
+  const [priceMatrix, setPriceMatrix] = useState<Record<string, number>>({}); // key: sizeId_mode
+  const [priceSaving, setPriceSaving] = useState(false);
 
   function refresh() {
     setLoading(true);
-    api.getSubstituteGroups()
-      .then(setGroups)
+    api.getSubstitutes()
+      .then(setSubstitutes)
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load"))
       .finally(() => setLoading(false));
   }
 
   useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    api.getMenuSizes().then((r) => setSizes(r.sizes ?? [])).catch(() => {});
+  }, []);
   useEffect(() => {
     Promise.all([api.getIngredients(), api.getIngredientCategories()])
       .then(([ings, cats]) => {
@@ -45,15 +50,15 @@ export default function SubstitutesPage() {
       .catch(() => {});
   }, []);
 
-  async function handleCreateGroup(e: React.FormEvent) {
+  async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
-    if (!newGroupName.trim()) return;
+    if (!newName.trim()) return;
     setSaving(true);
     setError("");
     try {
-      await api.createSubstituteGroup({ name: newGroupName.trim() });
-      setNewGroupName("");
-      setSuccess("Substitute group created");
+      await api.createSubstitute({ name: newName.trim() });
+      setNewName("");
+      setSuccess("Milk substitute created");
       refresh();
       setTimeout(() => setSuccess(""), 2000);
     } catch (err) {
@@ -61,12 +66,43 @@ export default function SubstitutesPage() {
     } finally { setSaving(false); }
   }
 
-  async function handleDeleteGroup(g: SubstituteGroup) {
-    if (!confirm(`Delete substitute group "${g.name}"?`)) return;
+  async function handleUpdateName(e: React.FormEvent) {
+    if (!editSub) return;
+    e.preventDefault();
+    const name = editSub.name.trim();
+    if (!name) return;
+    setSaving(true);
     setError("");
     try {
-      await api.deleteSubstituteGroup(g.id);
-      setSuccess("Group deleted");
+      await api.patchSubstitute(editSub.sub.id, { name });
+      setEditSub(null);
+      setSuccess("Name updated");
+      refresh();
+      setTimeout(() => setSuccess(""), 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update");
+    } finally { setSaving(false); }
+  }
+
+  async function handleToggleActive(sub: Substitute) {
+    setSaving(true);
+    setError("");
+    try {
+      await api.patchSubstitute(sub.id, { isActive: !sub.isActive });
+      setSuccess(sub.isActive ? "Deactivated" : "Activated");
+      refresh();
+      setTimeout(() => setSuccess(""), 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed");
+    } finally { setSaving(false); }
+  }
+
+  async function handleDelete(sub: Substitute) {
+    if (!confirm(`Delete "${sub.name}"? This cannot be undone.`)) return;
+    setError("");
+    try {
+      await api.deleteSubstitute(sub.id);
+      setSuccess("Substitute deleted");
       refresh();
       setTimeout(() => setSuccess(""), 2000);
     } catch (err) {
@@ -75,60 +111,10 @@ export default function SubstitutesPage() {
     }
   }
 
-  async function handleCreateOption(groupId: string, e: React.FormEvent) {
-    e.preventDefault();
-    if (!newOptionName.trim()) return;
-    setSaving(true);
-    setError("");
-    try {
-      const priceCents = Math.round((parseFloat(newOptionPrice) || 0) * 100);
-      await api.createSubstituteOption(groupId, { name: newOptionName.trim(), priceCents });
-      setNewOptionGroupId(null);
-      setNewOptionName("");
-      setNewOptionPrice("");
-      setSuccess("Option added");
-      refresh();
-      setTimeout(() => setSuccess(""), 2000);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed");
-    } finally { setSaving(false); }
-  }
-
-  async function handleUpdateOption(e: React.FormEvent) {
-    if (!editOption) return;
-    e.preventDefault();
-    setSaving(true);
-    setError("");
-    try {
-      const priceCents = Math.round((parseFloat(editOptionPrice) || 0) * 100);
-      await api.patchSubstituteOption(editOption.groupId, editOption.option.id, { name: editOptionName.trim(), priceCents, isActive: editOptionActive });
-      setEditOption(null);
-      setSuccess("Option updated");
-      refresh();
-      setTimeout(() => setSuccess(""), 2000);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed");
-    } finally { setSaving(false); }
-  }
-
-  async function handleDeleteOption(groupId: string, opt: SubstituteOption) {
-    if (!confirm(`Delete option "${opt.name}"?`)) return;
-    setError("");
-    try {
-      await api.deleteSubstituteOption(groupId, opt.id);
-      setSuccess("Option deleted");
-      refresh();
-      setTimeout(() => setSuccess(""), 2000);
-    } catch (err) {
-      const body = (err as { body?: { message?: string } })?.body;
-      setError(body?.message ?? (err instanceof Error ? err.message : "Failed"));
-    }
-  }
-
-  function openRecipe(groupId: string, option: SubstituteOption) {
-    setRecipeModal({ groupId, option });
+  function openRecipe(sub: Substitute) {
+    setRecipeModal(sub);
     setRecipeLines(
-      (option.recipeLines ?? []).map((r) => ({
+      (sub.recipeLines ?? []).map((r) => ({
         ingredientId: r.ingredientId,
         qtyPerItem: typeof r.qtyPerItem === "string" ? parseFloat(r.qtyPerItem) || 0 : r.qtyPerItem,
         unitCode: r.unitCode,
@@ -143,7 +129,7 @@ export default function SubstitutesPage() {
     setRecipeSaving(true);
     setError("");
     try {
-      await api.putSubstituteOptionRecipe(recipeModal.groupId, recipeModal.option.id, recipeLines);
+      await api.putSubstituteRecipe(recipeModal.id, recipeLines);
       setRecipeModal(null);
       setSuccess("Recipe saved");
       refresh();
@@ -163,29 +149,76 @@ export default function SubstitutesPage() {
     setNewQty("");
   }
 
+  function openPricing(sub: Substitute) {
+    setPriceModal(sub);
+    const matrix: Record<string, number> = {};
+    for (const size of sizes) {
+      for (const mode of MODES) {
+        const k = `${size.id}_${mode}`;
+        const existing = (sub.prices ?? []).find((pr) => pr.sizeId === size.id && pr.mode === mode);
+        matrix[k] = existing?.priceCents ?? 0;
+      }
+    }
+    setPriceMatrix(matrix);
+  }
+
+  function setPriceCell(sizeId: string, mode: DrinkMode, cents: number) {
+    setPriceMatrix((prev) => ({ ...prev, [`${sizeId}_${mode}`]: cents }));
+  }
+
+  function getPriceCell(sizeId: string, mode: DrinkMode): number {
+    return priceMatrix[`${sizeId}_${mode}`] ?? 0;
+  }
+
+  async function savePricing() {
+    if (!priceModal) return;
+    setPriceSaving(true);
+    setError("");
+    try {
+      const prices: { sizeId: string; mode: DrinkMode; priceCents: number }[] = [];
+      for (const size of sizes) {
+        for (const mode of MODES) {
+          const cents = getPriceCell(size.id, mode);
+          if (cents > 0) {
+            prices.push({ sizeId: size.id, mode, priceCents: cents });
+          }
+        }
+      }
+      await api.putSubstitutePrices(priceModal.id, prices);
+      setPriceModal(null);
+      setSuccess("Pricing saved");
+      refresh();
+      setTimeout(() => setSuccess(""), 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save pricing");
+    } finally { setPriceSaving(false); }
+  }
+
   return (
     <div className="mx-auto max-w-5xl py-6">
-      <h1 className="mb-4 text-2xl font-semibold">Substitute Groups</h1>
+      <h1 className="mb-4 text-2xl font-semibold">Milk Substitutes</h1>
       <p className="mb-6 text-sm text-gray-600">
-        Group milk substitutes (e.g. Milk Options). Assign groups to items in Create/Edit Item. When substitutes are enabled, default milk is required.
+        Define milk substitute types and set prices by size and temperature. Default milk is free. Assign substitutes to items in Create/Edit Item.
       </p>
 
       {success && <p className="mb-3 text-sm text-green-600">{success}</p>}
       {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
 
       <div className="mb-8 rounded-lg border border-gray-200 bg-white p-4">
-        <form onSubmit={handleCreateGroup} className="flex flex-wrap items-end gap-3">
+        <form onSubmit={handleCreate} className="flex flex-wrap items-end gap-3">
           <div className="min-w-[200px] flex-1">
-            <label className="mb-1 block text-sm font-medium text-gray-700">Add Group</label>
+            <label className="mb-1 block text-sm font-medium text-gray-700">Add milk type</label>
             <input
               type="text"
-              value={newGroupName}
-              onChange={(e) => setNewGroupName(e.target.value)}
-              placeholder="e.g. Milk Options"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="e.g. Oat Milk, Soy Milk"
               className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
             />
           </div>
-          <button type="submit" disabled={saving || !newGroupName.trim()} className="rounded bg-teal-600 px-4 py-2 text-sm font-medium text-white hover:bg-teal-700 disabled:opacity-50">Add Group</button>
+          <button type="submit" disabled={saving || !newName.trim()} className="rounded bg-teal-600 px-4 py-2 text-sm font-medium text-white hover:bg-teal-700 disabled:opacity-50">
+            Add
+          </button>
         </form>
       </div>
 
@@ -193,65 +226,76 @@ export default function SubstitutesPage() {
         <p className="text-gray-500">Loading…</p>
       ) : (
         <div className="space-y-4">
-          {groups.map((g) => (
-            <div key={g.id} className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+          {substitutes.map((sub) => (
+            <div key={sub.id} className={`rounded-lg border p-4 ${sub.isActive ? "border-gray-200 bg-gray-50" : "border-gray-150 bg-gray-100 opacity-75"}`}>
               <div className="flex items-center justify-between">
-                <button type="button" onClick={() => setExpandedGroupId(expandedGroupId === g.id ? null : g.id)} className="flex items-center gap-2 text-left">
-                  <span className="font-medium text-gray-900">{g.name}</span>
-                  <span className="text-gray-500 text-sm">({(g.options ?? []).length} options)</span>
-                </button>
-                <button type="button" onClick={() => handleDeleteGroup(g)} className="text-red-600 hover:underline text-sm">Delete Group</button>
+                {editSub?.sub.id === sub.id ? (
+                  <form onSubmit={handleUpdateName} className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={editSub.name}
+                      onChange={(e) => setEditSub({ ...editSub, name: e.target.value })}
+                      className="rounded border border-gray-300 px-2 py-1 text-sm font-medium"
+                      autoFocus
+                    />
+                    <button type="submit" disabled={saving || !editSub.name.trim()} className="rounded bg-teal-600 px-2 py-1 text-xs text-white disabled:opacity-50">Save</button>
+                    <button type="button" onClick={() => setEditSub(null)} className="text-gray-500 text-xs hover:underline">Cancel</button>
+                  </form>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <button type="button" onClick={() => setExpandedId(expandedId === sub.id ? null : sub.id)} className="text-left">
+                      <span className="font-medium text-gray-900">{sub.name}</span>
+                      {!sub.isActive && <span className="ml-2 text-amber-600 text-sm">(inactive)</span>}
+                    </button>
+                    <button type="button" onClick={() => setEditSub({ sub, name: sub.name })} className="rounded border px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-100" title="Edit name">Edit</button>
+                  </div>
+                )}
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={() => handleToggleActive(sub)} className="rounded border px-2 py-1 text-xs hover:bg-gray-100">
+                    {sub.isActive ? "Deactivate" : "Activate"}
+                  </button>
+                  <button type="button" onClick={() => openRecipe(sub)} className="rounded border px-2 py-1 text-xs hover:bg-gray-100">Recipe</button>
+                  <button type="button" onClick={() => openPricing(sub)} className="rounded border px-2 py-1 text-xs hover:bg-gray-100">Pricing</button>
+                  <button type="button" onClick={() => handleDelete(sub)} className="text-red-600 text-sm hover:underline">Delete</button>
+                </div>
               </div>
-              {expandedGroupId === g.id && (
-                <div className="mt-4 pl-2 border-l-2 border-gray-300 space-y-3">
-                  {(g.options ?? []).map((opt) => (
-                    <div key={opt.id} className="flex items-center justify-between rounded bg-white p-2">
-                      {editOption?.option.id === opt.id ? (
-                        <form onSubmit={handleUpdateOption} className="flex gap-2 items-center">
-                          <input value={editOptionName} onChange={(e) => setEditOptionName(e.target.value)} className="rounded border px-2 py-1 text-sm" />
-                          <input type="number" step="0.01" value={editOptionPrice} onChange={(e) => setEditOptionPrice(e.target.value)} className="w-20 rounded border px-2 py-1 text-sm" />
-                          <label className="flex items-center gap-1 text-sm"><input type="checkbox" checked={editOptionActive} onChange={(e) => setEditOptionActive(e.target.checked)} /> Active</label>
-                          <button type="submit" className="rounded bg-teal-600 px-2 py-1 text-xs text-white">Save</button>
-                          <button type="button" onClick={() => setEditOption(null)} className="text-gray-500 text-xs">Cancel</button>
-                        </form>
-                      ) : (
-                        <>
-                          <div>
-                            <span className="font-medium">{opt.name}</span>
-                            <span className="ml-2 text-gray-500">₱{((opt.priceCents ?? 0) / 100).toFixed(2)}</span>
-                            {!opt.isActive && <span className="ml-2 text-amber-600 text-xs">(inactive)</span>}
-                          </div>
-                          <div className="flex gap-2">
-                            <button type="button" onClick={() => openRecipe(g.id, opt)} className="rounded border px-2 py-1 text-xs hover:bg-gray-100">Recipe</button>
-                            <button type="button" onClick={() => { setEditOption({ groupId: g.id, option: opt }); setEditOptionName(opt.name); setEditOptionPrice(((opt.priceCents ?? 0) / 100).toFixed(2)); setEditOptionActive(opt.isActive ?? true); }} className="rounded border px-2 py-1 text-xs hover:bg-gray-100">Edit</button>
-                            <button type="button" onClick={() => handleDeleteOption(g.id, opt)} className="text-red-600 text-xs hover:underline">Delete</button>
-                          </div>
-                        </>
-                      )}
+              {expandedId === sub.id && (
+                <div className="mt-4 border-t border-gray-200 pt-4">
+                  <p className="mb-2 text-sm text-gray-600">Price entries: {(sub.prices ?? []).length}</p>
+                  {sub.prices && sub.prices.length > 0 && (
+                    <div className="overflow-x-auto text-sm">
+                      <table className="min-w-[200px]">
+                        <thead>
+                          <tr>
+                            <th className="text-left font-medium">Size</th>
+                            <th className="text-left font-medium">Mode</th>
+                            <th className="text-right font-medium">Price (₱)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {sub.prices.map((p) => (
+                            <tr key={`${p.sizeId}-${p.mode}`}>
+                              <td>{(p as { size?: { label: string } }).size?.label ?? p.sizeId}</td>
+                              <td>{MODE_LABELS[p.mode as DrinkMode] ?? p.mode}</td>
+                              <td className="text-right">{(p.priceCents / 100).toFixed(2)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
-                  ))}
-                  {newOptionGroupId === g.id ? (
-                    <form onSubmit={(e) => handleCreateOption(g.id, e)} className="flex gap-2 items-center">
-                      <input value={newOptionName} onChange={(e) => setNewOptionName(e.target.value)} placeholder="Option name" className="rounded border px-2 py-1 text-sm flex-1" />
-                      <input type="number" step="0.01" value={newOptionPrice} onChange={(e) => setNewOptionPrice(e.target.value)} placeholder="₱" className="w-20 rounded border px-2 py-1 text-sm" />
-                      <button type="submit" disabled={saving || !newOptionName.trim()} className="rounded bg-teal-600 px-2 py-1 text-xs text-white">Add</button>
-                      <button type="button" onClick={() => { setNewOptionGroupId(null); setNewOptionName(""); setNewOptionPrice(""); }} className="text-gray-500 text-xs">Cancel</button>
-                    </form>
-                  ) : (
-                    <button type="button" onClick={() => setNewOptionGroupId(g.id)} className="text-teal-600 text-sm hover:underline">+ Add option</button>
                   )}
                 </div>
               )}
             </div>
           ))}
-          {groups.length === 0 && <p className="py-8 text-center text-gray-500">No substitute groups yet. Add one above.</p>}
+          {substitutes.length === 0 && <p className="py-8 text-center text-gray-500">No milk substitutes yet. Add one above.</p>}
         </div>
       )}
 
       {recipeModal && (
         <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/50 p-4">
           <div className="max-h-[80vh] w-full max-w-lg overflow-y-auto rounded-lg bg-white p-4 shadow-lg">
-            <h3 className="mb-4 font-semibold">Recipe: {recipeModal.option.name}</h3>
+            <h3 className="mb-4 font-semibold">Recipe: {recipeModal.name}</h3>
             <div className="mb-4 flex gap-2">
               <div className="flex-1">
                 <SearchableIngredientSelect value={newIngredientId} onChange={(id) => setNewIngredientId(id)} ingredients={ingredients} ingredientCategories={ingredientCategories} excludeIds={recipeLines.map((r) => r.ingredientId)} placeholder="Add ingredient" />
@@ -271,6 +315,55 @@ export default function SubstitutesPage() {
             <div className="flex justify-end gap-2">
               <button type="button" onClick={() => setRecipeModal(null)} className="rounded border px-3 py-1.5 text-sm">Cancel</button>
               <button type="button" onClick={saveRecipe} disabled={recipeSaving} className="rounded bg-teal-600 px-3 py-1.5 text-sm text-white disabled:opacity-50">{recipeSaving ? "Saving…" : "Save"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {priceModal && (
+        <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/50 p-4">
+          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-lg bg-white p-4 shadow-lg">
+            <h3 className="mb-4 font-semibold">Pricing: {priceModal.name}</h3>
+            <p className="mb-4 text-sm text-gray-600">Set prices by size and temperature. Leave blank or 0 for free. Default milk is always free.</p>
+            <div className="overflow-x-auto text-sm">
+              <table className="w-full border-collapse">
+                <thead>
+                  <tr>
+                    <th className="border border-gray-200 px-2 py-1 text-left font-medium">Size</th>
+                    {MODES.map((m) => (
+                      <th key={m} className="border border-gray-200 px-2 py-1 text-center font-medium">{MODE_LABELS[m]}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {sizes.filter((s) => s.isActive).map((size) => (
+                    <tr key={size.id}>
+                      <td className="border border-gray-200 px-2 py-1 font-medium">{size.label}</td>
+                      {MODES.map((mode) => (
+                        <td key={mode} className="border border-gray-200 px-2 py-1">
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={getPriceCell(size.id, mode) / 100}
+                            onChange={(e) => {
+                              const v = parseFloat(e.target.value);
+                              setPriceCell(size.id, mode, Number.isNaN(v) || v < 0 ? 0 : Math.round(v * 100));
+                            }}
+                            className="w-full rounded border px-2 py-0.5"
+                            placeholder="0"
+                          />
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {sizes.filter((s) => s.isActive).length === 0 && <p className="py-4 text-amber-600 text-sm">No sizes defined. Add sizes in Menu Settings &gt; Sizes first.</p>}
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" onClick={() => setPriceModal(null)} className="rounded border px-3 py-1.5 text-sm">Cancel</button>
+              <button type="button" onClick={savePricing} disabled={priceSaving} className="rounded bg-teal-600 px-3 py-1.5 text-sm text-white disabled:opacity-50">{priceSaving ? "Saving…" : "Save"}</button>
             </div>
           </div>
         </div>

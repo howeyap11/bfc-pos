@@ -1,11 +1,1 @@
-[00:00:01.806] Server  LOG     ✓ Ready in 1330ms
-[00:00:02.589] Browser INFO    %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
-[00:00:05.841] Browser ERROR   [apiFetch] Network error: {"error":"Failed to fetch","method":"GET","url":"http://localhost:4000/admin/categories"}
-[00:00:05.841] Browser ERROR   [apiFetch] Network error: {"error":"Failed to fetch","method":"GET","url":"http://localhost:4000/admin/items"}
-[00:01:01.539] Browser INFO    %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
-[00:01:04.012] Browser ERROR   [apiFetch] Network error: {"error":"Failed to fetch","method":"GET","url":"http://localhost:4000/admin/categories"}
-[00:01:04.012] Browser ERROR   [apiFetch] Network error: {"error":"Failed to fetch","method":"GET","url":"http://localhost:4000/admin/items"}
-[00:01:08.620] Browser ERROR   [apiFetch] Network error: {"error":"Failed to fetch","method":"GET","url":"http://localhost:4000/admin/menu-settings/sizes"}
-[00:01:08.620] Browser ERROR   [apiFetch] Network error: {"error":"Failed to fetch","method":"GET","url":"http://localhost:4000/admin/menu-settings/sizes"}
-[00:01:16.518] Browser INFO    %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
-[00:05:15.916] Browser INFO    %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[00:00:01.753] Server  LOG     ✓ Ready in 1325ms

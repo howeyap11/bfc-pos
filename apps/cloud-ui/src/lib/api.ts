@@ -166,6 +166,16 @@ export type Substitute = {
   isActive: boolean;
   sortOrder: number;
   recipeLines?: { ingredientId: string; qtyPerItem: number | string; unitCode: string; ingredient?: { id: string; name: string; unitCode: string } }[];
+  prices?: SubstitutePrice[];
+};
+
+export type SubstitutePrice = {
+  id: string;
+  substituteId: string;
+  sizeId: string;
+  mode: "ICED" | "HOT" | "CONCENTRATED";
+  priceCents: number;
+  size?: { id: string; label: string };
 };
 
 export type AddOnOption = {
@@ -603,6 +613,9 @@ export const api = {
   putSubstituteRecipe(id: string, lines: { ingredientId: string; qtyPerItem: number; unitCode: string }[]): Promise<{ lines: unknown[] }> {
     return apiFetch(`/admin/substitutes/${id}/recipe`, { method: "PUT", body: JSON.stringify({ lines }) });
   },
+  putSubstitutePrices(id: string, prices: { sizeId: string; mode: "ICED" | "HOT" | "CONCENTRATED"; priceCents: number }[]): Promise<{ prices: SubstitutePrice[] }> {
+    return apiFetch(`/admin/substitutes/${id}/prices`, { method: "PUT", body: JSON.stringify({ prices }) });
+  },
   getAddOnGroups(): Promise<AddOnGroup[]> {
     return apiFetch("/admin/add-on-groups");
   },
@@ -653,6 +666,12 @@ export const api = {
   },
   putItemAddOnGroups(itemId: string, groupIds: string[]): Promise<{ addOnGroupLinks: { group: AddOnGroup }[] }> {
     return apiFetch(`/admin/items/${itemId}/add-on-groups`, { method: "PUT", body: JSON.stringify({ groupIds }) });
+  },
+  putItemSubstitutes(itemId: string, substituteIds: string[], defaultSubstituteId: string | null): Promise<{ substituteLinks: { substitute: Substitute }[]; defaultSubstituteId: string | null; defaultSubstitute: Substitute | null }> {
+    return apiFetch(`/admin/items/${itemId}/substitutes`, {
+      method: "PUT",
+      body: JSON.stringify({ substituteIds, defaultSubstituteId }),
+    });
   },
   putItemSubstituteGroups(itemId: string, groupIds: string[], defaultSubstituteOptionId: string | null): Promise<{ substituteGroupLinks: { group: SubstituteGroup }[]; defaultSubstituteOptionId: string | null; defaultSubstituteOption: SubstituteOption | null }> {
     return apiFetch(`/admin/items/${itemId}/substitute-groups`, {

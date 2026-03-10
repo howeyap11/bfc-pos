@@ -161,7 +161,7 @@ model MenuItemAddOn {
 model Substitute {
   id         String   @id @default(cuid())
   name       String
-  priceCents Int      @default(0)
+  priceCents Int      @default(0)  // legacy/fallback; prefer SubstitutePrice by size+mode
   isActive   Boolean  @default(true)
   sortOrder  Int      @default(0)
   createdAt  DateTime @default(now())
@@ -170,8 +170,26 @@ model Substitute {
   recipeLines     SubstituteRecipeLine[]
   menuItemLinks   MenuItemSubstitute[]
   asDefaultFor    MenuItem[] @relation("MenuItemDefaultSubstitute")
+  prices          SubstitutePrice[]
 
   @@index([sortOrder])
+}
+
+model SubstitutePrice {
+  id           String    @id @default(cuid())
+  substituteId String
+  sizeId       String
+  mode         DrinkMode
+  priceCents   Int
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  substitute Substitute @relation(fields: [substituteId], references: [id], onDelete: Cascade)
+  size       MenuSize   @relation(fields: [sizeId], references: [id], onDelete: Cascade)
+
+  @@unique([substituteId, sizeId, mode])
+  @@index([substituteId])
+  @@index([sizeId])
 }
 
 model SubstituteRecipeLine {
@@ -774,8 +792,9 @@ model MenuSize {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  group       MenuSettingGroup     @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  availability MenuSizeAvailability[]
+  group             MenuSettingGroup     @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  availability      MenuSizeAvailability[]
+  substitutePrices  SubstitutePrice[]
 
   @@index([groupId])
 }

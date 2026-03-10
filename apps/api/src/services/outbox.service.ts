@@ -4,6 +4,11 @@ export async function enqueueOutbox(
   prisma: PrismaClient,
   params: { storeId: string; topic: string; payload: Record<string, unknown> }
 ) {
+  if (!prisma.localOutbox) {
+    throw new Error(
+      "Prisma client missing LocalOutbox model. Run: cd apps/api && pnpm exec prisma generate"
+    );
+  }
   const { storeId, topic, payload } = params;
   const record = await prisma.localOutbox.create({
     data: {
@@ -32,6 +37,11 @@ export async function processOutboxForTopic(
   topic: string,
   maxItems = 10
 ) {
+  if (!prisma.localOutbox) {
+    throw new Error(
+      "Prisma client missing LocalOutbox model. Run: cd apps/api && pnpm exec prisma generate"
+    );
+  }
   const items = await prisma.localOutbox.findMany({
     where: { topic, status: "PENDING" },
     take: maxItems,
@@ -94,6 +104,11 @@ export async function processTransactionSyncOutbox(
   uploadFn: UploadTransactionFn,
   maxItems = 10
 ): Promise<{ processed: number; succeeded: number; failed: number }> {
+  if (!prisma.localOutbox) {
+    throw new Error(
+      "Prisma client missing LocalOutbox model. Run: cd apps/api && pnpm exec prisma generate"
+    );
+  }
   const items = await prisma.localOutbox.findMany({
     where: { topic: "transaction.cloud.sync", status: "PENDING" },
     take: maxItems,
