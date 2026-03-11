@@ -112,6 +112,10 @@ export default function ItemClient({
       const cur = prev[group.id] ?? [];
 
       if (group.type === "SINGLE") {
+        const isCurrentlySelected = cur.includes(optionId);
+        if (group.minSelect === 0 && isCurrentlySelected) {
+          return { ...prev, [group.id]: [] };
+        }
         return { ...prev, [group.id]: [optionId] };
       }
 

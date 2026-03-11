@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "pnpm -r --parallel dev",
     "build": "pnpm -r build",
-    "lint": "pnpm -r lint"
+    "lint": "pnpm -r lint",
+    "prod:api": "pnpm --filter @bfc/api run prod",
+    "prod:web": "pnpm --filter web run prod"
   },
   "keywords": [],
   "author": "",

@@ -1,5 +1,22 @@
 // apps/api/src/index.ts
 import "dotenv/config";
+
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (!v || String(v).trim() === "") {
+    console.error(`[boot] missing required env: ${name}`);
+    process.exit(1);
+  }
+  return v;
+}
+
+const mode = process.env.NODE_ENV || "development";
+const port = parseInt(process.env.PORT ?? "4000", 10);
+const databaseUrl = requireEnv("DATABASE_URL");
+const dbPath = databaseUrl.startsWith("file:")
+  ? databaseUrl.replace(/^file:/, "").replace(/^(\.\/)/, "")
+  : "[url]";
+
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 
@@ -46,7 +63,17 @@ await app.register(adminSyncRoutes);
 await app.register(storeConfigRoutes);
 
 // Public routes (MUST be before listen)
-app.get("/health", async () => ({ ok: true, ts: Date.now() }));
+app.get("/health", async () => ({ ok: true }));
+
+app.get("/ready", async (req, reply) => {
+  try {
+    await app.prisma.$queryRaw`SELECT 1`;
+    return { ok: true };
+  } catch (err) {
+    app.log.warn({ err }, "ready check failed");
+    return reply.code(503).send({ ok: false });
+  }
+});
 
 app.get("/tables", async () => {
   return app.prisma.table.findMany({
@@ -290,18 +317,19 @@ app.get("/items/:id", async (req) => {
         where: { menuItemCloudId: cloud.cloudId, storeId },
       }),
       app.prisma.cloudAddOn.findMany({ where: { storeId }, orderBy: { sortOrder: "asc" } }),
-      app.prisma.cloudSubstitute.findMany({ where: { storeId }, include: { prices: true }, orderBy: { sortOrder: "asc" } }),
+      app.prisma.cloudSubstitute.findMany({ where: { storeId }, include: { prices: true, recipeConsumption: true }, orderBy: { sortOrder: "asc" } }),
     ]);
     const addOnIds = new Set(addOnLinks.map((l) => l.addOnCloudId));
     const substituteIds = new Set(substituteLinks.map((l) => l.substituteCloudId));
     const itemAddOns = addOns.filter((a) => addOnIds.has(a.cloudId)).map((a) => ({ id: a.cloudId, name: a.name, priceCents: a.priceCents }));
     const itemSubstitutes = substitutes.filter((s) => substituteIds.has(s.cloudId)).map((s) => {
-      const sub = s as { cloudId: string; name: string; priceCents: number; prices?: Array<{ sizeCloudId: string; mode: string; priceCents: number }> };
+      const sub = s as { cloudId: string; name: string; priceCents: number; prices?: Array<{ sizeCloudId: string; mode: string; priceCents: number }>; recipeConsumption?: Array<{ sizeCloudId: string; mode: string; qtyMl: string }> };
       return {
         id: sub.cloudId,
         name: sub.name,
         priceCents: sub.priceCents,
         prices: (sub.prices ?? []).map((p) => ({ sizeCloudId: p.sizeCloudId, mode: p.mode, priceCents: p.priceCents })),
+        recipeConsumption: (sub.recipeConsumption ?? []).map((r) => ({ sizeCloudId: r.sizeCloudId, mode: r.mode, qtyMl: r.qtyMl })),
       };
     });
     const defaultSubId = (cloud as { defaultSubstituteCloudId?: string | null }).defaultSubstituteCloudId ?? null;
@@ -487,26 +515,40 @@ app.post("/orders", async (req) => {
 // DO NOT define app.patch("/orders/:id/status") here
 // Those are provided by staffQueueRoutes + orderStatusRoutes
 
-// Listen (MUST be last)
-// Use PORT env for local dev (default 4000) so web can use 3000
-const port = parseInt(process.env.PORT ?? "4000", 10);
-await app.listen({ host: "0.0.0.0", port });
+// Graceful shutdown
+async function shutdown(sig: string) {
+  app.log.info({ signal: sig }, "shutting down");
+  try {
+    await app.close();
+    process.exit(0);
+  } catch (err) {
+    app.log.error({ err }, "shutdown error");
+    process.exit(1);
+  }
+}
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
 
-// Start sync scheduler: catalog every 5min, transaction flush every 30s
-startSyncScheduler(app);
+try {
+  await app.listen({ host: "0.0.0.0", port });
+  app.log.info({ port, dbPath, mode }, "API started");
 
-// Sync catalog from cloud on startup (non-blocking; fails gracefully if CLOUD_URL unset or cloud unreachable)
-syncCatalogFromCloud(app.prisma, "default")
-  .then((outcome) => {
-    if (outcome.ok) {
-      app.log.info({ result: outcome.result }, "Catalog sync completed on startup");
-    } else {
-      app.log.warn({ error: outcome.error, code: outcome.code }, "Catalog sync skipped on startup");
-    }
-  })
-  .catch((err) => {
-    app.log.warn({ err }, "Catalog sync failed on startup");
-  });
+  startSyncScheduler(app);
 
-// Startup transaction flush once after 5s delay
-setTimeout(() => runTransactionSyncFlush(app).catch(() => {}), 5000);
+  syncCatalogFromCloud(app.prisma, "default")
+    .then((outcome) => {
+      if (outcome.ok) {
+        app.log.info({ result: outcome.result }, "Catalog sync completed on startup");
+      } else {
+        app.log.warn({ error: outcome.error, code: outcome.code }, "Catalog sync skipped on startup");
+      }
+    })
+    .catch((err) => {
+      app.log.warn({ err }, "Catalog sync failed on startup");
+    });
+
+  setTimeout(() => runTransactionSyncFlush(app).catch(() => {}), 5000);
+} catch (err) {
+  console.error("[boot] startup failed:", err);
+  process.exit(1);
+}

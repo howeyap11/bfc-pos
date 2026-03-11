@@ -1149,8 +1149,9 @@ model CloudMenuSize {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  availability      CloudMenuSizeAvailability[]
-  substitutePrices  CloudSubstitutePrice[]
+  availability             CloudMenuSizeAvailability[]
+  substitutePrices         CloudSubstitutePrice[]
+  substituteRecipeConsumptions CloudSubstituteRecipeConsumption[]
 
   @@index([storeId])
   @@index([groupCloudId])
@@ -1189,16 +1190,17 @@ model CloudAddOn {
 }
 
 model CloudSubstitute {
-  id         String   @id @default(cuid())
-  cloudId    String   @unique
-  storeId    String   @default("store_1")
-  name       String
-  priceCents Int      @default(0)
-  sortOrder  Int      @default(0)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id                String   @id @default(cuid())
+  cloudId           String   @unique
+  storeId           String   @default("store_1")
+  name              String
+  priceCents        Int      @default(0)
+  sortOrder         Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
-  prices CloudSubstitutePrice[]
+  prices            CloudSubstitutePrice[]
+  recipeConsumption CloudSubstituteRecipeConsumption[]
 
   @@index([storeId])
 }
@@ -1216,6 +1218,24 @@ model CloudSubstitutePrice {
   substitute CloudSubstitute @relation(fields: [substituteCloudId], references: [cloudId], onDelete: Cascade)
   size       CloudMenuSize   @relation(fields: [sizeCloudId], references: [cloudId], onDelete: Cascade)
 
+  @@unique([storeId, substituteCloudId, sizeCloudId, mode])
+  @@index([storeId])
+  @@index([substituteCloudId])
+  @@index([sizeCloudId])
+}
+
+model CloudSubstituteRecipeConsumption {
+  id                String   @id @default(cuid())
+  storeId           String   @default("store_1")
+  substituteCloudId String
+  sizeCloudId       String
+  mode              String   // ICED | HOT | CONCENTRATED
+  qtyMl             String   // Decimal stored as string (SQLite)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  substitute CloudSubstitute @relation(fields: [substituteCloudId], references: [cloudId], onDelete: Cascade)
+  size       CloudMenuSize   @relation(fields: [sizeCloudId], references: [cloudId], onDelete: Cascade)
 
   @@unique([storeId, substituteCloudId, sizeCloudId, mode])
   @@index([storeId])

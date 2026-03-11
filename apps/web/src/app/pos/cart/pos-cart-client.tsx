@@ -155,10 +155,14 @@ export default function PosCartClient() {
     }
   }
 
-  function toggleOption(groupId: string, optionId: string, groupType: "SINGLE" | "MULTI") {
+  function toggleOption(groupId: string, optionId: string, groupType: "SINGLE" | "MULTI", minSelect = 0) {
     setSelectedOptions((prev) => {
       const current = prev[groupId] || [];
       if (groupType === "SINGLE") {
+        const isCurrentlySelected = current.includes(optionId);
+        if (minSelect === 0 && isCurrentlySelected) {
+          return { ...prev, [groupId]: [] };
+        }
         return { ...prev, [groupId]: [optionId] };
       } else {
         if (current.includes(optionId)) {
@@ -683,7 +687,7 @@ export default function PosCartClient() {
                       <input
                         type={group.type === "SINGLE" ? "radio" : "checkbox"}
                         checked={isSelected}
-                        onChange={() => toggleOption(group.id, opt.id, group.type)}
+                        onChange={() => toggleOption(group.id, opt.id, group.type, group.minSelect)}
                         style={{ marginRight: 8 }}
                       />
                       {opt.name}

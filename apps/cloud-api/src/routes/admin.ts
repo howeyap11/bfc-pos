@@ -2451,6 +2451,7 @@ export async function adminRoutes(app: FastifyInstance) {
       include: {
         recipeLines: { include: { ingredient: true } },
         prices: { include: { size: true } },
+        recipeConsumption: { include: { size: true } },
       },
       orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
     });
@@ -2614,6 +2615,57 @@ export async function adminRoutes(app: FastifyInstance) {
       include: { size: true },
     });
     return { prices };
+  });
+
+  // Substitute recipe consumption by size + mode (global matrix, same dimensions as SubstitutePrice)
+  app.put("/substitutes/:id/recipe-consumption", async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    const { id } = req.params;
+    const sub = await app.prisma.substitute.findUnique({ where: { id } });
+    if (!sub) {
+      reply.code(404);
+      return { error: "NOT_FOUND", message: "Substitute not found" };
+    }
+    const parsed = z.object({
+      rows: z.array(z.object({
+        sizeId: z.string(),
+        mode: drinkModeSchema,
+        qtyMl: z.number().min(0),
+      })),
+    }).safeParse(req.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "INVALID_BODY", details: parsed.error.flatten() };
+    }
+    const sizesGroup = await app.prisma.menuSettingGroup.findUnique({ where: { key: SIZES_GROUP_KEY }, include: { menuSizes: true } });
+    if (!sizesGroup) {
+      reply.code(404);
+      return { error: "SIZES_GROUP_NOT_FOUND", message: "Sizes group not found. Run db:seed." };
+    }
+    const validSizeIds = new Set(sizesGroup.menuSizes.map((s) => s.id));
+    for (const r of parsed.data.rows) {
+      if (!validSizeIds.has(r.sizeId)) {
+        reply.code(400);
+        return { error: "INVALID_SIZE_ID", message: `Size id ${r.sizeId} is not in Menu Settings > Sizes` };
+      }
+    }
+    await bumpCatalogVersion(app.prisma);
+    await app.prisma.substituteRecipeConsumption.deleteMany({ where: { substituteId: id } });
+    if (parsed.data.rows.length > 0) {
+      await app.prisma.substituteRecipeConsumption.createMany({
+        data: parsed.data.rows.map((r) => ({
+          substituteId: id,
+          sizeId: r.sizeId,
+          mode: r.mode,
+          qtyMl: r.qtyMl,
+        })),
+        skipDuplicates: true,
+      });
+    }
+    const recipeConsumption = await app.prisma.substituteRecipeConsumption.findMany({
+      where: { substituteId: id },
+      include: { size: true },
+    });
+    return { recipeConsumption };
   });
 
   // Link item to flat substitutes + default milk: PUT /admin/items/:id/substitutes (primary)

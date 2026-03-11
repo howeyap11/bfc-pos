@@ -204,6 +204,13 @@ type SyncResponse = {
     mode: string;
     priceCents: number;
   }>;
+  substituteRecipeConsumptions?: Array<{
+    id: string;
+    substituteId: string;
+    sizeId: string;
+    mode: string;
+    qtyMl: string;
+  }>;
   menuItemAddOnGroups?: { itemId: string; groupId: string }[];
   menuItemSubstituteGroups?: { itemId: string; groupId: string }[];
   menuItemSubstitutes?: { itemId: string; substituteId: string }[];
@@ -291,6 +298,7 @@ export async function syncCatalogFromCloud(
       substituteGroupsReceived: (data.substituteGroups ?? []).length,
       substitutesReceived: (data.substitutes ?? []).length,
       substitutePricesReceived: (data.substitutePrices ?? []).length,
+      substituteRecipeConsumptionsReceived: (data.substituteRecipeConsumptions ?? []).length,
       menuItemSubstitutesReceived: (data.menuItemSubstitutes ?? []).length,
       menuItemAddOnGroupsReceived: (data.menuItemAddOnGroups ?? []).length,
       menuItemSubstituteGroupsReceived: (data.menuItemSubstituteGroups ?? []).length,
@@ -654,6 +662,22 @@ export async function syncCatalogFromCloud(
               sizeCloudId: p.sizeId,
               mode: p.mode,
               priceCents: p.priceCents,
+            })),
+          });
+        }
+        await tx.cloudSubstituteRecipeConsumption.deleteMany({ where: { storeId } });
+        const recipeConsumptions = data.substituteRecipeConsumptions ?? [];
+        const validRecipeRows = recipeConsumptions.filter(
+          (r) => validSubstituteCloudIds.has(r.substituteId) && validSizeCloudIds.has(r.sizeId)
+        );
+        if (validRecipeRows.length > 0) {
+          await tx.cloudSubstituteRecipeConsumption.createMany({
+            data: validRecipeRows.map((r) => ({
+              storeId,
+              substituteCloudId: r.substituteId,
+              sizeCloudId: r.sizeId,
+              mode: r.mode,
+              qtyMl: r.qtyMl,
             })),
           });
         }

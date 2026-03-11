@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { COLORS } from "@/lib/theme";
+import HealthGate from "./health-gate";
 
 export default function PosLayout({ children }: { children: React.ReactNode }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -44,6 +45,7 @@ export default function PosLayout({ children }: { children: React.ReactNode }) {
 
 
   return (
+    <HealthGate>
     <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
       {/* Top Bar */}
       <div
@@ -151,5 +153,6 @@ export default function PosLayout({ children }: { children: React.ReactNode }) {
         )}
       </div>
     </div>
+    </HealthGate>
   );
 }

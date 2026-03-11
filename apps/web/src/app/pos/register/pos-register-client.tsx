@@ -2050,13 +2050,18 @@ export default function PosRegisterClient() {
     setRegisterView("BROWSE");
   }
 
-  function toggleOption(groupId: string, optionId: string, groupType: "SINGLE" | "MULTI") {
+  function toggleOption(groupId: string, optionId: string, groupType: "SINGLE" | "MULTI", minSelect = 0) {
     setSelectedOptions((prev) => {
       const current = prev[groupId] || [];
       let newSelection: Record<string, string[]>;
       
       if (groupType === "SINGLE") {
-        newSelection = { ...prev, [groupId]: [optionId] };
+        const isCurrentlySelected = current.includes(optionId);
+        if (minSelect === 0 && isCurrentlySelected) {
+          newSelection = { ...prev, [groupId]: [] };
+        } else {
+          newSelection = { ...prev, [groupId]: [optionId] };
+        }
       } else {
         if (current.includes(optionId)) {
           newSelection = { ...prev, [groupId]: current.filter((id) => id !== optionId) };
@@ -3322,7 +3327,7 @@ export default function PosRegisterClient() {
                         return (
                           <button
                             key={opt.id}
-                            onClick={() => toggleOption(group.id, opt.id, group.type)}
+                            onClick={() => toggleOption(group.id, opt.id, group.type, group.minSelect)}
                             style={{
                               padding: "14px 24px",
                               border: `3px solid ${isSelected ? COLORS.primary : "#444"}`,
@@ -3437,7 +3442,7 @@ export default function PosRegisterClient() {
                         return (
                           <button
                             key={opt.id}
-                            onClick={() => toggleOption(group.id, opt.id, group.type)}
+                            onClick={() => toggleOption(group.id, opt.id, group.type, group.minSelect)}
                             style={{
                               padding: "10px 16px",
                               border: `2px solid ${isSelected ? COLORS.primary : "#444"}`,
@@ -3473,7 +3478,7 @@ export default function PosRegisterClient() {
                         return (
                           <button
                             key={opt.id}
-                            onClick={() => toggleOption(group.id, opt.id, group.type)}
+                            onClick={() => toggleOption(group.id, opt.id, group.type, group.minSelect)}
                             style={{
                               padding: "10px 16px",
                               border: `2px solid ${isSelected ? COLORS.primary : "#444"}`,
@@ -3509,7 +3514,7 @@ export default function PosRegisterClient() {
                         return (
                           <button
                             key={opt.id}
-                            onClick={() => toggleOption(group.id, opt.id, group.type)}
+                            onClick={() => toggleOption(group.id, opt.id, group.type, group.minSelect)}
                             style={{
                               padding: "10px 16px",
                               border: `2px solid ${isSelected ? COLORS.primary : "#444"}`,
@@ -3715,7 +3720,7 @@ export default function PosRegisterClient() {
                         return (
                           <button
                             key={opt.id}
-                            onClick={() => toggleOption(group.id, opt.id, group.type)}
+                            onClick={() => toggleOption(group.id, opt.id, group.type, group.minSelect)}
                             style={{
                               padding: "10px 16px",
                               border: `2px solid ${isSelected ? COLORS.primary : "#444"}`,

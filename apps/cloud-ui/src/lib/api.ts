@@ -159,6 +159,15 @@ export type AddOn = {
   recipeLines?: { ingredientId: string; qtyPerItem: number | string; unitCode: string; ingredient?: { id: string; name: string; unitCode: string } }[];
 };
 
+export type SubstituteRecipeConsumption = {
+  id: string;
+  substituteId: string;
+  sizeId: string;
+  mode: "ICED" | "HOT" | "CONCENTRATED";
+  qtyMl: number | string;
+  size?: { id: string; label: string };
+};
+
 export type Substitute = {
   id: string;
   name: string;
@@ -167,6 +176,7 @@ export type Substitute = {
   sortOrder: number;
   recipeLines?: { ingredientId: string; qtyPerItem: number | string; unitCode: string; ingredient?: { id: string; name: string; unitCode: string } }[];
   prices?: SubstitutePrice[];
+  recipeConsumption?: SubstituteRecipeConsumption[];
 };
 
 export type SubstitutePrice = {
@@ -615,6 +625,9 @@ export const api = {
   },
   putSubstitutePrices(id: string, prices: { sizeId: string; mode: "ICED" | "HOT" | "CONCENTRATED"; priceCents: number }[]): Promise<{ prices: SubstitutePrice[] }> {
     return apiFetch(`/admin/substitutes/${id}/prices`, { method: "PUT", body: JSON.stringify({ prices }) });
+  },
+  putSubstituteRecipeConsumption(id: string, rows: { sizeId: string; mode: "ICED" | "HOT" | "CONCENTRATED"; qtyMl: number }[]): Promise<{ recipeConsumption: SubstituteRecipeConsumption[] }> {
+    return apiFetch(`/admin/substitutes/${id}/recipe-consumption`, { method: "PUT", body: JSON.stringify({ rows }) });
   },
   getAddOnGroups(): Promise<AddOnGroup[]> {
     return apiFetch("/admin/add-on-groups");

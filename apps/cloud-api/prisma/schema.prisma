@@ -167,10 +167,11 @@ model Substitute {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  recipeLines     SubstituteRecipeLine[]
-  menuItemLinks   MenuItemSubstitute[]
-  asDefaultFor    MenuItem[] @relation("MenuItemDefaultSubstitute")
-  prices          SubstitutePrice[]
+  recipeLines       SubstituteRecipeLine[]
+  recipeConsumption SubstituteRecipeConsumption[]
+  menuItemLinks     MenuItemSubstitute[]
+  asDefaultFor      MenuItem[] @relation("MenuItemDefaultSubstitute")
+  prices            SubstitutePrice[]
 
   @@index([sortOrder])
 }
@@ -207,6 +208,24 @@ model SubstituteRecipeLine {
   @@unique([substituteId, ingredientId])
   @@index([substituteId])
   @@index([ingredientId])
+}
+
+// Global recipe consumption matrix: per substitute × size × mode (ml consumed)
+model SubstituteRecipeConsumption {
+  id           String    @id @default(cuid())
+  substituteId String
+  sizeId       String
+  mode         DrinkMode
+  qtyMl        Decimal   @db.Decimal(20, 10)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  substitute Substitute @relation(fields: [substituteId], references: [id], onDelete: Cascade)
+  size       MenuSize   @relation(fields: [sizeId], references: [id], onDelete: Cascade)
+
+  @@unique([substituteId, sizeId, mode])
+  @@index([substituteId])
+  @@index([sizeId])
 }
 
 model MenuItemSubstitute {
@@ -794,9 +813,10 @@ model MenuSize {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  group             MenuSettingGroup     @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  availability      MenuSizeAvailability[]
-  substitutePrices  SubstitutePrice[]
+  group                  MenuSettingGroup         @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  availability           MenuSizeAvailability[]
+  substitutePrices       SubstitutePrice[]
+  substituteRecipeConsumptions SubstituteRecipeConsumption[]
 
   @@index([groupId])
 }
