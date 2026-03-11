@@ -1,18 +1,21 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, type Substitute, type MenuSize, type Ingredient } from "@/lib/api";
+import { api, type Substitute, type MenuSize, type Ingredient, type IngredientCategory } from "@/lib/api";
+import { SearchableIngredientSelect } from "@/components/SearchableIngredientSelect";
 
 type DrinkMode = "ICED" | "HOT" | "CONCENTRATED";
 const MODES: DrinkMode[] = ["ICED", "HOT", "CONCENTRATED"];
 const MODE_LABELS: Record<DrinkMode, string> = { ICED: "Iced", HOT: "Hot", CONCENTRATED: "Concentrated" };
 
-type RecipeCell = { ingredientId: string; qtyPerItem: number; unitCode: string };
+type RecipeCell = { qtyPerItem: number; unitCode: string };
 
 export default function SubstitutesPage() {
   const [substitutes, setSubstitutes] = useState<Substitute[]>([]);
   const [sizes, setSizes] = useState<MenuSize[]>([]);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
+  const [ingredientCategories, setIngredientCategories] = useState<IngredientCategory[]>([]);
+  const [ingredientPerSubstitute, setIngredientPerSubstitute] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -31,9 +34,11 @@ export default function SubstitutesPage() {
         setSubstitutes(list);
         const priceInit: Record<string, Record<string, number>> = {};
         const recipeInit: Record<string, Record<string, RecipeCell>> = {};
+        const ingPerSub: Record<string, string> = {};
         for (const s of list) {
           priceInit[s.id] = {};
           recipeInit[s.id] = {};
+          let firstIngredientId = "";
           for (const sz of sizes) {
             for (const mode of MODES) {
               const k = `${sz.id}_${mode}`;
@@ -42,17 +47,19 @@ export default function SubstitutesPage() {
               const r = (s.recipeConsumption ?? []).find((rc: { sizeId: string; mode: string }) => rc.sizeId === sz.id && rc.mode === mode);
               if (r) {
                 const rr = r as { ingredientId: string; qtyPerItem: number | string; unitCode: string };
+                if (!firstIngredientId && rr.ingredientId) firstIngredientId = rr.ingredientId;
                 recipeInit[s.id][k] = {
-                  ingredientId: rr.ingredientId,
                   qtyPerItem: typeof rr.qtyPerItem === "string" ? parseFloat(rr.qtyPerItem) || 0 : rr.qtyPerItem,
                   unitCode: rr.unitCode,
                 };
               } else {
-                recipeInit[s.id][k] = { ingredientId: "", qtyPerItem: 0, unitCode: "ml" };
+                recipeInit[s.id][k] = { qtyPerItem: 0, unitCode: "ml" };
               }
             }
           }
+          if (firstIngredientId) ingPerSub[s.id] = firstIngredientId;
         }
+        setIngredientPerSubstitute((prev) => ({ ...prev, ...ingPerSub }));
         setPriceMatrix((prev) => ({ ...prev, ...priceInit }));
         setRecipeMatrix((prev) => ({ ...prev, ...recipeInit }));
       })
@@ -68,16 +75,23 @@ export default function SubstitutesPage() {
     api.getMenuSizes().then((r) => setSizes(r.sizes ?? [])).catch(() => {});
   }, []);
   useEffect(() => {
-    api.getIngredients().then((list) => setIngredients(list ?? [])).catch(() => {});
+    Promise.all([api.getIngredients(), api.getIngredientCategories()])
+      .then(([list, cats]) => {
+        setIngredients(list ?? []);
+        setIngredientCategories(cats ?? []);
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
     if (sizes.length > 0 && substitutes.length > 0) {
       const priceInit: Record<string, Record<string, number>> = {};
       const recipeInit: Record<string, Record<string, RecipeCell>> = {};
+      const ingPerSub: Record<string, string> = {};
       for (const s of substitutes) {
         priceInit[s.id] = priceMatrix[s.id] ?? {};
         recipeInit[s.id] = recipeMatrix[s.id] ?? {};
+        let firstIngredientId = ingredientPerSubstitute[s.id] ?? "";
         for (const sz of sizes) {
           for (const mode of MODES) {
             const k = `${sz.id}_${mode}`;
@@ -89,18 +103,20 @@ export default function SubstitutesPage() {
               const r = (s.recipeConsumption ?? []).find((rc: { sizeId: string; mode: string }) => rc.sizeId === sz.id && rc.mode === mode);
               if (r) {
                 const rr = r as { ingredientId: string; qtyPerItem: number | string; unitCode: string };
+                if (!firstIngredientId && rr.ingredientId) firstIngredientId = rr.ingredientId;
                 recipeInit[s.id][k] = {
-                  ingredientId: rr.ingredientId,
                   qtyPerItem: typeof rr.qtyPerItem === "string" ? parseFloat(rr.qtyPerItem) || 0 : rr.qtyPerItem,
                   unitCode: rr.unitCode,
                 };
               } else {
-                recipeInit[s.id][k] = { ingredientId: "", qtyPerItem: 0, unitCode: "ml" };
+                recipeInit[s.id][k] = { qtyPerItem: 0, unitCode: "ml" };
               }
             }
           }
         }
+        if (firstIngredientId) ingPerSub[s.id] = firstIngredientId;
       }
+      if (Object.keys(ingPerSub).length > 0) setIngredientPerSubstitute((prev) => ({ ...prev, ...ingPerSub }));
       setPriceMatrix((prev) => ({ ...prev, ...priceInit }));
       setRecipeMatrix((prev) => ({ ...prev, ...recipeInit }));
     }
@@ -119,7 +135,7 @@ export default function SubstitutesPage() {
       ...prev,
       [subId]: {
         ...(prev[subId] ?? {}),
-        [key]: { ...(prev[subId]?.[key] ?? { ingredientId: "", qtyPerItem: 0, unitCode: "ml" }), ...cell },
+        [key]: { ...(prev[subId]?.[key] ?? { qtyPerItem: 0, unitCode: "ml" }), ...cell },
       },
     }));
   }
@@ -129,7 +145,7 @@ export default function SubstitutesPage() {
   }
 
   function getRecipeCell(subId: string, sizeId: string, mode: DrinkMode): RecipeCell {
-    return recipeMatrix[subId]?.[`${sizeId}_${mode}`] ?? { ingredientId: "", qtyPerItem: 0, unitCode: "ml" };
+    return recipeMatrix[subId]?.[`${sizeId}_${mode}`] ?? { qtyPerItem: 0, unitCode: "ml" };
   }
 
   async function handleCreate(e: React.FormEvent) {
@@ -200,6 +216,11 @@ export default function SubstitutesPage() {
   }
 
   async function saveMatrix(subId: string) {
+    const ingredientId = ingredientPerSubstitute[subId];
+    if (!ingredientId) {
+      setError("Select an ingredient for this substitute first.");
+      return;
+    }
     setSavingMatrixFor(subId);
     setError("");
     try {
@@ -209,11 +230,11 @@ export default function SubstitutesPage() {
         for (const mode of MODES) {
           prices.push({ sizeId: sz.id, mode, priceCents: getPriceCell(subId, sz.id, mode) });
           const cell = getRecipeCell(subId, sz.id, mode);
-          if (cell.ingredientId && cell.qtyPerItem >= 0) {
+          if (cell.qtyPerItem >= 0) {
             rows.push({
               sizeId: sz.id,
               mode,
-              ingredientId: cell.ingredientId,
+              ingredientId,
               qtyPerItem: cell.qtyPerItem,
               unitCode: cell.unitCode || "ml",
             });
@@ -237,6 +258,10 @@ export default function SubstitutesPage() {
   const activeSizes = sizes.filter((s) => s.isActive);
   const rows = activeSizes.flatMap((sz) => MODES.map((mode) => ({ size: sz, mode })));
   const activeIngredients = ingredients.filter((i) => i.isActive !== false);
+
+  function setIngredientForSubstitute(subId: string, ingredientId: string, ingredient?: Ingredient) {
+    setIngredientPerSubstitute((prev) => ({ ...prev, [subId]: ingredientId }));
+  }
 
   return (
     <div className="mx-auto max-w-5xl py-6">
@@ -312,18 +337,28 @@ export default function SubstitutesPage() {
               </div>
 
               <div className="border-t border-gray-200 pt-4">
-                <h4 className="mb-2 text-xs font-semibold uppercase text-gray-600">Price & recipe by size / mode</h4>
+                <div className="mb-4">
+                  <label className="mb-1 block text-xs font-medium text-gray-600">Ingredient (same for all sizes/modes)</label>
+                  <SearchableIngredientSelect
+                    value={ingredientPerSubstitute[sub.id] ?? ""}
+                    onChange={(id, ing) => setIngredientForSubstitute(sub.id, id, ing)}
+                    ingredients={activeIngredients}
+                    ingredientCategories={ingredientCategories}
+                    placeholder="Select ingredient..."
+                    size="sm"
+                  />
+                </div>
+                <h4 className="mb-2 text-xs font-semibold uppercase text-gray-600">Price & quantity by size / mode</h4>
                 {activeSizes.length === 0 ? (
                   <p className="text-amber-600 text-sm">No sizes defined. Add sizes in Menu Settings → Sizes.</p>
                 ) : (
                   <div className="overflow-x-auto text-sm">
-                    <table className="min-w-[520px] border-collapse">
+                    <table className="min-w-[400px] border-collapse">
                       <thead>
                         <tr>
                           <th className="border border-gray-200 px-2 py-1 text-left font-medium">Size</th>
                           <th className="border border-gray-200 px-2 py-1 text-left font-medium">Mode</th>
                           <th className="border border-gray-200 px-2 py-1 text-left font-medium">Price (₱)</th>
-                          <th className="border border-gray-200 px-2 py-1 text-left font-medium">Ingredient</th>
                           <th className="border border-gray-200 px-2 py-1 text-left font-medium">Qty</th>
                           <th className="border border-gray-200 px-2 py-1 text-left font-medium">Unit</th>
                         </tr>
@@ -350,24 +385,6 @@ export default function SubstitutesPage() {
                                 />
                               </td>
                               <td className="border border-gray-200 px-2 py-1">
-                                <select
-                                  value={cell.ingredientId}
-                                  onChange={(e) => {
-                                    const id = e.target.value;
-                                    const ing = activeIngredients.find((i) => i.id === id);
-                                    setRecipeCell(sub.id, size.id, mode, { ingredientId: id, unitCode: ing?.unitCode ?? "ml" });
-                                  }}
-                                  className="min-w-[120px] rounded border px-2 py-0.5"
-                                >
-                                  <option value="">—</option>
-                                  {activeIngredients.map((ing) => (
-                                    <option key={ing.id} value={ing.id}>
-                                      {ing.name}
-                                    </option>
-                                  ))}
-                                </select>
-                              </td>
-                              <td className="border border-gray-200 px-2 py-1">
                                 <input
                                   type="number"
                                   step="0.01"
@@ -392,7 +409,7 @@ export default function SubstitutesPage() {
                 <button
                   type="button"
                   onClick={() => saveMatrix(sub.id)}
-                  disabled={savingMatrixFor === sub.id || activeSizes.length === 0}
+                  disabled={savingMatrixFor === sub.id || activeSizes.length === 0 || !ingredientPerSubstitute[sub.id]}
                   className="mt-2 rounded bg-teal-600 px-3 py-1.5 text-xs text-white hover:bg-teal-700 disabled:opacity-50"
                 >
                   {savingMatrixFor === sub.id ? "Saving…" : "Save matrix"}

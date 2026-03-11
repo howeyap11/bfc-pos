@@ -119,13 +119,13 @@ model Item {
   isHidden                Boolean               @default(false)
   sort                    Int                   @default(0)
   foodpandaSurchargeCents Int                   @default(2000)
-  defaultMilk             MilkType              @default("FULL_CREAM")
+  defaultMilk             MilkType              @default(FULL_CREAM)
   supportsShots           Boolean               @default(false)
   isEspressoDrink         Boolean               @default(false)
   shotsPricingMode        ShotsPricingMode?
   defaultShots12oz        Int                   @default(0)
   defaultShots16oz        Int                   @default(0)
-  shotsDefaultSource      ShotsDefaultSource    @default("MANUAL")
+  shotsDefaultSource      ShotsDefaultSource    @default(MANUAL)
   defaultEspressoShots    Int                   @default(0)
   categoryId              String
   category                Category              @relation(fields: [categoryId], references: [id])
@@ -200,7 +200,7 @@ model Tab {
   id           String        @id @default(cuid())
   storeId      String        @default("store_1")
   type         TabType
-  status       TabStatus     @default("OPEN")
+  status       TabStatus     @default(OPEN)
   tableId      String
   quotaCents   Int           @default(300000)
   note         String?
@@ -219,12 +219,12 @@ model Order {
   id            String        @id @default(cuid())
   storeId       String        @default("store_1")
   orderNo       Int
-  status        OrderStatus   @default("PLACED")
-  source        OrderSource   @default("QR_UNPAID")
+  status        OrderStatus   @default(PLACED)
+  source        OrderSource   @default(QR_UNPAID)
   tableId       String
   tabId         String?
-  paymentMethod PaymentMethod @default("CASH")
-  paymentStatus PaymentStatus @default("UNPAID")
+  paymentMethod PaymentMethod @default(CASH)
+  paymentStatus PaymentStatus @default(UNPAID)
   externalRef   String?
   customerNote  String?
   createdAt     DateTime      @default(now())
@@ -272,7 +272,7 @@ model OrderItemOption {
 model VoidRequest {
   id          String            @id @default(cuid())
   orderId     String            @unique
-  status      VoidRequestStatus @default("PENDING")
+  status      VoidRequestStatus @default(PENDING)
   reason      String
   requestedAt DateTime          @default(now())
   requestedBy String?
@@ -305,7 +305,7 @@ model MenuBanner {
 model RegisterSession {
   id           String                @id @default(cuid())
   storeId      String                @default("store_1")
-  status       RegisterSessionStatus @default("OPEN")
+  status       RegisterSessionStatus @default(OPEN)
   openedAt     DateTime              @default(now())
   openedBy     String?
   openingCash  Int                   @default(0)
@@ -326,9 +326,9 @@ model Transaction {
   id                String                @id @default(cuid())
   storeId           String                @default("store_1")
   transactionNo     Int
-  status            TransactionStatus     @default("PAID")
-  source            TransactionSource     @default("POS")
-  serviceType       ServiceType           @default("DINE_IN")
+  status            TransactionStatus     @default(PAID)
+  source            TransactionSource     @default(POS)
+  serviceType       ServiceType           @default(DINE_IN)
   registerSessionId String?
   orderId           String?               @unique
   tableId           String?
@@ -386,7 +386,7 @@ model TransactionPayment {
   id            String                   @id @default(cuid())
   transactionId String
   method        PaymentMethod
-  status        TransactionPaymentStatus @default("PAID")
+  status        TransactionPaymentStatus @default(PAID)
   amountCents   Int
   refNo         String?
   receivedAt    DateTime                 @default(now())
@@ -607,7 +607,7 @@ model InventoryCountSession {
   id                String               @id @default(cuid())
   storeId           String               @default("store_1")
   type              InventoryCountType
-  status            InventoryCountStatus @default("DRAFT")
+  status            InventoryCountStatus @default(DRAFT)
   startedAt         DateTime             @default(now())
   submittedAt       DateTime?
   approvedAt        DateTime?
@@ -641,7 +641,7 @@ model LocalOutbox {
   storeId     String            @default("store_1")
   topic       String
   payloadJson String
-  status      LocalOutboxStatus @default("PENDING")
+  status      LocalOutboxStatus @default(PENDING)
   attempts    Int               @default(0)
   lastError   String?
   createdAt   DateTime          @default(now())

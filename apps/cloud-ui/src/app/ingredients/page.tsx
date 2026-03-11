@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { api, type Ingredient, type IngredientCategory } from "@/lib/api";
 import { IngredientForm } from "./IngredientForm";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+const DEPARTMENTS = ["BAR", "KITCHEN", "PASTRY", "SHARED"] as const;
 
 function reorderById<T extends { id: string }>(list: T[], fromId: string, toId: string): T[] {
   if (fromId === toId) return list;
@@ -22,6 +23,9 @@ export default function IngredientsPage() {
   const [categories, setCategories] = useState<IngredientCategory[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
+  const [filterCategory, setFilterCategory] = useState("");
+  const [filterDept, setFilterDept] = useState("");
   const [modalMode, setModalMode] = useState<"create" | "edit" | null>(null);
   const [editIngredient, setEditIngredient] = useState<Ingredient | null>(null);
   const [categoriesOpen, setCategoriesOpen] = useState(false);
@@ -81,9 +85,24 @@ export default function IngredientsPage() {
     return ing.category?.name ?? "—";
   }
 
+  const filteredIngredients = useMemo(() => {
+    let list = localOrder ?? ingredients;
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      list = list.filter((ing) => ing.name.toLowerCase().includes(q));
+    }
+    if (filterDept) {
+      list = list.filter((ing) => (ing.department ?? "") === filterDept);
+    }
+    if (filterCategory) {
+      list = list.filter((ing) => (ing.categoryId ?? "") === filterCategory);
+    }
+    return list;
+  }, [ingredients, localOrder, search, filterDept, filterCategory]);
+
   return (
     <div className="mx-auto max-w-6xl px-4 py-6">
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold">Ingredients</h1>
         <div className="flex gap-2">
           <button
@@ -105,7 +124,57 @@ export default function IngredientsPage() {
       {loading && <p className="text-gray-500">Loading…</p>}
       {error && <p className="text-red-600">{error}</p>}
       {!loading && !error && (
-        <div className="overflow-x-auto rounded border bg-white">
+        <>
+          <div className="mb-4 flex flex-wrap items-center gap-3 rounded border border-gray-200 bg-gray-50 p-3">
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search ingredients..."
+              className="min-w-[200px] rounded border border-gray-300 px-3 py-1.5 text-sm"
+            />
+            <div className="flex flex-wrap gap-1">
+              <button
+                type="button"
+                onClick={() => setFilterDept("")}
+                className={`rounded px-2 py-1 text-xs ${!filterDept ? "bg-gray-200 font-medium" : "bg-gray-100 hover:bg-gray-200"}`}
+              >
+                All Depts
+              </button>
+              {DEPARTMENTS.map((d) => (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => setFilterDept(filterDept === d ? "" : d)}
+                  className={`rounded px-2 py-1 text-xs ${filterDept === d ? "bg-gray-200 font-medium" : "bg-gray-100 hover:bg-gray-200"}`}
+                >
+                  {d}
+                </button>
+              ))}
+            </div>
+            {categories.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                <button
+                  type="button"
+                  onClick={() => setFilterCategory("")}
+                  className={`rounded px-2 py-1 text-xs ${!filterCategory ? "bg-gray-200 font-medium" : "bg-gray-100 hover:bg-gray-200"}`}
+                >
+                  All
+                </button>
+                {categories.map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => setFilterCategory(filterCategory === c.id ? "" : c.id)}
+                    className={`rounded px-2 py-1 text-xs ${filterCategory === c.id ? "bg-gray-200 font-medium" : "bg-gray-100 hover:bg-gray-200"}`}
+                  >
+                    {c.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="overflow-x-auto rounded border bg-white">
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>
@@ -119,7 +188,7 @@ export default function IngredientsPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
-              {(localOrder ?? ingredients).map((ing) => (
+              {filteredIngredients.map((ing) => (
                 <tr
                   key={ing.id}
                   onDragOver={(e) => {
@@ -181,10 +250,13 @@ export default function IngredientsPage() {
               ))}
             </tbody>
           </table>
-          {ingredients.length === 0 && (
-            <p className="px-4 py-6 text-center text-gray-500">No ingredients yet.</p>
+          {filteredIngredients.length === 0 && (
+            <p className="px-4 py-6 text-center text-gray-500">
+              {ingredients.length === 0 ? "No ingredients yet." : "No ingredients match your filters."}
+            </p>
           )}
         </div>
+        </>
       )}
 
       {modalMode && (
