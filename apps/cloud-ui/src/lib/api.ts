@@ -164,17 +164,18 @@ export type SubstituteRecipeConsumption = {
   substituteId: string;
   sizeId: string;
   mode: "ICED" | "HOT" | "CONCENTRATED";
-  qtyMl: number | string;
+  ingredientId: string;
+  qtyPerItem: number | string;
+  unitCode: string;
   size?: { id: string; label: string };
+  ingredient?: { id: string; name: string; unitCode: string };
 };
 
 export type Substitute = {
   id: string;
   name: string;
-  priceCents: number;
   isActive: boolean;
   sortOrder: number;
-  recipeLines?: { ingredientId: string; qtyPerItem: number | string; unitCode: string; ingredient?: { id: string; name: string; unitCode: string } }[];
   prices?: SubstitutePrice[];
   recipeConsumption?: SubstituteRecipeConsumption[];
 };
@@ -617,17 +618,11 @@ export const api = {
   deleteSubstitute(id: string): Promise<{ ok: boolean }> {
     return apiFetch(`/admin/substitutes/${id}`, { method: "DELETE" });
   },
-  getSubstituteRecipe(id: string): Promise<{ lines: { ingredientId: string; qtyPerItem: number; unitCode: string; ingredient?: { name: string } }[] }> {
-    return apiFetch(`/admin/substitutes/${id}/recipe`);
-  },
-  putSubstituteRecipe(id: string, lines: { ingredientId: string; qtyPerItem: number; unitCode: string }[]): Promise<{ lines: unknown[] }> {
-    return apiFetch(`/admin/substitutes/${id}/recipe`, { method: "PUT", body: JSON.stringify({ lines }) });
+  putSubstituteRecipeConsumption(id: string, rows: { sizeId: string; mode: "ICED" | "HOT" | "CONCENTRATED"; ingredientId: string; qtyPerItem: number; unitCode: string }[]): Promise<{ recipeConsumption: SubstituteRecipeConsumption[] }> {
+    return apiFetch(`/admin/substitutes/${id}/recipe-consumption`, { method: "PUT", body: JSON.stringify({ rows }) });
   },
   putSubstitutePrices(id: string, prices: { sizeId: string; mode: "ICED" | "HOT" | "CONCENTRATED"; priceCents: number }[]): Promise<{ prices: SubstitutePrice[] }> {
     return apiFetch(`/admin/substitutes/${id}/prices`, { method: "PUT", body: JSON.stringify({ prices }) });
-  },
-  putSubstituteRecipeConsumption(id: string, rows: { sizeId: string; mode: "ICED" | "HOT" | "CONCENTRATED"; qtyMl: number }[]): Promise<{ recipeConsumption: SubstituteRecipeConsumption[] }> {
-    return apiFetch(`/admin/substitutes/${id}/recipe-consumption`, { method: "PUT", body: JSON.stringify({ rows }) });
   },
   getAddOnGroups(): Promise<AddOnGroup[]> {
     return apiFetch("/admin/add-on-groups");

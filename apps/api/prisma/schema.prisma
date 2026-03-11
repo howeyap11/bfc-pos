@@ -7,289 +7,88 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-//
-// ENUMS (existing)
-//
-enum PrepArea {
-  BAR
-  KITCHEN
-}
-
-enum OrderStatus {
-  PLACED
-  ACCEPTED
-  IN_PREP
-  READY
-  COMPLETED
-  CANCELLED
-
-  // Option A: removed from prep queue, pending manager action
-  VOID_REQUESTED
-}
-
-enum OrderSource {
-  STAFF_MANUAL
-  QR_UNPAID
-  QR_PAYMONGO
-  FOODPANDA
-  GRABFOOD
-  BFCAPP
-  FUNCTION_ROOM
-}
-
-enum PaymentMethod {
-  CASH
-  CARD
-  GCASH
-  PAYMONGO
-  FOODPANDA
-  GRABFOOD
-  BFCAPP
-
-  // For function room / pay-later tabs until settled
-  TO_BE_DECIDED
-}
-
-enum PaymentStatus {
-  UNPAID
-  PENDING
-  PAID
-  VOID
-}
-
-enum OptionGroupType {
-  SINGLE
-  MULTI
-}
-
-enum TabType {
-  FUNCTION_ROOM
-}
-
-enum TabStatus {
-  OPEN
-  CLOSED
-}
-
-enum VoidRequestStatus {
-  PENDING
-  APPROVED
-  REJECTED
-}
-
-//
-// ENUMS (new for POS / transactions)
-//
-enum MilkType {
-  FULL_CREAM
-  OAT
-  ALMOND
-  SOY
-}
-
-enum ShotsPricingMode {
-  ESPRESSO_FREE2_PAIR40 // First 2 shots free, then ₱40 per 2 shots
-  PAIR40_NO_FREE // ₱40 per 2 shots, no free shots
-}
-
-enum ShotsDefaultSource {
-  MANUAL // Admin manually sets defaults
-  INVENTORY // Computed from recipe/inventory (future)
-}
-
-enum RegisterSessionStatus {
-  OPEN
-  CLOSED
-}
-
-enum TransactionSource {
-  POS
-  QR
-  FUNCTION_ROOM
-  FOODPANDA
-  GRABFOOD
-  BFCAPP
-}
-
-enum TransactionStatus {
-  OPEN
-  PAID
-  VOID
-}
-
-enum ServiceType {
-  DINE_IN
-  TO_GO
-  DELIVERY
-}
-
-enum TransactionPaymentStatus {
-  PAID
-  VOID
-}
-
-enum AuditAction {
-  REGISTER_OPEN
-  REGISTER_CLOSE
-
-  DRAWER_OPEN
-
-  TRANSACTION_CREATE
-  TRANSACTION_VOID
-
-  ORDER_CANCEL
-  VOID_REQUEST_CREATE
-  VOID_REQUEST_DECIDE
-
-  CATALOG_UPDATE
-  PRICE_UPDATE
-}
-
-//
-// ENUMS (inventory / outbox)
-//
-enum InventoryMovementType {
-  PURCHASE
-  CONSUMPTION
-  WASTAGE
-  ADJUSTMENT
-  COUNT_CORRECTION
-  TRANSFER_IN
-  TRANSFER_OUT
-}
-
-enum InventoryCountType {
-  BEGIN_SHIFT
-  END_SHIFT
-  SPOT
-}
-
-enum InventoryCountStatus {
-  DRAFT
-  SUBMITTED
-  APPROVED
-}
-
-enum LocalOutboxStatus {
-  PENDING
-  SENT
-  FAILED
-}
-
-//
-// STORE (new)
-// Single-store local-first: we use a fixed default store id.
-// This lets us add required storeId fields without breaking existing data.
-//
 model Store {
-  id   String @id @default("store_1")
-  code String @unique // e.g. "BFC-VAL"
-  name String
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  zones        Zone[]
-  tables       Table[]
-  categories   Category[]
-  items        Item[]
-  optionGroups OptionGroup[]
-  options      Option[]
-  tabs         Tab[]
-  orders       Order[]
-  menuBanners  MenuBanner[]
-
-  registerSessions RegisterSession[]
-  transactions     Transaction[]
-  auditLogs        AuditLog[]
-  sopTemplates     SopTemplate[]
-  storeConfig      StoreConfig?
-  staff            Staff[]
-
-  inventoryUnits         InventoryUnit[]
+  id                     String                  @id @default("store_1")
+  code                   String                  @unique
+  name                   String
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+  auditLogs              AuditLog[]
+  categories             Category[]
   ingredients            Ingredient[]
   ingredientStocks       IngredientStock[]
+  inventoryCountSessions InventoryCountSession[]
+  inventoryMovements     InventoryMovement[]
+  inventoryUnits         InventoryUnit[]
+  items                  Item[]
+  localOutboxes          LocalOutbox[]
+  menuBanners            MenuBanner[]
   menuItemRecipes        MenuItemRecipe[]
   menuItemRecipeSizes    MenuItemRecipeSize[]
-  inventoryMovements     InventoryMovement[]
-  inventoryCountSessions InventoryCountSession[]
-  localOutboxes          LocalOutbox[]
+  options                Option[]
+  optionGroups           OptionGroup[]
+  orders                 Order[]
+  registerSessions       RegisterSession[]
+  sopTemplates           SopTemplate[]
+  staff                  Staff[]
+  storeConfig            StoreConfig?
+  tabs                   Tab[]
+  tables                 Table[]
+  transactions           Transaction[]
+  zones                  Zone[]
 }
 
 model StoreConfig {
-  id      String @id @default(cuid())
-  storeId String @unique @default("store_1")
-  store   Store  @relation(fields: [storeId], references: [id])
-
-  // Payment methods enabled for POS (JSON array of PaymentMethod enum values)
-  enabledPaymentMethods String @default("[\"CASH\",\"CARD\",\"GCASH\",\"FOODPANDA\"]")
-
-  // Whether split payment is enabled
-  splitPaymentEnabled Boolean @default(true)
-
-  // Custom order for payment buttons (JSON array, optional)
-  // If null, uses default order: CASH, CARD, GCASH, FOODPANDA, GRABFOOD, BFCAPP
-  paymentMethodOrder String?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                    String   @id @default(cuid())
+  storeId               String   @unique @default("store_1")
+  enabledPaymentMethods String   @default("[\"CASH\",\"CARD\",\"GCASH\",\"FOODPANDA\"]")
+  splitPaymentEnabled   Boolean  @default(true)
+  paymentMethodOrder    String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  store                 Store    @relation(fields: [storeId], references: [id])
 }
 
 model Staff {
-  id      String @id @default(cuid())
-  storeId String @default("store_1")
-  store   Store  @relation(fields: [storeId], references: [id])
-
-  name     String
-  passcode String  @default("1000") // Default passcode for new staff
-  key      String? @unique // API key for staff authentication (nullable for migration)
-  role     String  @default("CASHIER") // CASHIER, ADMIN, MANAGER
-  isActive Boolean @default(true)
-
+  id        String   @id @default(cuid())
+  storeId   String   @default("store_1")
+  name      String
+  passcode  String   @default("1000")
+  key       String?  @unique
+  role      String   @default("CASHIER")
+  isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  store     Store    @relation(fields: [storeId], references: [id])
 
   @@unique([storeId, name])
 }
 
 model Zone {
-  id String @id @default(cuid())
-
-  storeId String @default("store_1")
-  store   Store  @relation(fields: [storeId], references: [id])
-
-  code String // FR, MR, AF
-  name String
-
-  tables Table[]
+  id      String  @id @default(cuid())
+  storeId String  @default("store_1")
+  code    String
+  name    String
+  tables  Table[]
+  store   Store   @relation(fields: [storeId], references: [id])
 
   @@unique([storeId, code])
   @@index([storeId])
 }
 
 model Table {
-  id String @id @default(cuid())
-
-  storeId String @default("store_1")
-  store   Store  @relation(fields: [storeId], references: [id])
-
-  zoneId String
-  zone   Zone   @relation(fields: [zoneId], references: [id])
-
-  label String // F1, M1, AF1
-
-  // Keep globally unique so existing QR route doesn't break:
-  // app.prisma.table.findUnique({ where: { publicKey } })
-  publicKey String @unique // FR-F01 etc (used in QR)
-
-  isActive Boolean @default(true)
-
-  // Optional: mark function room table(s)
-  isFunctionRoom Boolean @default(false)
-
-  orders       Order[]
-  tabs         Tab[]
-  transactions Transaction[]
+  id             String        @id @default(cuid())
+  storeId        String        @default("store_1")
+  zoneId         String
+  label          String
+  publicKey      String        @unique
+  isActive       Boolean       @default(true)
+  isFunctionRoom Boolean       @default(false)
+  orders         Order[]
+  tabs           Tab[]
+  zone           Zone          @relation(fields: [zoneId], references: [id])
+  store          Store         @relation(fields: [storeId], references: [id])
+  transactions   Transaction[]
 
   @@unique([zoneId, label])
   @@index([storeId])
@@ -297,71 +96,46 @@ model Table {
 }
 
 model Category {
-  id String @id @default(cuid())
-
-  storeId String @default("store_1")
-  store   Store  @relation(fields: [storeId], references: [id])
-
-  name     String   @unique // coffee, non-coffee...
+  id       String   @id @default(cuid())
+  storeId  String   @default("store_1")
+  name     String   @unique
   prepArea PrepArea
   sort     Int      @default(0)
-
-  items Item[]
+  store    Store    @relation(fields: [storeId], references: [id])
+  items    Item[]
 
   @@index([storeId])
 }
 
 model Item {
-  id String @id @default(cuid())
-
-  storeId String @default("store_1")
-  store   Store  @relation(fields: [storeId], references: [id])
-
-  cloudId String? @unique // Links to CloudMenuItem.cloudId for catalog sync
-
-  name        String
-  description String?
-  series      String? // e.g., "Auro series", "Matcha series", "Espresso series"
-  basePrice   Int     @default(0) // cents
-  isActive    Boolean @default(true)
-  isHidden    Boolean @default(false)
-  sort        Int     @default(0)
-
-  // Per-item Foodpanda surcharge (cents)
-  foodpandaSurchargeCents Int @default(2000) // default ₱20
-
-  // Default milk type for this item
-  defaultMilk MilkType @default(FULL_CREAM)
-
-  // Espresso shot configuration
-  // TODO: When shotsDefaultSource == INVENTORY, compute defaults from recipe/inventory consumption mapping
-  // Recipe system should define: Recipe(itemId, size) -> { espressoShotsRequired: Int }
-  // This allows inventory-driven defaults based on actual consumption per size
-  supportsShots      Boolean            @default(false) // If true, show shots control in UI
-  isEspressoDrink    Boolean            @default(false) // If true, uses espresso series pricing rules
-  shotsPricingMode   ShotsPricingMode? // Pricing rule for shots (null = no shots support)
-  defaultShots12oz   Int                @default(0) // Default shots for 12oz size
-  defaultShots16oz   Int                @default(0) // Default shots for 16oz size
-  shotsDefaultSource ShotsDefaultSource @default(MANUAL) // MANUAL or INVENTORY (future)
-
-  // Legacy field (deprecated, use per-size defaults)
-  defaultEspressoShots Int @default(0) // @deprecated Use defaultShots12oz/16oz instead
-
-  categoryId String
-  category   Category @relation(fields: [categoryId], references: [id])
-
-  // Photos (multi)
-  images ItemImage[]
-
-  itemOptionGroups ItemOptionGroup[]
-  orderItems       OrderItem[]
-
-  // POS
-  transactionLineItems TransactionLineItem[]
-
-  // Inventory: recipes link item to ingredients
-  menuItemRecipes      MenuItemRecipe[]
-  menuItemRecipeSizes  MenuItemRecipeSize[]
+  id                      String                @id @default(cuid())
+  storeId                 String                @default("store_1")
+  cloudId                 String?               @unique
+  name                    String
+  description             String?
+  series                  String?
+  basePrice               Int                   @default(0)
+  isActive                Boolean               @default(true)
+  isHidden                Boolean               @default(false)
+  sort                    Int                   @default(0)
+  foodpandaSurchargeCents Int                   @default(2000)
+  defaultMilk             MilkType              @default("FULL_CREAM")
+  supportsShots           Boolean               @default(false)
+  isEspressoDrink         Boolean               @default(false)
+  shotsPricingMode        ShotsPricingMode?
+  defaultShots12oz        Int                   @default(0)
+  defaultShots16oz        Int                   @default(0)
+  shotsDefaultSource      ShotsDefaultSource    @default("MANUAL")
+  defaultEspressoShots    Int                   @default(0)
+  categoryId              String
+  category                Category              @relation(fields: [categoryId], references: [id])
+  store                   Store                 @relation(fields: [storeId], references: [id])
+  images                  ItemImage[]
+  itemOptionGroups        ItemOptionGroup[]
+  menuItemRecipes         MenuItemRecipe[]
+  menuItemRecipeSizes     MenuItemRecipeSize[]
+  orderItems              OrderItem[]
+  transactionLineItems    TransactionLineItem[]
 
   @@unique([categoryId, name])
   @@index([storeId])
@@ -369,56 +143,44 @@ model Item {
 }
 
 model ItemImage {
-  id     String @id @default(cuid())
-  itemId String
-  item   Item   @relation(fields: [itemId], references: [id], onDelete: Cascade)
-
-  // Use URL/path (later: S3/R2/etc)
-  url String
-
-  // For UI ordering + default image
-  isPrimary Boolean @default(false)
-  sort      Int     @default(0)
-
+  id        String   @id @default(cuid())
+  itemId    String
+  url       String
+  isPrimary Boolean  @default(false)
+  sort      Int      @default(0)
   createdAt DateTime @default(now())
+  item      Item     @relation(fields: [itemId], references: [id], onDelete: Cascade)
 
   @@index([itemId])
   @@index([itemId, isPrimary])
 }
 
 model OptionGroup {
-  id String @id @default(cuid())
-
-  storeId String @default("store_1")
-  store   Store  @relation(fields: [storeId], references: [id])
-
-  name       String          @unique // "Add-ons – Espresso Series"
-  type       OptionGroupType
-  minSelect  Int             @default(0)
-  maxSelect  Int             @default(1)
-  isRequired Boolean         @default(false)
-  sort       Int             @default(0)
-
-  options          Option[]
+  id               String            @id @default(cuid())
+  storeId          String            @default("store_1")
+  name             String            @unique
+  type             OptionGroupType
+  minSelect        Int               @default(0)
+  maxSelect        Int               @default(1)
+  isRequired       Boolean           @default(false)
+  sort             Int               @default(0)
   itemOptionGroups ItemOptionGroup[]
+  options          Option[]
+  store            Store             @relation(fields: [storeId], references: [id])
 
   @@index([storeId])
 }
 
 model Option {
-  id String @id @default(cuid())
-
-  storeId String @default("store_1")
-  store   Store  @relation(fields: [storeId], references: [id])
-
-  groupId String
-  group   OptionGroup @relation(fields: [groupId], references: [id])
-
-  name       String
-  priceDelta Int     @default(0)
-  isDefault  Boolean @default(false)
-  sort       Int     @default(0)
-
+  id               String            @id @default(cuid())
+  storeId          String            @default("store_1")
+  groupId          String
+  name             String
+  priceDelta       Int               @default(0)
+  isDefault        Boolean           @default(false)
+  sort             Int               @default(0)
+  group            OptionGroup       @relation(fields: [groupId], references: [id])
+  store            Store             @relation(fields: [storeId], references: [id])
   orderItemOptions OrderItemOption[]
 
   @@index([groupId])
@@ -428,37 +190,25 @@ model Option {
 model ItemOptionGroup {
   itemId  String
   groupId String
-
-  item  Item        @relation(fields: [itemId], references: [id], onDelete: Cascade)
-  group OptionGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  group   OptionGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  item    Item        @relation(fields: [itemId], references: [id], onDelete: Cascade)
 
   @@id([itemId, groupId])
 }
 
 model Tab {
-  id String @id @default(cuid())
-
-  storeId String @default("store_1")
-  store   Store  @relation(fields: [storeId], references: [id])
-
-  type   TabType
-  status TabStatus @default(OPEN)
-
-  // function room is usually a specific table (or could be a "room")
-  tableId String
-  table   Table  @relation(fields: [tableId], references: [id])
-
-  // Consumable quota (e.g. ₱3000 => 300000 cents)
-  quotaCents Int     @default(300000)
-  note       String?
-
-  // When it was started/closed
-  openedAt DateTime  @default(now())
-  closedAt DateTime?
-
-  orders Order[]
-
-  // POS (optional future linkage)
+  id           String        @id @default(cuid())
+  storeId      String        @default("store_1")
+  type         TabType
+  status       TabStatus     @default("OPEN")
+  tableId      String
+  quotaCents   Int           @default(300000)
+  note         String?
+  openedAt     DateTime      @default(now())
+  closedAt     DateTime?
+  orders       Order[]
+  table        Table         @relation(fields: [tableId], references: [id])
+  store        Store         @relation(fields: [storeId], references: [id])
   transactions Transaction[]
 
   @@index([storeId, status])
@@ -466,37 +216,25 @@ model Tab {
 }
 
 model Order {
-  id String @id @default(cuid())
-
-  storeId String @default("store_1")
-  store   Store  @relation(fields: [storeId], references: [id])
-
-  orderNo Int
-  status  OrderStatus @default(PLACED)
-  source  OrderSource @default(QR_UNPAID)
-
-  tableId String
-  table   Table  @relation(fields: [tableId], references: [id])
-
-  // For function room: attach all room orders to one open tab
-  tabId String?
-  tab   Tab?    @relation(fields: [tabId], references: [id])
-
-  paymentMethod PaymentMethod @default(CASH)
-  paymentStatus PaymentStatus @default(UNPAID)
-
-  // For Foodpanda/Grab/etc
-  externalRef String?
-
-  customerNote String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-
-  items       OrderItem[]
-  voidRequest VoidRequest?
-
-  // POS unification link (optional)
-  transaction Transaction?
+  id            String        @id @default(cuid())
+  storeId       String        @default("store_1")
+  orderNo       Int
+  status        OrderStatus   @default("PLACED")
+  source        OrderSource   @default("QR_UNPAID")
+  tableId       String
+  tabId         String?
+  paymentMethod PaymentMethod @default("CASH")
+  paymentStatus PaymentStatus @default("UNPAID")
+  externalRef   String?
+  customerNote  String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  tab           Tab?          @relation(fields: [tabId], references: [id])
+  table         Table         @relation(fields: [tableId], references: [id])
+  store         Store         @relation(fields: [storeId], references: [id])
+  items         OrderItem[]
+  transaction   Transaction?
+  voidRequest   VoidRequest?
 
   @@index([storeId, createdAt])
   @@index([status])
@@ -505,104 +243,79 @@ model Order {
 }
 
 model OrderItem {
-  id String @id @default(cuid())
-
-  orderId String
-  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
-
-  itemId String
-  item   Item   @relation(fields: [itemId], references: [id])
-
-  qty       Int     @default(1)
-  unitPrice Int     @default(0) // base + selected deltas at time of order
+  id        String            @id @default(cuid())
+  orderId   String
+  itemId    String
+  qty       Int               @default(1)
+  unitPrice Int               @default(0)
   lineNote  String?
-
-  options OrderItemOption[]
+  item      Item              @relation(fields: [itemId], references: [id])
+  order     Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  options   OrderItemOption[]
 
   @@index([orderId])
   @@index([itemId])
 }
 
 model OrderItemOption {
-  id String @id @default(cuid())
-
+  id          String    @id @default(cuid())
   orderItemId String
+  optionId    String
+  priceDelta  Int
+  option      Option    @relation(fields: [optionId], references: [id])
   orderItem   OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
-
-  optionId String
-  option   Option @relation(fields: [optionId], references: [id])
-
-  priceDelta Int
 
   @@index([orderItemId])
   @@index([optionId])
 }
 
 model VoidRequest {
-  id String @id @default(cuid())
-
-  orderId String @unique
-  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
-
-  status VoidRequestStatus @default(PENDING)
-
+  id          String            @id @default(cuid())
+  orderId     String            @unique
+  status      VoidRequestStatus @default("PENDING")
   reason      String
-  requestedAt DateTime @default(now())
-
-  // Later: link to staff/manager user models
+  requestedAt DateTime          @default(now())
   requestedBy String?
   decidedAt   DateTime?
   decidedBy   String?
   managerNote String?
+  order       Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
 }
 
 model MenuBanner {
-  id String @id @default(cuid())
-
-  storeId String @default("store_1")
-  store   Store  @relation(fields: [storeId], references: [id])
-
-  title    String
-  subtitle String?
-  imageUrl String?
-  linkUrl  String? // optional deep-link (e.g. /menu?category=seasonal)
-
-  isActive Boolean @default(true)
-  sort     Int     @default(0)
-
-  startsAt DateTime?
-  endsAt   DateTime?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id        String    @id @default(cuid())
+  storeId   String    @default("store_1")
+  title     String
+  subtitle  String?
+  imageUrl  String?
+  linkUrl   String?
+  isActive  Boolean   @default(true)
+  sort      Int       @default(0)
+  startsAt  DateTime?
+  endsAt    DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  store     Store     @relation(fields: [storeId], references: [id])
 
   @@index([storeId])
   @@index([isActive])
   @@index([sort])
 }
 
-//
-// POS / TRANSACTIONS (new)
-//
 model RegisterSession {
-  id String @id @default(cuid())
-
-  storeId String @default("store_1")
-  store   Store  @relation(fields: [storeId], references: [id])
-
-  status RegisterSessionStatus @default(OPEN)
-
-  openedAt    DateTime @default(now())
-  openedBy    String?
-  openingCash Int      @default(0) // cents
-
+  id           String                @id @default(cuid())
+  storeId      String                @default("store_1")
+  status       RegisterSessionStatus @default("OPEN")
+  openedAt     DateTime              @default(now())
+  openedBy     String?
+  openingCash  Int                   @default(0)
   closedAt     DateTime?
   closedBy     String?
-  closingCash  Int? // counted cash (cents)
-  expectedCash Int? // system expected cash (cents)
-  varianceCash Int? // closing - expected (cents)
+  closingCash  Int?
+  expectedCash Int?
+  varianceCash Int?
   note         String?
-
+  store        Store                 @relation(fields: [storeId], references: [id])
   transactions Transaction[]
 
   @@index([storeId, status])
@@ -610,46 +323,35 @@ model RegisterSession {
 }
 
 model Transaction {
-  id String @id @default(cuid())
-
-  storeId String @default("store_1")
-  store   Store  @relation(fields: [storeId], references: [id])
-
-  transactionNo Int
-  status        TransactionStatus @default(PAID)
-  source        TransactionSource @default(POS)
-  serviceType   ServiceType       @default(DINE_IN)
-
+  id                String                @id @default(cuid())
+  storeId           String                @default("store_1")
+  transactionNo     Int
+  status            TransactionStatus     @default("PAID")
+  source            TransactionSource     @default("POS")
+  serviceType       ServiceType           @default("DINE_IN")
   registerSessionId String?
-  registerSession   RegisterSession? @relation(fields: [registerSessionId], references: [id])
-
-  // Future: unify QR -> Transaction by linking to an Order
-  orderId String? @unique
-  order   Order?  @relation(fields: [orderId], references: [id])
-
-  tableId String?
-  table   Table?  @relation(fields: [tableId], references: [id])
-
-  tabId String?
-  tab   Tab?    @relation(fields: [tabId], references: [id])
-
-  subtotalCents Int @default(0)
-  discountCents Int @default(0)
-  serviceCents  Int @default(0)
-  taxCents      Int @default(0)
-  totalCents    Int @default(0)
-
-  createdAt DateTime @default(now())
-  createdBy String?
-  updatedAt DateTime @updatedAt
-
-  voidedAt   DateTime?
-  voidedBy   String?
-  voidReason String?
-
-  lineItems TransactionLineItem[]
-  payments  TransactionPayment[]
-  refunds   TransactionRefund[]
+  orderId           String?               @unique
+  tableId           String?
+  tabId             String?
+  subtotalCents     Int                   @default(0)
+  discountCents     Int                   @default(0)
+  serviceCents      Int                   @default(0)
+  taxCents          Int                   @default(0)
+  totalCents        Int                   @default(0)
+  createdAt         DateTime              @default(now())
+  createdBy         String?
+  updatedAt         DateTime              @updatedAt
+  voidedAt          DateTime?
+  voidedBy          String?
+  voidReason        String?
+  tab               Tab?                  @relation(fields: [tabId], references: [id])
+  table             Table?                @relation(fields: [tableId], references: [id])
+  order             Order?                @relation(fields: [orderId], references: [id])
+  registerSession   RegisterSession?      @relation(fields: [registerSessionId], references: [id])
+  store             Store                 @relation(fields: [storeId], references: [id])
+  lineItems         TransactionLineItem[]
+  payments          TransactionPayment[]
+  refunds           TransactionRefund[]
 
   @@unique([storeId, transactionNo])
   @@index([storeId, createdAt])
@@ -660,208 +362,164 @@ model Transaction {
 }
 
 model TransactionLineItem {
-  id String @id @default(cuid())
-
-  transactionId String
-  transaction   Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
-
-  // Optional link to catalog item
-  itemId String?
-  item   Item?   @relation(fields: [itemId], references: [id])
-
-  // Snapshot fields
+  id             String                  @id @default(cuid())
+  transactionId  String
+  itemId         String?
   name           String
-  qty            Int     @default(1)
-  unitPrice      Int     @default(0) // cents
-  modifiersCents Int     @default(0)
-  lineTotal      Int     @default(0)
+  qty            Int                     @default(1)
+  unitPrice      Int                     @default(0)
+  modifiersCents Int                     @default(0)
+  lineTotal      Int                     @default(0)
   note           String?
-
-  // Sticker: print only when isDrink && serveVessel === "PLASTIC_CUP"
-  isDrink     Boolean?
-  serveVessel String?
-
-  // Keep it simple: store selected modifiers/options as JSON string
-  optionsJson String?
-
-  // Refund tracking
-  refundItems TransactionRefundItem[]
+  isDrink        Boolean?
+  serveVessel    String?
+  optionsJson    String?
+  item           Item?                   @relation(fields: [itemId], references: [id])
+  transaction    Transaction             @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  refundItems    TransactionRefundItem[]
 
   @@index([transactionId])
   @@index([itemId])
 }
 
 model TransactionPayment {
-  id String @id @default(cuid())
-
+  id            String                   @id @default(cuid())
   transactionId String
-  transaction   Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
-
-  method PaymentMethod
-  status TransactionPaymentStatus @default(PAID)
-
-  amountCents Int
-  refNo       String?
-  receivedAt  DateTime @default(now())
-  receivedBy  String?
+  method        PaymentMethod
+  status        TransactionPaymentStatus @default("PAID")
+  amountCents   Int
+  refNo         String?
+  receivedAt    DateTime                 @default(now())
+  receivedBy    String?
+  transaction   Transaction              @relation(fields: [transactionId], references: [id], onDelete: Cascade)
 
   @@index([transactionId])
   @@index([method])
 }
 
 model TransactionRefund {
-  id String @id @default(cuid())
-
-  transactionId String
-  transaction   Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
-
+  id                String                  @id @default(cuid())
+  transactionId     String
   refundedByStaffId String?
   reason            String
-  createdAt         DateTime @default(now())
-
-  refundItems TransactionRefundItem[]
+  createdAt         DateTime                @default(now())
+  transaction       Transaction             @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  refundItems       TransactionRefundItem[]
 
   @@index([transactionId])
 }
 
 model TransactionRefundItem {
-  id String @id @default(cuid())
-
-  refundId String
-  refund   TransactionRefund @relation(fields: [refundId], references: [id], onDelete: Cascade)
-
+  id                    String              @id @default(cuid())
+  refundId              String
   transactionLineItemId String
+  qtyRefunded           Int
+  amountRefundedCents   Int
   transactionLineItem   TransactionLineItem @relation(fields: [transactionLineItemId], references: [id], onDelete: Cascade)
-
-  qtyRefunded         Int
-  amountRefundedCents Int
+  refund                TransactionRefund   @relation(fields: [refundId], references: [id], onDelete: Cascade)
 
   @@index([refundId])
   @@index([transactionLineItemId])
 }
 
 model AuditLog {
-  id String @id @default(cuid())
-
-  storeId String @default("store_1")
-  store   Store  @relation(fields: [storeId], references: [id])
-
-  action   AuditAction
-  entity   String?
-  entityId String?
-  actorId  String?
-  note     String?
-
-  // Keep it simple: JSON string payload
-  metaJson String?
-
-  createdAt DateTime @default(now())
+  id        String      @id @default(cuid())
+  storeId   String      @default("store_1")
+  action    AuditAction
+  entity    String?
+  entityId  String?
+  actorId   String?
+  note      String?
+  metaJson  String?
+  createdAt DateTime    @default(now())
+  store     Store       @relation(fields: [storeId], references: [id])
 
   @@index([storeId, createdAt])
   @@index([entity, entityId])
 }
 
-//
-// SOP (Standard Operating Procedures)
-//
 model SopTemplate {
-  id String @id @default(cuid())
-
-  storeId String @default("store_1")
-  store   Store  @relation(fields: [storeId], references: [id])
-
-  name     String
-  isActive Boolean @default(true)
-  sort     Int     @default(0)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  tasks       SopTask[]
+  id          String          @id @default(cuid())
+  storeId     String          @default("store_1")
+  name        String
+  isActive    Boolean         @default(true)
+  sort        Int             @default(0)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
   completions SopCompletion[]
+  tasks       SopTask[]
+  store       Store           @relation(fields: [storeId], references: [id])
 
   @@index([storeId])
   @@index([storeId, isActive])
 }
 
 model SopTask {
-  id String @id @default(cuid())
-
-  templateId String
-  template   SopTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
-
+  id            String          @id @default(cuid())
+  templateId    String
   title         String
-  requiresPhoto Boolean @default(false)
-  sort          Int     @default(0)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  completions SopCompletion[]
+  requiresPhoto Boolean         @default(false)
+  sort          Int             @default(0)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  completions   SopCompletion[]
+  template      SopTemplate     @relation(fields: [templateId], references: [id], onDelete: Cascade)
 
   @@index([templateId])
   @@index([templateId, sort])
 }
 
 model SopCompletion {
-  id String @id @default(cuid())
-
-  templateId String
-  template   SopTemplate @relation(fields: [templateId], references: [id])
-
-  taskId String
-  task   SopTask @relation(fields: [taskId], references: [id])
-
-  completedAt DateTime @default(now())
+  id          String      @id @default(cuid())
+  templateId  String
+  taskId      String
+  completedAt DateTime    @default(now())
   completedBy String?
   note        String?
   photoPath   String?
+  task        SopTask     @relation(fields: [taskId], references: [id])
+  template    SopTemplate @relation(fields: [templateId], references: [id])
 
   @@index([templateId, completedAt])
   @@index([taskId, completedAt])
   @@index([completedAt])
 }
 
-//
-// INVENTORY (from migration 20260302155513_add_inventory_system)
-//
 model InventoryUnit {
-  id        String   @id @default(cuid())
-  storeId   String   @default("store_1")
-  store     Store    @relation(fields: [storeId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  code      String
-  name      String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
+  id                  String               @id @default(cuid())
+  storeId             String               @default("store_1")
+  code                String
+  name                String
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
   ingredients         Ingredient[]
+  inventoryCountLines InventoryCountLine[]
+  inventoryMovements  InventoryMovement[]
+  store               Store                @relation(fields: [storeId], references: [id])
   menuItemRecipes     MenuItemRecipe[]
   menuItemRecipeSizes MenuItemRecipeSize[]
-  inventoryMovements  InventoryMovement[]
-  inventoryCountLines InventoryCountLine[]
 
   @@unique([storeId, code])
   @@index([storeId])
 }
 
 model Ingredient {
-  id           String        @id @default(cuid())
-  storeId      String        @default("store_1")
-  store        Store         @relation(fields: [storeId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  sku          String?
-  name         String
-  unitId       String
-  unit         InventoryUnit @relation(fields: [unitId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  reorderLevel String? // Decimal stored as string
-  isActive     Boolean       @default(true)
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-
-  stocks              IngredientStock[]
+  id                  String               @id @default(cuid())
+  storeId             String               @default("store_1")
+  sku                 String?
+  name                String
+  unitId              String
+  reorderLevel        String?
+  isActive            Boolean              @default(true)
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  unit                InventoryUnit        @relation(fields: [unitId], references: [id])
+  store               Store                @relation(fields: [storeId], references: [id])
+  stocks              IngredientStock?
+  inventoryCountLines InventoryCountLine[]
+  inventoryMovements  InventoryMovement[]
   menuItemRecipes     MenuItemRecipe[]
   menuItemRecipeSizes MenuItemRecipeSize[]
-  inventoryMovements  InventoryMovement[]
-  inventoryCountLines InventoryCountLine[]
 
   @@unique([storeId, name])
   @@index([storeId])
@@ -872,11 +530,11 @@ model Ingredient {
 model IngredientStock {
   id           String     @id @default(cuid())
   storeId      String     @default("store_1")
-  store        Store      @relation(fields: [storeId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  ingredientId String     @unique // One stock record per ingredient (legacy index)
-  ingredient   Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade, onUpdate: Cascade)
-  onHandQty    String     @default("0") // Decimal stored as string
+  ingredientId String     @unique
+  onHandQty    String     @default("0")
   updatedAt    DateTime   @updatedAt
+  ingredient   Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+  store        Store      @relation(fields: [storeId], references: [id])
 
   @@unique([storeId, ingredientId])
   @@index([storeId])
@@ -885,16 +543,16 @@ model IngredientStock {
 model MenuItemRecipe {
   id           String        @id @default(cuid())
   storeId      String        @default("store_1")
-  store        Store         @relation(fields: [storeId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   menuItemId   String
-  item         Item          @relation(fields: [menuItemId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   ingredientId String
-  ingredient   Ingredient    @relation(fields: [ingredientId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  qtyPerItem   String // Decimal stored as string
+  qtyPerItem   String
   unitId       String
-  unit         InventoryUnit @relation(fields: [unitId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
+  unit         InventoryUnit @relation(fields: [unitId], references: [id])
+  ingredient   Ingredient    @relation(fields: [ingredientId], references: [id])
+  item         Item          @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  store        Store         @relation(fields: [storeId], references: [id])
 
   @@unique([storeId, menuItemId, ingredientId])
   @@index([storeId])
@@ -905,18 +563,18 @@ model MenuItemRecipe {
 model MenuItemRecipeSize {
   id           String        @id @default(cuid())
   storeId      String        @default("store_1")
-  store        Store         @relation(fields: [storeId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   menuItemId   String
-  item         Item          @relation(fields: [menuItemId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   ingredientId String
-  ingredient   Ingredient    @relation(fields: [ingredientId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  baseType     String        // HOT | ICED | CONCENTRATED
-  sizeCode     String        // e.g. "12oz", "16oz", "1L"
-  qtyPerItem   String        // Decimal stored as string
+  baseType     String
+  sizeCode     String
+  qtyPerItem   String
   unitId       String
-  unit         InventoryUnit @relation(fields: [unitId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
+  unit         InventoryUnit @relation(fields: [unitId], references: [id])
+  ingredient   Ingredient    @relation(fields: [ingredientId], references: [id])
+  item         Item          @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  store        Store         @relation(fields: [storeId], references: [id])
 
   @@unique([storeId, menuItemId, ingredientId, baseType, sizeCode])
   @@index([storeId])
@@ -927,18 +585,18 @@ model MenuItemRecipeSize {
 model InventoryMovement {
   id               String                @id @default(cuid())
   storeId          String                @default("store_1")
-  store            Store                 @relation(fields: [storeId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   ingredientId     String
-  ingredient       Ingredient            @relation(fields: [ingredientId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   type             InventoryMovementType
-  qtyDelta         String // Signed decimal stored as string
+  qtyDelta         String
   unitId           String
-  unit             InventoryUnit         @relation(fields: [unitId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  refType          String? // SALE, WASTAGE_REPORT, COUNT, MANUAL
+  refType          String?
   refId            String?
   notes            String?
   createdByStaffId String?
   createdAt        DateTime              @default(now())
+  unit             InventoryUnit         @relation(fields: [unitId], references: [id])
+  ingredient       Ingredient            @relation(fields: [ingredientId], references: [id])
+  store            Store                 @relation(fields: [storeId], references: [id])
 
   @@index([storeId])
   @@index([storeId, ingredientId, createdAt])
@@ -948,16 +606,15 @@ model InventoryMovement {
 model InventoryCountSession {
   id                String               @id @default(cuid())
   storeId           String               @default("store_1")
-  store             Store                @relation(fields: [storeId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   type              InventoryCountType
-  status            InventoryCountStatus @default(DRAFT)
+  status            InventoryCountStatus @default("DRAFT")
   startedAt         DateTime             @default(now())
   submittedAt       DateTime?
   approvedAt        DateTime?
   createdByStaffId  String?
   approvedByStaffId String?
-
-  lines InventoryCountLine[]
+  lines             InventoryCountLine[]
+  store             Store                @relation(fields: [storeId], references: [id])
 
   @@index([storeId, status])
   @@index([storeId, startedAt])
@@ -966,106 +623,98 @@ model InventoryCountSession {
 model InventoryCountLine {
   id             String                @id @default(cuid())
   countSessionId String
-  countSession   InventoryCountSession @relation(fields: [countSessionId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   ingredientId   String
-  ingredient     Ingredient            @relation(fields: [ingredientId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  countedQty     String // Decimal stored as string
+  countedQty     String
   unitId         String
-  unit           InventoryUnit         @relation(fields: [unitId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   notes          String?
+  unit           InventoryUnit         @relation(fields: [unitId], references: [id])
+  ingredient     Ingredient            @relation(fields: [ingredientId], references: [id])
+  countSession   InventoryCountSession @relation(fields: [countSessionId], references: [id], onDelete: Cascade)
 
   @@unique([countSessionId, ingredientId])
   @@index([countSessionId])
   @@index([ingredientId])
 }
 
-//
-// LOCAL OUTBOX (from migration 20260303025023_add_local_outbox)
-//
 model LocalOutbox {
   id          String            @id @default(cuid())
   storeId     String            @default("store_1")
-  store       Store             @relation(fields: [storeId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   topic       String
   payloadJson String
-  status      LocalOutboxStatus @default(PENDING)
+  status      LocalOutboxStatus @default("PENDING")
   attempts    Int               @default(0)
   lastError   String?
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
+  store       Store             @relation(fields: [storeId], references: [id])
 
   @@index([storeId])
   @@index([status])
   @@index([storeId, status])
 }
 
-//
-// CLOUD CATALOG CACHE (local copy of cloud catalog for offline/sync)
-//
 model CloudMenuItem {
-  id               String    @id @default(cuid())
-  cloudId          String    @unique
-  storeId          String    @default("store_1")
-  name             String
-  priceCents       Int
-  isActive         Boolean   @default(true)
-  imageUrl         String?
-  categoryCloudId  String?
-  subCategoryCloudId String?
-  version          Int
-  deletedAt        DateTime?
-  isDrink          Boolean   @default(false)
-  serveVessel      String?   // PLASTIC_CUP | GLASS | OTHER
-  defaultSizeId    String?   // cloud MenuItemSize.id
-  defaultSizeOptionCloudId String?   // cloud MenuOption.id for Sizes group
-  hasSizes         Boolean   @default(false)
-  supportsShots    Boolean   @default(false)
-  defaultShots     Int?
+  id                       String                   @id @default(cuid())
+  cloudId                  String                   @unique
+  storeId                  String                   @default("store_1")
+  name                     String
+  priceCents               Int
+  isActive                 Boolean                  @default(true)
+  imageUrl                 String?
+  categoryCloudId          String?
+  subCategoryCloudId       String?
+  version                  Int
+  deletedAt                DateTime?
+  isDrink                  Boolean                  @default(false)
+  serveVessel              String?
+  defaultSizeId            String?
+  defaultSizeOptionCloudId String?
+  hasSizes                 Boolean                  @default(false)
+  supportsShots            Boolean                  @default(false)
+  defaultShots             Int?
   defaultSubstituteCloudId String?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
-
-  sizes CloudMenuItemSize[]
-  sizePrices CloudMenuItemSizePrice[]
+  createdAt                DateTime                 @default(now())
+  updatedAt                DateTime                 @updatedAt
+  sizes                    CloudMenuItemSize[]
+  sizePrices               CloudMenuItemSizePrice[]
 
   @@index([storeId])
 }
 
 model CloudMenuItemSize {
-  id               String        @id @default(cuid())
-  cloudId          String        @unique
-  storeId          String        @default("store_1")
-  menuItemCloudId  String
-  menuItem         CloudMenuItem @relation(fields: [menuItemCloudId], references: [cloudId], onDelete: Cascade)
-  label            String
-  temp             String        @default("ANY")   // HOT | ICED | ANY
-  sortOrder        Int           @default(0)
-  isActive         Boolean       @default(true)
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
+  id              String        @id @default(cuid())
+  cloudId         String        @unique
+  storeId         String        @default("store_1")
+  menuItemCloudId String
+  label           String
+  temp            String        @default("ANY")
+  sortOrder       Int           @default(0)
+  isActive        Boolean       @default(true)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  menuItem        CloudMenuItem @relation(fields: [menuItemCloudId], references: [cloudId], onDelete: Cascade)
 
   @@index([storeId])
   @@index([menuItemCloudId])
 }
 
 model CloudMenuItemSizePrice {
-  id                String   @id @default(cuid())
-  cloudId           String   @unique
-  storeId           String   @default("store_1")
+  id                String        @id @default(cuid())
+  cloudId           String        @unique
+  storeId           String        @default("store_1")
   menuItemCloudId   String
-  baseType          String   // HOT | ICED | CONCENTRATED
+  baseType          String
   sizeOptionCloudId String
   sizeCode          String
   priceCents        Int
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  menuItem          CloudMenuItem @relation(fields: [menuItemCloudId], references: [cloudId], onDelete: Cascade)
 
-  menuItem CloudMenuItem @relation(fields: [menuItemCloudId], references: [cloudId], onDelete: Cascade)
-
+  @@unique([storeId, menuItemCloudId, baseType, sizeOptionCloudId])
   @@index([storeId])
   @@index([menuItemCloudId])
   @@index([sizeOptionCloudId])
-  @@unique([storeId, menuItemCloudId, baseType, sizeOptionCloudId])
 }
 
 model CloudCategory {
@@ -1082,94 +731,91 @@ model CloudCategory {
 }
 
 model CloudSubCategory {
-  id               String   @id @default(cuid())
-  cloudId          String   @unique
-  storeId          String   @default("store_1")
-  name             String
-  categoryCloudId  String
-  sortOrder        Int      @default(0)
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  id              String   @id @default(cuid())
+  cloudId         String   @unique
+  storeId         String   @default("store_1")
+  name            String
+  categoryCloudId String
+  sortOrder       Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   @@index([storeId])
   @@index([categoryCloudId])
 }
 
 model CloudMenuOptionGroup {
-  id                  String   @id @default(cuid())
-  cloudId             String   @unique
-  storeId             String   @default("store_1")
-  name                String
-  required            Boolean  @default(false)
-  multi               Boolean  @default(false)
-  isSizeGroup         Boolean  @default(false)
+  id                   String   @id @default(cuid())
+  cloudId              String   @unique
+  storeId              String   @default("store_1")
+  name                 String
+  required             Boolean  @default(false)
+  multi                Boolean  @default(false)
+  isSizeGroup          Boolean  @default(false)
   defaultOptionCloudId String?
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 
   @@index([storeId])
 }
 
 model CloudMenuOption {
-  id         String  @id @default(cuid())
-  cloudId    String  @unique
-  storeId    String  @default("store_1")
-  name       String
-  priceDelta Int     @default(0)
+  id           String   @id @default(cuid())
+  cloudId      String   @unique
+  storeId      String   @default("store_1")
+  name         String
+  priceDelta   Int      @default(0)
   groupCloudId String
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@index([storeId])
   @@index([groupCloudId])
 }
 
 model CloudMenuOptionGroupSection {
-  id               String   @id @default(cuid())
-  cloudId          String   @unique
-  storeId          String   @default("store_1")
+  id                 String   @id @default(cuid())
+  cloudId            String   @unique
+  storeId            String   @default("store_1")
   optionGroupCloudId String
-  key              String
-  label            String
-  sortOrder        Int      @default(0)
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  key                String
+  label              String
+  sortOrder          Int      @default(0)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   @@index([storeId])
   @@index([optionGroupCloudId])
 }
 
 model CloudMenuSize {
-  id        String   @id @default(cuid())
-  cloudId   String   @unique
-  storeId   String   @default("store_1")
-  groupCloudId String
-  label     String
-  sortOrder Int      @default(0)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  availability             CloudMenuSizeAvailability[]
-  substitutePrices         CloudSubstitutePrice[]
-  substituteRecipeConsumptions CloudSubstituteRecipeConsumption[]
+  id               String                      @id @default(cuid())
+  cloudId          String                      @unique
+  storeId          String                      @default("store_1")
+  groupCloudId     String
+  label            String
+  sortOrder        Int                         @default(0)
+  createdAt        DateTime                    @default(now())
+  updatedAt        DateTime                    @updatedAt
+  availability     CloudMenuSizeAvailability[]
+  substitutePrices CloudSubstitutePrice[]
 
   @@index([storeId])
   @@index([groupCloudId])
 }
 
 model CloudMenuSizeAvailability {
-  id          String   @id @default(cuid())
-  cloudId     String   @unique
-  storeId     String   @default("store_1")
+  id          String        @id @default(cuid())
+  cloudId     String        @unique
+  storeId     String        @default("store_1")
   sizeCloudId String
-  mode        String   // ICED | HOT | CONCENTRATED
+  mode        String
   imageUrl    String?
-  isEnabled   Boolean  @default(true)
-  sortOrder   Int      @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  size CloudMenuSize @relation(fields: [sizeCloudId], references: [cloudId], onDelete: Cascade)
+  isEnabled   Boolean       @default(true)
+  sortOrder   Int           @default(0)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  size        CloudMenuSize @relation(fields: [sizeCloudId], references: [cloudId], onDelete: Cascade)
 
   @@unique([storeId, sizeCloudId, mode])
   @@index([storeId])
@@ -1190,52 +836,30 @@ model CloudAddOn {
 }
 
 model CloudSubstitute {
-  id                String   @id @default(cuid())
-  cloudId           String   @unique
-  storeId           String   @default("store_1")
-  name              String
-  priceCents        Int      @default(0)
-  sortOrder         Int      @default(0)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-
-  prices            CloudSubstitutePrice[]
-  recipeConsumption CloudSubstituteRecipeConsumption[]
+  id         String                 @id @default(cuid())
+  cloudId    String                 @unique
+  storeId    String                 @default("store_1")
+  name       String
+  priceCents Int                    @default(0)
+  sortOrder  Int                    @default(0)
+  createdAt  DateTime               @default(now())
+  updatedAt  DateTime               @updatedAt
+  prices     CloudSubstitutePrice[]
 
   @@index([storeId])
 }
 
 model CloudSubstitutePrice {
-  id                String   @id @default(cuid())
-  storeId           String   @default("store_1")
+  id                String          @id @default(cuid())
+  storeId           String          @default("store_1")
   substituteCloudId String
   sizeCloudId       String
-  mode              String   // ICED | HOT | CONCENTRATED
+  mode              String
   priceCents        Int
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-
-  substitute CloudSubstitute @relation(fields: [substituteCloudId], references: [cloudId], onDelete: Cascade)
-  size       CloudMenuSize   @relation(fields: [sizeCloudId], references: [cloudId], onDelete: Cascade)
-
-  @@unique([storeId, substituteCloudId, sizeCloudId, mode])
-  @@index([storeId])
-  @@index([substituteCloudId])
-  @@index([sizeCloudId])
-}
-
-model CloudSubstituteRecipeConsumption {
-  id                String   @id @default(cuid())
-  storeId           String   @default("store_1")
-  substituteCloudId String
-  sizeCloudId       String
-  mode              String   // ICED | HOT | CONCENTRATED
-  qtyMl             String   // Decimal stored as string (SQLite)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-
-  substitute CloudSubstitute @relation(fields: [substituteCloudId], references: [cloudId], onDelete: Cascade)
-  size       CloudMenuSize   @relation(fields: [sizeCloudId], references: [cloudId], onDelete: Cascade)
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  size              CloudMenuSize   @relation(fields: [sizeCloudId], references: [cloudId], onDelete: Cascade)
+  substitute        CloudSubstitute @relation(fields: [substituteCloudId], references: [cloudId], onDelete: Cascade)
 
   @@unique([storeId, substituteCloudId, sizeCloudId, mode])
   @@index([storeId])
@@ -1244,12 +868,12 @@ model CloudSubstituteRecipeConsumption {
 }
 
 model CloudMenuItemAddOn {
-  id               String @id @default(cuid())
-  storeId          String @default("store_1")
-  menuItemCloudId  String
-  addOnCloudId     String
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  id              String   @id @default(cuid())
+  storeId         String   @default("store_1")
+  menuItemCloudId String
+  addOnCloudId    String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   @@unique([storeId, menuItemCloudId, addOnCloudId])
   @@index([storeId])
@@ -1258,12 +882,10 @@ model CloudMenuItemAddOn {
 }
 
 model CloudMenuItemSubstitute {
-  id                String  @id @default(cuid())
-  storeId           String  @default("store_1")
+  id                String   @id @default(cuid())
+  storeId           String   @default("store_1")
   menuItemCloudId   String
   substituteCloudId String
-  priceCents        Int     @default(0)  // per-item extra price
-  recipeQtyMl       Int?    // per-item recipe consumption (ml), SQLite-compatible
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -1304,12 +926,12 @@ model CloudShotPricingRule {
 }
 
 model CloudMenuItemOptionGroup {
-  id               String @id @default(cuid())
-  storeId          String @default("store_1")
-  menuItemCloudId  String
-  groupCloudId     String
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  id              String   @id @default(cuid())
+  storeId         String   @default("store_1")
+  menuItemCloudId String
+  groupCloudId    String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   @@unique([storeId, menuItemCloudId, groupCloudId])
   @@index([storeId])
@@ -1317,15 +939,14 @@ model CloudMenuItemOptionGroup {
   @@index([groupCloudId])
 }
 
-// Per-item drink sizes by mode (from cloud drinkSizeConfigs). Option IDs are CloudMenuOption.cloudId.
 model CloudMenuItemDrinkSizeConfig {
-  id               String   @id @default(cuid())
-  storeId          String   @default("store_1")
-  menuItemCloudId  String
-  mode             String   // ICED | HOT | CONCENTRATED
-  optionCloudId    String
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  id              String   @id @default(cuid())
+  storeId         String   @default("store_1")
+  menuItemCloudId String
+  mode            String
+  optionCloudId   String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   @@unique([storeId, menuItemCloudId, mode, optionCloudId])
   @@index([storeId])
@@ -1372,7 +993,7 @@ model CloudRecipeLineSize {
   storeId           String    @default("store_1")
   menuItemCloudId   String
   ingredientCloudId String
-  baseType          String    // ICED | HOT | CONCENTRATED
+  baseType          String
   sizeCode          String
   qtyPerItem        Decimal
   unitCode          String
@@ -1393,9 +1014,160 @@ model SyncState {
   lastSyncAt     DateTime?
 }
 
-// Synced from cloud StoreSetting (admin PIN for offline verification)
 model CloudStoreSetting {
-  id           String    @id @default("1")
+  id           String   @id @default("1")
   adminPinHash String?
-  updatedAt    DateTime  @updatedAt
+  updatedAt    DateTime @updatedAt
+}
+
+enum PrepArea {
+  BAR
+  KITCHEN
+}
+
+enum OrderStatus {
+  PLACED
+  ACCEPTED
+  IN_PREP
+  READY
+  COMPLETED
+  CANCELLED
+  VOID_REQUESTED
+}
+
+enum OrderSource {
+  STAFF_MANUAL
+  QR_UNPAID
+  QR_PAYMONGO
+  FOODPANDA
+  GRABFOOD
+  BFCAPP
+  FUNCTION_ROOM
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  GCASH
+  PAYMONGO
+  FOODPANDA
+  GRABFOOD
+  BFCAPP
+  TO_BE_DECIDED
+}
+
+enum PaymentStatus {
+  UNPAID
+  PENDING
+  PAID
+  VOID
+}
+
+enum OptionGroupType {
+  SINGLE
+  MULTI
+}
+
+enum TabType {
+  FUNCTION_ROOM
+}
+
+enum TabStatus {
+  OPEN
+  CLOSED
+}
+
+enum VoidRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum MilkType {
+  FULL_CREAM
+  OAT
+  ALMOND
+  SOY
+}
+
+enum ShotsPricingMode {
+  ESPRESSO_FREE2_PAIR40
+  PAIR40_NO_FREE
+}
+
+enum ShotsDefaultSource {
+  MANUAL
+  INVENTORY
+}
+
+enum RegisterSessionStatus {
+  OPEN
+  CLOSED
+}
+
+enum TransactionSource {
+  POS
+  QR
+  FUNCTION_ROOM
+  FOODPANDA
+  GRABFOOD
+  BFCAPP
+}
+
+enum TransactionStatus {
+  OPEN
+  PAID
+  VOID
+}
+
+enum ServiceType {
+  DINE_IN
+  TO_GO
+  DELIVERY
+}
+
+enum TransactionPaymentStatus {
+  PAID
+  VOID
+}
+
+enum AuditAction {
+  REGISTER_OPEN
+  REGISTER_CLOSE
+  DRAWER_OPEN
+  TRANSACTION_CREATE
+  TRANSACTION_VOID
+  ORDER_CANCEL
+  VOID_REQUEST_CREATE
+  VOID_REQUEST_DECIDE
+  CATALOG_UPDATE
+  PRICE_UPDATE
+}
+
+enum InventoryMovementType {
+  PURCHASE
+  CONSUMPTION
+  WASTAGE
+  ADJUSTMENT
+  COUNT_CORRECTION
+  TRANSFER_IN
+  TRANSFER_OUT
+}
+
+enum InventoryCountType {
+  BEGIN_SHIFT
+  END_SHIFT
+  SPOT
+}
+
+enum InventoryCountStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+}
+
+enum LocalOutboxStatus {
+  PENDING
+  SENT
+  FAILED
 }

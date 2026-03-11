@@ -161,13 +161,11 @@ model MenuItemAddOn {
 model Substitute {
   id         String   @id @default(cuid())
   name       String
-  priceCents Int      @default(0)  // legacy/fallback; prefer SubstitutePrice by size+mode
   isActive   Boolean  @default(true)
   sortOrder  Int      @default(0)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  recipeLines       SubstituteRecipeLine[]
   recipeConsumption SubstituteRecipeConsumption[]
   menuItemLinks     MenuItemSubstitute[]
   asDefaultFor      MenuItem[] @relation("MenuItemDefaultSubstitute")
@@ -193,47 +191,32 @@ model SubstitutePrice {
   @@index([sizeId])
 }
 
-model SubstituteRecipeLine {
-  id           String   @id @default(cuid())
-  substituteId String
-  ingredientId String
-  qtyPerItem   Decimal  @db.Decimal(20, 10)
-  unitCode     String
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-
-  substitute Substitute @relation(fields: [substituteId], references: [id], onDelete: Cascade)
-  ingredient Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
-
-  @@unique([substituteId, ingredientId])
-  @@index([substituteId])
-  @@index([ingredientId])
-}
-
-// Global recipe consumption matrix: per substitute × size × mode (ml consumed)
+// Global recipe consumption matrix: per substitute × size × mode (ingredient + qty + unit)
 model SubstituteRecipeConsumption {
   id           String    @id @default(cuid())
   substituteId String
   sizeId       String
   mode         DrinkMode
-  qtyMl        Decimal   @db.Decimal(20, 10)
+  ingredientId String
+  qtyPerItem   Decimal   @db.Decimal(20, 10)
+  unitCode     String
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
   substitute Substitute @relation(fields: [substituteId], references: [id], onDelete: Cascade)
   size       MenuSize   @relation(fields: [sizeId], references: [id], onDelete: Cascade)
+  ingredient Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
 
   @@unique([substituteId, sizeId, mode])
   @@index([substituteId])
   @@index([sizeId])
+  @@index([ingredientId])
 }
 
 model MenuItemSubstitute {
   id           String   @id @default(cuid())
   itemId       String
   substituteId String
-  priceCents   Int      @default(0)  // per-item extra price
-  recipeQtyMl  Decimal? @db.Decimal(20, 10)  // per-item recipe consumption (ml)
 
   item      MenuItem   @relation(fields: [itemId], references: [id], onDelete: Cascade)
   substitute Substitute @relation(fields: [substituteId], references: [id], onDelete: Cascade)
@@ -682,7 +665,7 @@ model Ingredient {
   recipeLinesSize       RecipeLineSize[]
   optionChoiceRecipeLines   OptionChoiceRecipeLine[]
   addOnRecipeLines          AddOnRecipeLine[]
-  substituteRecipeLines     SubstituteRecipeLine[]
+  substituteRecipeConsumptions SubstituteRecipeConsumption[]
   addOnOptionRecipeLines    AddOnOptionRecipeLine[]
   substituteOptionRecipeLines SubstituteOptionRecipeLine[]
   stockMovements        StockMovement[]

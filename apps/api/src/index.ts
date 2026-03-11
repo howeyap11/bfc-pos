@@ -323,13 +323,25 @@ app.get("/items/:id", async (req) => {
     const substituteIds = new Set(substituteLinks.map((l) => l.substituteCloudId));
     const itemAddOns = addOns.filter((a) => addOnIds.has(a.cloudId)).map((a) => ({ id: a.cloudId, name: a.name, priceCents: a.priceCents }));
     const itemSubstitutes = substitutes.filter((s) => substituteIds.has(s.cloudId)).map((s) => {
-      const sub = s as { cloudId: string; name: string; priceCents: number; prices?: Array<{ sizeCloudId: string; mode: string; priceCents: number }>; recipeConsumption?: Array<{ sizeCloudId: string; mode: string; qtyMl: string }> };
+      const sub = s as {
+        cloudId: string;
+        name: string;
+        priceCents: number;
+        prices?: Array<{ sizeCloudId: string; mode: string; priceCents: number }>;
+        recipeConsumption?: Array<{ sizeCloudId: string; mode: string; ingredientCloudId: string; qtyPerItem: string; unitCode: string }>;
+      };
       return {
         id: sub.cloudId,
         name: sub.name,
         priceCents: sub.priceCents,
         prices: (sub.prices ?? []).map((p) => ({ sizeCloudId: p.sizeCloudId, mode: p.mode, priceCents: p.priceCents })),
-        recipeConsumption: (sub.recipeConsumption ?? []).map((r) => ({ sizeCloudId: r.sizeCloudId, mode: r.mode, qtyMl: r.qtyMl })),
+        recipeConsumption: (sub.recipeConsumption ?? []).map((r) => ({
+          sizeCloudId: r.sizeCloudId,
+          mode: r.mode,
+          ingredientCloudId: r.ingredientCloudId,
+          qtyPerItem: r.qtyPerItem,
+          unitCode: r.unitCode,
+        })),
       };
     });
     const defaultSubId = (cloud as { defaultSubstituteCloudId?: string | null }).defaultSubstituteCloudId ?? null;

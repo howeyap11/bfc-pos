@@ -209,7 +209,9 @@ type SyncResponse = {
     substituteId: string;
     sizeId: string;
     mode: string;
-    qtyMl: string;
+    ingredientId: string;
+    qtyPerItem: string;
+    unitCode: string;
   }>;
   menuItemAddOnGroups?: { itemId: string; groupId: string }[];
   menuItemSubstituteGroups?: { itemId: string; groupId: string }[];
@@ -626,8 +628,8 @@ export async function syncCatalogFromCloud(
         for (const s of flatSubstitutes) {
           await tx.cloudSubstitute.upsert({
             where: { cloudId: s.id },
-            create: { cloudId: s.id, storeId, name: s.name, priceCents: s.priceCents ?? 0, sortOrder: s.sortOrder ?? 0 },
-            update: { name: s.name, priceCents: s.priceCents ?? 0, sortOrder: s.sortOrder ?? 0 },
+            create: { cloudId: s.id, storeId, name: s.name, priceCents: 0, sortOrder: s.sortOrder ?? 0 },
+            update: { name: s.name, sortOrder: s.sortOrder ?? 0 },
           });
         }
         await tx.cloudSubstitutePrice.deleteMany({ where: { storeId } });
@@ -671,13 +673,22 @@ export async function syncCatalogFromCloud(
           (r) => validSubstituteCloudIds.has(r.substituteId) && validSizeCloudIds.has(r.sizeId)
         );
         if (validRecipeRows.length > 0) {
+          const validIngredientCloudIds = new Set((data.ingredients ?? []).map((i: { id: string }) => i.id));
+          const recipeRowsWithIngredient = validRecipeRows.filter((r) => validIngredientCloudIds.has(r.ingredientId));
+          if (recipeRowsWithIngredient.length < validRecipeRows.length) {
+            console.warn("[SyncCatalog] cloudSubstituteRecipeConsumption: skipped rows with missing ingredient", {
+              skipped: validRecipeRows.length - recipeRowsWithIngredient.length,
+            });
+          }
           await tx.cloudSubstituteRecipeConsumption.createMany({
-            data: validRecipeRows.map((r) => ({
+            data: recipeRowsWithIngredient.map((r) => ({
               storeId,
               substituteCloudId: r.substituteId,
               sizeCloudId: r.sizeId,
               mode: r.mode,
-              qtyMl: r.qtyMl,
+              ingredientCloudId: r.ingredientId,
+              qtyPerItem: r.qtyPerItem,
+              unitCode: r.unitCode,
             })),
           });
         }
