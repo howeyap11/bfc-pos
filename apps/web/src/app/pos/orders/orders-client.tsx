@@ -4,6 +4,23 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { COLORS } from "@/lib/theme";
 
+type OrderLineItem = {
+  id: string;
+  qty: number;
+  unitPrice: number;
+  lineNote: string | null;
+  item: {
+    id: string;
+    name: string;
+    imageUrl?: string | null;
+    category: { name: string; prepArea?: string } | null;
+  } | null;
+  options: Array<{
+    id: string;
+    option: { name: string; group: { name: string } | null } | null;
+  }>;
+};
+
 type PosOrder = {
   id: string;
   orderNo: number;
@@ -14,20 +31,31 @@ type PosOrder = {
   customerNote: string | null;
   createdAt: string;
   table: { id: string; label: string; zone: { code: string; name: string } | null } | null;
-  items: Array<{
-    id: string;
-    qty: number;
-    unitPrice: number;
-    lineNote: string | null;
-    item: { id: string; name: string; category: { name: string } | null } | null;
-    options: Array<{
-      id: string;
-      option: { name: string; group: { name: string } | null } | null;
-    }>;
-  }>;
+  items: OrderLineItem[];
 };
 
 const POLL_INTERVAL_MS = 5000;
+
+function getMinutesElapsed(createdAt: string): number {
+  return Math.floor((Date.now() - new Date(createdAt).getTime()) / 60_000);
+}
+
+function getTimerColor(minutes: number): string {
+  if (minutes >= 30) return "#ef4444"; // Red
+  if (minutes >= 20) return "#eab308"; // Yellow
+  return "#ffffff"; // White (< 20 min)
+}
+
+function groupItemsByPrepArea(items: OrderLineItem[]): { KITCHEN: OrderLineItem[]; BAR: OrderLineItem[] } {
+  const kitchen: OrderLineItem[] = [];
+  const bar: OrderLineItem[] = [];
+  for (const li of items) {
+    const prepArea = li.item?.category?.prepArea;
+    if (prepArea === "KITCHEN") kitchen.push(li);
+    else bar.push(li);
+  }
+  return { KITCHEN: kitchen, BAR: bar };
+}
 
 export default function OrdersClient() {
   const router = useRouter();
@@ -38,6 +66,7 @@ export default function OrdersClient() {
   const [error, setError] = useState<string | null>(null);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const [newOrderBadge, setNewOrderBadge] = useState(0);
+  const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
 
   useEffect(() => {
     try {
@@ -247,6 +276,176 @@ export default function OrdersClient() {
           <p style={{ color: COLORS.textSecondary }}>Loading orders...</p>
         ) : orders.length === 0 ? (
           <p style={{ color: COLORS.textSecondary }}>No orders.</p>
+        ) : innerTab === "pending" ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            {orders.map((o) => {
+              const minutes = getMinutesElapsed(o.createdAt);
+              const timerColor = getTimerColor(minutes);
+              const isExpanded = expandedOrderId === o.id;
+              const { KITCHEN: kitchenItems, BAR: barItems } = groupItemsByPrepArea(o.items);
+              return (
+                <div
+                  key={o.id}
+                  style={{
+                    background: COLORS.bgPanel,
+                    borderRadius: 12,
+                    padding: 16,
+                    border: `2px solid ${COLORS.borderLight}`,
+                    overflow: "hidden",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      cursor: "pointer",
+                      marginBottom: isExpanded ? 16 : 0,
+                    }}
+                    onClick={() => setExpandedOrderId((id) => (id === o.id ? null : o.id))}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                      <span style={{ fontSize: 18, fontWeight: "700", color: timerColor, display: "flex", alignItems: "center", gap: 6 }}>
+                        <span>🕐</span>
+                        <span>{Math.floor(minutes / 60)}:{String(minutes % 60).padStart(2, "0")}</span>
+                      </span>
+                      {isExpanded && (
+                        <span style={{ fontSize: 16, fontWeight: "600", color: COLORS.textPrimary }}>
+                          order #{String(o.orderNo).padStart(4, "0")}
+                        </span>
+                      )}
+                    </div>
+                    <span style={{ fontSize: 14, color: timerColor, fontWeight: "600" }}>
+                      {isExpanded ? "▼" : "▶"}
+                    </span>
+                  </div>
+                  {isExpanded ? (
+                    <>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 16, marginBottom: 16 }}>
+                        {kitchenItems.length > 0 && (
+                          <div>
+                            <h4 style={{ margin: "0 0 8px 0", fontSize: 12, fontWeight: "700", color: COLORS.textSecondary, textTransform: "uppercase" }}>
+                              Kitchen
+                            </h4>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+                              {kitchenItems.map((li) => (
+                                <div
+                                  key={li.id}
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 10,
+                                    background: "#2a2a2a",
+                                    padding: "10px 14px",
+                                    borderRadius: 10,
+                                    minWidth: 180,
+                                  }}
+                                >
+                                  {li.item?.imageUrl && (
+                                    <img
+                                      src={li.item.imageUrl}
+                                      alt=""
+                                      style={{ width: 44, height: 44, borderRadius: 8, objectFit: "cover" }}
+                                    />
+                                  )}
+                                  <div>
+                                    <span style={{ fontWeight: "600", color: COLORS.textPrimary }}>
+                                      x{li.qty} {li.item?.name ?? "Item"}
+                                    </span>
+                                    {li.options.length > 0 && (
+                                      <div style={{ fontSize: 12, color: COLORS.textSecondary }}>
+                                        {li.options.map((x) => x.option?.name).filter(Boolean).join(", ")}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {barItems.length > 0 && (
+                          <div>
+                            <h4 style={{ margin: "0 0 8px 0", fontSize: 12, fontWeight: "700", color: COLORS.textSecondary, textTransform: "uppercase" }}>
+                              Bar
+                            </h4>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+                              {barItems.map((li) => (
+                                <div
+                                  key={li.id}
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 10,
+                                    background: "#2a2a2a",
+                                    padding: "10px 14px",
+                                    borderRadius: 10,
+                                    minWidth: 180,
+                                  }}
+                                >
+                                  {li.item?.imageUrl && (
+                                    <img
+                                      src={li.item.imageUrl}
+                                      alt=""
+                                      style={{ width: 44, height: 44, borderRadius: 8, objectFit: "cover" }}
+                                    />
+                                  )}
+                                  <div>
+                                    <span style={{ fontWeight: "600", color: COLORS.textPrimary }}>
+                                      x{li.qty} {li.item?.name ?? "Item"}
+                                    </span>
+                                    {li.options.length > 0 && (
+                                      <div style={{ fontSize: 12, color: COLORS.textSecondary }}>
+                                        {li.options.map((x) => x.option?.name).filter(Boolean).join(", ")}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                      {kitchenItems.length > 0 && (
+                        <div style={{ fontSize: 13, color: COLORS.textSecondary }}>
+                          <strong style={{ color: COLORS.textPrimary }}>Kitchen:</strong>{" "}
+                          {kitchenItems.map((li) => `x${li.qty} ${li.item?.name ?? "Item"}`).join(", ")}
+                        </div>
+                      )}
+                      {barItems.length > 0 && (
+                        <div style={{ fontSize: 13, color: COLORS.textSecondary }}>
+                          <strong style={{ color: COLORS.textPrimary }}>Bar:</strong>{" "}
+                          {barItems.map((li) => `x${li.qty} ${li.item?.name ?? "Item"}`).join(", ")}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      router.push(`/pos/register?qrOrderId=${o.id}`);
+                    }}
+                    style={{
+                      marginTop: 16,
+                      padding: "10px 18px",
+                      fontSize: 14,
+                      fontWeight: "600",
+                      background: COLORS.primary,
+                      color: "#fff",
+                      border: "none",
+                      borderRadius: 8,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Accept / Process
+                  </button>
+                </div>
+              );
+            })}
+          </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             {orders.map((o) => (

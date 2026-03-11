@@ -28,7 +28,12 @@ export const posOrdersRoutes: FastifyPluginAsync = async (app) => {
         table: { include: { zone: true } },
         items: {
           include: {
-            item: { include: { category: true } },
+            item: {
+              include: {
+                category: true,
+                images: { orderBy: [{ isPrimary: "desc" }, { sort: "asc" }], take: 1 },
+              },
+            },
             options: { include: { option: { include: { group: true } } } },
           },
         },
@@ -60,7 +65,10 @@ export const posOrdersRoutes: FastifyPluginAsync = async (app) => {
           ? {
               id: oi.item.id,
               name: oi.item.name,
-              category: oi.item.category ? { name: oi.item.category.name } : null,
+              category: oi.item.category
+                ? { name: oi.item.category.name, prepArea: oi.item.category.prepArea }
+                : null,
+              imageUrl: oi.item.images[0]?.url ?? null,
             }
           : null,
         options: oi.options.map((opt) => ({

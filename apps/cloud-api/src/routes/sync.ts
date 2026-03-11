@@ -390,4 +390,97 @@ export async function syncRoutes(app: FastifyInstance) {
       return { valid: false };
     }
   });
+
+  // --- Device commands (POS polling) - auth via X-Device-Key ---
+  async function resolveDeviceFromKey(
+    req: FastifyRequest,
+    reply: FastifyReply
+  ): Promise<{ id: string; storeId: string } | null> {
+    const key = (req.headers["x-device-key"] as string) || "";
+    if (!key.trim()) {
+      reply.code(401);
+      return null;
+    }
+    const device = await app.prisma.device.findUnique({ where: { deviceKey: key } });
+    if (!device) {
+      reply.code(401);
+      return null;
+    }
+    return { id: device.id, storeId: device.storeId };
+  }
+
+  // GET /sync/commands/pending - returns PENDING commands for this device
+  app.get("/commands/pending", async (req: FastifyRequest, reply: FastifyReply) => {
+    const device = await resolveDeviceFromKey(req, reply);
+    if (!device) return;
+
+    const commands = await app.prisma.deviceCommand.findMany({
+      where: { deviceId: device.id, status: "PENDING" },
+      orderBy: { createdAt: "asc" },
+    });
+    return { commands: commands.map((c) => ({ id: c.id, type: c.type, createdAt: c.createdAt.toISOString() })) };
+  });
+
+  // POST /sync/commands/:id/status - update command status (RUNNING, SUCCESS, FAILED)
+  app.post(
+    "/commands/:id/status",
+    async (
+      req: FastifyRequest<{ Params: { id: string }; Body: { status: "RUNNING" | "SUCCESS" | "FAILED"; errorMessage?: string } }>,
+      reply: FastifyReply
+    ) => {
+      const device = await resolveDeviceFromKey(req, reply);
+      if (!device) return;
+
+      const parsed = z
+        .object({
+          status: z.enum(["RUNNING", "SUCCESS", "FAILED"]),
+          errorMessage: z.string().optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) {
+        reply.code(400);
+        return { error: "INVALID_BODY", message: parsed.error.message };
+      }
+
+      const cmd = await app.prisma.deviceCommand.findFirst({
+        where: { id: req.params.id, deviceId: device.id },
+      });
+      if (!cmd) {
+        reply.code(404);
+        return { error: "NOT_FOUND" };
+      }
+
+      const now = new Date();
+      const updates = {
+        status: parsed.data.status as "RUNNING" | "SUCCESS" | "FAILED",
+        updatedAt: now,
+        ...(parsed.data.errorMessage !== undefined && { errorMessage: parsed.data.errorMessage }),
+        ...(parsed.data.status === "RUNNING" && !cmd.startedAt && { startedAt: now }),
+        ...((parsed.data.status === "SUCCESS" || parsed.data.status === "FAILED") && { completedAt: now }),
+      };
+      await app.prisma.deviceCommand.update({ where: { id: cmd.id }, data: updates });
+      return { ok: true };
+    }
+  );
+
+  // POST /sync/device/heartbeat - report lastSeen, posVersion
+  app.post(
+    "/device/heartbeat",
+    async (
+      req: FastifyRequest<{ Body: { posVersion?: string } }>,
+      reply: FastifyReply
+    ) => {
+      const device = await resolveDeviceFromKey(req, reply);
+      if (!device) return;
+
+      const parsed = z.object({ posVersion: z.string().optional() }).safeParse(req.body || {});
+      const posVersion = parsed.success ? parsed.data.posVersion : undefined;
+
+      await app.prisma.device.update({
+        where: { id: device.id },
+        data: { lastSeenAt: new Date(), posVersion: posVersion ?? undefined, updatedAt: new Date() },
+      });
+      return { ok: true };
+    }
+  );
 }

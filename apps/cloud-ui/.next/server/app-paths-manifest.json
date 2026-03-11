@@ -10,6 +10,7 @@
   "/items/page": "app/items/page.js",
   "/login/page": "app/login/page.js",
   "/menu-settings/add-ons/page": "app/menu-settings/add-ons/page.js",
+  "/menu-settings/ingredients/page": "app/menu-settings/ingredients/page.js",
   "/menu-settings/modifiers/page": "app/menu-settings/modifiers/page.js",
   "/menu-settings/page": "app/menu-settings/page.js",
   "/menu-settings/shots/page": "app/menu-settings/shots/page.js",

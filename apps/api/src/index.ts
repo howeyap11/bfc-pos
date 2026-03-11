@@ -38,6 +38,8 @@ import { storeConfigRoutes } from "./routes/storeConfig";
 import { ensureItemForCloudId } from "./services/catalogCache.service";
 import { syncCatalogFromCloud } from "./services/syncCatalog.service.js";
 import { startSyncScheduler, runTransactionSyncFlush } from "./services/syncScheduler.js";
+import { startDeviceCommandPolling } from "./services/deviceCommandPolling.service.js";
+import { getCommandState } from "./services/commandState.service.js";
 
 const app = Fastify({ logger: true });
 
@@ -64,6 +66,16 @@ await app.register(storeConfigRoutes);
 
 // Public routes (MUST be before listen)
 app.get("/health", async () => ({ ok: true }));
+
+app.get("/device/status", async () => {
+  const { state: commandState, errorMessage } = getCommandState();
+  return {
+    version: process.env.POS_VERSION ?? "1.0.0",
+    deviceConfigured: !!process.env.DEVICE_KEY,
+    commandState,
+    ...(errorMessage && { errorMessage }),
+  };
+});
 
 app.get("/ready", async (req, reply) => {
   try {
@@ -546,6 +558,7 @@ try {
   app.log.info({ port, dbPath, mode }, "API started");
 
   startSyncScheduler(app);
+  startDeviceCommandPolling(app);
 
   syncCatalogFromCloud(app.prisma, "default")
     .then((outcome) => {

@@ -21,6 +21,7 @@ export default function CategoriesPage() {
   const [subName, setSubName] = useState<Record<string, string>>({});
   const [expandedCat, setExpandedCat] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [deleteSubModal, setDeleteSubModal] = useState<{ sub: SubCategory; categoryId: string } | null>(null);
 
   function refresh() {
     setLoading(true);
@@ -97,16 +98,17 @@ export default function CategoriesPage() {
     }
   }
 
-  async function handleDeleteSubCategory(sub: SubCategory) {
-    if (!confirm(`Delete subcategory "${sub.name}"?`)) return;
+  async function handleDeleteSubCategory(sub: SubCategory, categoryId: string, moveToId?: string) {
+    if (!moveToId && !confirm(`Delete subcategory "${sub.name}"?`)) return;
     setError("");
     try {
-      await api.deleteSubCategory(sub.id);
+      await api.deleteSubCategory(sub.id, moveToId ? { moveItemsToSubCategoryId: moveToId } : undefined);
+      setDeleteSubModal(null);
       refresh();
     } catch (err: unknown) {
       const body = (err as { body?: { error?: string } })?.body;
       if (body?.error === "SUBCATEGORY_NOT_EMPTY") {
-        setError("Cannot delete: subcategory has items. Delete or move them first.");
+        setDeleteSubModal({ sub, categoryId });
       } else {
         setError(err instanceof Error ? err.message : "Failed");
       }
@@ -212,7 +214,7 @@ export default function CategoriesPage() {
                           </div>
                           <button
                             type="button"
-                            onClick={() => handleDeleteSubCategory(sc)}
+                            onClick={() => handleDeleteSubCategory(sc, cat.id)}
                             className="text-red-600 hover:underline"
                           >
                             Delete
@@ -240,6 +242,78 @@ export default function CategoriesPage() {
         />
       )}
       {safeCategories.length === 0 && !loading && <p className="text-gray-500">No categories yet.</p>}
+
+      {deleteSubModal && (
+        <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-lg border bg-white p-6 shadow-lg">
+            <h3 className="mb-2 font-semibold">Subcategory has items</h3>
+            <p className="mb-4 text-sm text-gray-600">
+              Move items from "{deleteSubModal.sub.name}" to another subcategory, then delete.
+            </p>
+            <DeleteSubModalContent
+              sub={deleteSubModal.sub}
+              categoryId={deleteSubModal.categoryId}
+              categories={safeCategories}
+              onMoveAndDelete={(moveToId) => handleDeleteSubCategory(deleteSubModal.sub, deleteSubModal.categoryId, moveToId)}
+              onCancel={() => setDeleteSubModal(null)}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DeleteSubModalContent({
+  sub,
+  categoryId,
+  categories,
+  onMoveAndDelete,
+  onCancel,
+}: {
+  sub: SubCategory;
+  categoryId: string;
+  categories: Category[];
+  onMoveAndDelete: (moveToId: string) => void;
+  onCancel: () => void;
+}) {
+  const [moveToId, setMoveToId] = useState("");
+  const cat = categories.find((c) => c.id === categoryId);
+  const others = (cat ? normalizeSubCategories(cat.subCategories) : []).filter((s) => s.id !== sub.id);
+  return (
+    <div>
+      <select
+        value={moveToId}
+        onChange={(e) => setMoveToId(e.target.value)}
+        className="mb-4 w-full rounded border border-gray-300 px-3 py-2 text-sm"
+      >
+        <option value="">Select subcategory to move items to</option>
+        {others.map((s) => (
+          <option key={s.id} value={s.id}>
+            {s.name}
+          </option>
+        ))}
+      </select>
+      {others.length === 0 && (
+        <p className="mb-4 text-sm text-amber-600">No other subcategories in this category. Add one first.</p>
+      )}
+      <div className="flex justify-end gap-2">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-50"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={() => moveToId && onMoveAndDelete(moveToId)}
+          disabled={!moveToId}
+          className="rounded bg-red-600 px-3 py-1.5 text-sm text-white hover:bg-red-700 disabled:opacity-50"
+        >
+          Move & Delete
+        </button>
+      </div>
     </div>
   );
 }

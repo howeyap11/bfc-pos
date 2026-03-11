@@ -34,6 +34,7 @@ import { storeConfigRoutes } from "./routes/storeConfig";
 import { ensureItemForCloudId } from "./services/catalogCache.service";
 import { syncCatalogFromCloud } from "./services/syncCatalog.service.js";
 import { startSyncScheduler, runTransactionSyncFlush } from "./services/syncScheduler.js";
+import { startDeviceCommandPolling } from "./services/deviceCommandPolling.service.js";
 const app = Fastify({ logger: true });
 // Plugins
 await app.register(cors, { origin: true });
@@ -56,6 +57,10 @@ await app.register(adminSyncRoutes);
 await app.register(storeConfigRoutes);
 // Public routes (MUST be before listen)
 app.get("/health", async () => ({ ok: true }));
+app.get("/device/status", async () => ({
+    version: process.env.POS_VERSION ?? "1.0.0",
+    deviceConfigured: !!process.env.DEVICE_KEY,
+}));
 app.get("/ready", async (req, reply) => {
     try {
         await app.prisma.$queryRaw `SELECT 1`;
@@ -292,7 +297,7 @@ app.get("/items/:id", async (req) => {
                 where: { menuItemCloudId: cloud.cloudId, storeId },
             }),
             app.prisma.cloudAddOn.findMany({ where: { storeId }, orderBy: { sortOrder: "asc" } }),
-            app.prisma.cloudSubstitute.findMany({ where: { storeId }, include: { prices: true }, orderBy: { sortOrder: "asc" } }),
+            app.prisma.cloudSubstitute.findMany({ where: { storeId }, include: { prices: true, recipeConsumption: true }, orderBy: { sortOrder: "asc" } }),
         ]);
         const addOnIds = new Set(addOnLinks.map((l) => l.addOnCloudId));
         const substituteIds = new Set(substituteLinks.map((l) => l.substituteCloudId));
@@ -304,6 +309,13 @@ app.get("/items/:id", async (req) => {
                 name: sub.name,
                 priceCents: sub.priceCents,
                 prices: (sub.prices ?? []).map((p) => ({ sizeCloudId: p.sizeCloudId, mode: p.mode, priceCents: p.priceCents })),
+                recipeConsumption: (sub.recipeConsumption ?? []).map((r) => ({
+                    sizeCloudId: r.sizeCloudId,
+                    mode: r.mode,
+                    ingredientCloudId: r.ingredientCloudId,
+                    qtyPerItem: r.qtyPerItem,
+                    unitCode: r.unitCode,
+                })),
             };
         });
         const defaultSubId = cloud.defaultSubstituteCloudId ?? null;
@@ -482,6 +494,7 @@ try {
     await app.listen({ host: "0.0.0.0", port });
     app.log.info({ port, dbPath, mode }, "API started");
     startSyncScheduler(app);
+    startDeviceCommandPolling(app);
     syncCatalogFromCloud(app.prisma, "default")
         .then((outcome) => {
         if (outcome.ok) {

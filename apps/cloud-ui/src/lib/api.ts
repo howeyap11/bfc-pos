@@ -408,6 +408,29 @@ export type DailyReport = {
 
 export type MonthlyReport = Omit<DailyReport, "date"> & { year: number; month: number };
 
+export type DeviceCommandRow = {
+  id: string;
+  type: string;
+  status: string;
+  errorMessage: string | null;
+  createdAt: string;
+  completedAt: string | null;
+};
+
+export type DeviceInfo = {
+  id: string;
+  storeId: string;
+  name: string;
+  deviceKeyPreview: string | null;
+  lastSeenAt: string | null;
+  posVersion: string | null;
+  recentCommands: DeviceCommandRow[];
+};
+
+export type DeviceDetail = DeviceInfo & {
+  commands: DeviceCommandRow[];
+};
+
 export const api = {
   getItems(includeDeleted?: boolean): Promise<MenuItem[]> {
     const qs = includeDeleted ? "?includeDeleted=1" : "";
@@ -533,8 +556,13 @@ export const api = {
   reorderSubCategories(order: { id: string; sortOrder: number }[]): Promise<SubCategory[]> {
     return apiFetch("/admin/subcategories/reorder", { method: "POST", body: JSON.stringify({ order }) });
   },
-  deleteSubCategory(id: string): Promise<void> {
-    return apiFetch(`/admin/subcategories/${id}`, { method: "DELETE" });
+  deleteSubCategory(id: string, options?: { moveItemsToSubCategoryId: string }): Promise<void> {
+    return apiFetch(`/admin/subcategories/${id}`, {
+      method: "DELETE",
+      ...(options?.moveItemsToSubCategoryId
+        ? { body: JSON.stringify({ moveItemsToSubCategoryId: options.moveItemsToSubCategoryId }) }
+        : {}),
+    });
   },
   getOptionGroups(): Promise<MenuOptionGroup[]> {
     return apiFetch("/admin/option-groups");
@@ -908,6 +936,23 @@ export const api = {
     if (params.year) q.set("year", String(params.year));
     if (params.month) q.set("month", String(params.month));
     return apiFetch(`/admin/reports/monthly?${q}`);
+  },
+
+  // Device management & remote commands
+  getDevices(): Promise<{ devices: DeviceInfo[] }> {
+    return apiFetch("/admin/devices");
+  },
+  createDevice(body: { name: string; storeId?: string }): Promise<{ device: DeviceInfo & { deviceKey: string } }> {
+    return apiFetch("/admin/devices", { method: "POST", body: JSON.stringify(body) });
+  },
+  getDevice(id: string): Promise<{ device: DeviceDetail }> {
+    return apiFetch(`/admin/devices/${id}`);
+  },
+  createDeviceCommand(deviceId: string, type: "UPDATE_POS" | "RESTART_POS" | "FORCE_SYNC"): Promise<{ command: { id: string; type: string; status: string; createdAt: string } }> {
+    return apiFetch(`/admin/devices/${deviceId}/commands`, { method: "POST", body: JSON.stringify({ type }) });
+  },
+  deleteDevice(id: string): Promise<{ ok: boolean }> {
+    return apiFetch(`/admin/devices/${id}`, { method: "DELETE" });
   },
 
   async uploadIngredientImage(id: string, file: File): Promise<{ imageUrl: string }> {

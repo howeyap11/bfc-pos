@@ -10,6 +10,7 @@
   "/items/page": "/items",
   "/login/page": "/login",
   "/menu-settings/add-ons/page": "/menu-settings/add-ons",
+  "/menu-settings/ingredients/page": "/menu-settings/ingredients",
   "/menu-settings/modifiers/page": "/menu-settings/modifiers",
   "/menu-settings/page": "/menu-settings",
   "/menu-settings/shots/page": "/menu-settings/shots",

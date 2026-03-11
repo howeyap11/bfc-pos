@@ -35,7 +35,7 @@ export async function syncRoutes(app) {
         }
         // Bootstrap (sinceVersion 0): return all entities. Incremental: only version > sinceVersion.
         const versionFilter = sinceVersion === 0 ? { gte: 0 } : { gt: sinceVersion };
-        const [catalogVersion, items, addOnGroups, substituteGroups, substitutes, substitutePrices, menuItemAddOnGroups, menuItemSubstituteGroups, menuItemSubstitutes, ingredientsVersioned, recipeLinesVersioned, recipeLineSizesVersioned, categories, subCategories, menuOptionGroups, menuOptions, menuOptionGroupSections, menuItemOptionGroups, menuItemSizes, menuSizes, menuItemSizePrices, transactionTypes, shotPricingRules, storeSetting,] = await Promise.all([
+        const [catalogVersion, items, addOnGroups, substituteGroups, substitutes, substitutePrices, substituteRecipeConsumptions, menuItemAddOnGroups, menuItemSubstituteGroups, menuItemSubstitutes, ingredientsVersioned, recipeLinesVersioned, recipeLineSizesVersioned, categories, subCategories, menuOptionGroups, menuOptions, menuOptionGroupSections, menuItemOptionGroups, menuItemSizes, menuSizes, menuItemSizePrices, transactionTypes, shotPricingRules, storeSetting,] = await Promise.all([
             app.prisma.catalogVersion.findUnique({ where: { id: 1 } }),
             app.prisma.menuItem.findMany({
                 where: { version: versionFilter },
@@ -46,8 +46,9 @@ export async function syncRoutes(app) {
             }),
             app.prisma.addOnGroup.findMany({ where: { isActive: true }, include: { options: { where: { isActive: true }, include: { recipeLines: { include: { ingredient: true } } }, orderBy: { sortOrder: "asc" } } }, orderBy: { sortOrder: "asc" } }),
             app.prisma.substituteGroup.findMany({ where: { isActive: true }, include: { options: { where: { isActive: true }, include: { recipeLines: { include: { ingredient: true } } }, orderBy: { sortOrder: "asc" } } }, orderBy: { sortOrder: "asc" } }),
-            app.prisma.substitute.findMany({ where: { isActive: true }, include: { recipeLines: { include: { ingredient: true } }, prices: { include: { size: true } } }, orderBy: { sortOrder: "asc" } }),
+            app.prisma.substitute.findMany({ where: { isActive: true }, include: { prices: { include: { size: true } }, recipeConsumption: { include: { size: true, ingredient: true } } }, orderBy: { sortOrder: "asc" } }),
             app.prisma.substitutePrice.findMany({ include: { size: true } }),
+            app.prisma.substituteRecipeConsumption.findMany({ include: { size: true, ingredient: true } }),
             app.prisma.menuItemAddOnGroup.findMany(),
             app.prisma.menuItemSubstituteGroup.findMany(),
             app.prisma.menuItemSubstitute.findMany(),
@@ -236,14 +237,8 @@ export async function syncRoutes(app) {
             substitutes: substitutes.map((s) => ({
                 id: s.id,
                 name: s.name,
-                priceCents: s.priceCents,
                 isActive: s.isActive,
                 sortOrder: s.sortOrder,
-                recipeLines: s.recipeLines.map((r) => ({
-                    ingredientId: r.ingredientId,
-                    qtyPerItem: r.qtyPerItem.toString(),
-                    unitCode: r.unitCode,
-                })),
             })),
             substitutePrices: substitutePrices.map((p) => ({
                 id: p.id,
@@ -253,17 +248,19 @@ export async function syncRoutes(app) {
                 priceCents: p.priceCents,
                 size: p.size ? { id: p.size.id, label: p.size.label } : undefined,
             })),
+            substituteRecipeConsumptions: substituteRecipeConsumptions.map((r) => ({
+                id: r.id,
+                substituteId: r.substituteId,
+                sizeId: r.sizeId,
+                mode: r.mode,
+                ingredientId: r.ingredientId,
+                qtyPerItem: r.qtyPerItem.toString(),
+                unitCode: r.unitCode,
+                size: r.size ? { id: r.size.id, label: r.size.label } : undefined,
+            })),
             menuItemAddOnGroups: menuItemAddOnGroups.map((l) => ({ itemId: l.itemId, groupId: l.groupId })),
             menuItemSubstituteGroups: menuItemSubstituteGroups.map((l) => ({ itemId: l.itemId, groupId: l.groupId })),
-            menuItemSubstitutes: menuItemSubstitutes.map((l) => {
-                const link = l;
-                return {
-                    itemId: link.itemId,
-                    substituteId: link.substituteId,
-                    priceCents: link.priceCents ?? 0,
-                    recipeQtyMl: link.recipeQtyMl != null ? Number(link.recipeQtyMl) : null,
-                };
-            }),
+            menuItemSubstitutes: menuItemSubstitutes.map((l) => ({ itemId: l.itemId, substituteId: l.substituteId })),
         };
     });
     // Import transaction from POS (idempotent)
@@ -355,5 +352,76 @@ export async function syncRoutes(app) {
         catch {
             return { valid: false };
         }
+    });
+    // --- Device commands (POS polling) - auth via X-Device-Key ---
+    async function resolveDeviceFromKey(req, reply) {
+        const key = req.headers["x-device-key"] || "";
+        if (!key.trim()) {
+            reply.code(401);
+            return null;
+        }
+        const device = await app.prisma.device.findUnique({ where: { deviceKey: key } });
+        if (!device) {
+            reply.code(401);
+            return null;
+        }
+        return { id: device.id, storeId: device.storeId };
+    }
+    // GET /sync/commands/pending - returns PENDING commands for this device
+    app.get("/commands/pending", async (req, reply) => {
+        const device = await resolveDeviceFromKey(req, reply);
+        if (!device)
+            return;
+        const commands = await app.prisma.deviceCommand.findMany({
+            where: { deviceId: device.id, status: "PENDING" },
+            orderBy: { createdAt: "asc" },
+        });
+        return { commands: commands.map((c) => ({ id: c.id, type: c.type, createdAt: c.createdAt.toISOString() })) };
+    });
+    // POST /sync/commands/:id/status - update command status (RUNNING, SUCCESS, FAILED)
+    app.post("/commands/:id/status", async (req, reply) => {
+        const device = await resolveDeviceFromKey(req, reply);
+        if (!device)
+            return;
+        const parsed = z
+            .object({
+            status: z.enum(["RUNNING", "SUCCESS", "FAILED"]),
+            errorMessage: z.string().optional(),
+        })
+            .safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", message: parsed.error.message };
+        }
+        const cmd = await app.prisma.deviceCommand.findFirst({
+            where: { id: req.params.id, deviceId: device.id },
+        });
+        if (!cmd) {
+            reply.code(404);
+            return { error: "NOT_FOUND" };
+        }
+        const now = new Date();
+        const updates = {
+            status: parsed.data.status,
+            updatedAt: now,
+            ...(parsed.data.errorMessage !== undefined && { errorMessage: parsed.data.errorMessage }),
+            ...(parsed.data.status === "RUNNING" && !cmd.startedAt && { startedAt: now }),
+            ...((parsed.data.status === "SUCCESS" || parsed.data.status === "FAILED") && { completedAt: now }),
+        };
+        await app.prisma.deviceCommand.update({ where: { id: cmd.id }, data: updates });
+        return { ok: true };
+    });
+    // POST /sync/device/heartbeat - report lastSeen, posVersion
+    app.post("/device/heartbeat", async (req, reply) => {
+        const device = await resolveDeviceFromKey(req, reply);
+        if (!device)
+            return;
+        const parsed = z.object({ posVersion: z.string().optional() }).safeParse(req.body || {});
+        const posVersion = parsed.success ? parsed.data.posVersion : undefined;
+        await app.prisma.device.update({
+            where: { id: device.id },
+            data: { lastSeenAt: new Date(), posVersion: posVersion ?? undefined, updatedAt: new Date() },
+        });
+        return { ok: true };
     });
 }

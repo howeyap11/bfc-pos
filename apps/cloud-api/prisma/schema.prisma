@@ -556,6 +556,52 @@ model SyncedTransaction {
   @@index([storeId, createdAt])
 }
 
+// POS devices - one per physical mini PC
+model Device {
+  id          String   @id @default(cuid())
+  storeId     String   @default("store_1")
+  name        String   // e.g. "Café POS 1"
+  deviceKey   String   @unique // secret for polling auth; owner copies to POS .env
+  lastSeenAt  DateTime?
+  posVersion  String?  // reported by POS
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  commands DeviceCommand[]
+
+  @@index([storeId])
+}
+
+enum DeviceCommandType {
+  UPDATE_POS
+  RESTART_POS
+  FORCE_SYNC
+}
+
+enum DeviceCommandStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+model DeviceCommand {
+  id          String            @id @default(cuid())
+  deviceId    String
+  type        DeviceCommandType
+  status      DeviceCommandStatus @default(PENDING)
+  errorMessage String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  device Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId])
+  @@index([deviceId, status])
+}
+
 model IngredientCategory {
   id        String   @id @default(cuid())
   name      String   @unique

@@ -2298,8 +2298,8 @@ export async function adminRoutes(app) {
     app.get("/substitutes", async () => {
         return app.prisma.substitute.findMany({
             include: {
-                recipeLines: { include: { ingredient: true } },
                 prices: { include: { size: true } },
+                recipeConsumption: { include: { size: true, ingredient: true } },
             },
             orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
         });
@@ -2307,7 +2307,6 @@ export async function adminRoutes(app) {
     app.post("/substitutes", async (req, reply) => {
         const parsed = z.object({
             name: z.string().min(1),
-            priceCents: z.number().int().min(0).optional(),
             isActive: z.boolean().optional(),
             sortOrder: z.number().int().optional(),
         }).safeParse(req.body);
@@ -2320,7 +2319,6 @@ export async function adminRoutes(app) {
         return app.prisma.substitute.create({
             data: {
                 name: parsed.data.name,
-                priceCents: parsed.data.priceCents ?? 0,
                 isActive: parsed.data.isActive ?? true,
                 sortOrder,
             },
@@ -2330,7 +2328,6 @@ export async function adminRoutes(app) {
         const { id } = req.params;
         const parsed = z.object({
             name: z.string().min(1).optional(),
-            priceCents: z.number().int().min(0).optional(),
             isActive: z.boolean().optional(),
             sortOrder: z.number().int().optional(),
         }).partial().safeParse(req.body);
@@ -2358,59 +2355,6 @@ export async function adminRoutes(app) {
         }
         await app.prisma.substitute.delete({ where: { id } });
         return { ok: true };
-    });
-    app.get("/substitutes/:id/recipe", async (req, reply) => {
-        const sub = await app.prisma.substitute.findUnique({
-            where: { id: req.params.id },
-            include: { recipeLines: { include: { ingredient: true } } },
-        });
-        if (!sub) {
-            reply.code(404);
-            return { error: "NOT_FOUND", message: "Substitute not found" };
-        }
-        return { lines: sub.recipeLines };
-    });
-    app.put("/substitutes/:id/recipe", async (req, reply) => {
-        const { id } = req.params;
-        const sub = await app.prisma.substitute.findUnique({ where: { id } });
-        if (!sub) {
-            reply.code(404);
-            return { error: "NOT_FOUND", message: "Substitute not found" };
-        }
-        const parsed = z.object({
-            lines: z.array(z.object({
-                ingredientId: z.string().min(1),
-                qtyPerItem: z.number().positive(),
-                unitCode: z.string().min(1),
-            })),
-        }).safeParse(req.body);
-        if (!parsed.success) {
-            reply.code(400);
-            return { error: "INVALID_BODY", details: parsed.error.flatten() };
-        }
-        for (const line of parsed.data.lines) {
-            const ing = await app.prisma.ingredient.findUnique({ where: { id: line.ingredientId }, select: { id: true } });
-            if (!ing) {
-                reply.code(400);
-                return { error: "INVALID_INGREDIENT", message: `Ingredient ${line.ingredientId} not found` };
-            }
-        }
-        await app.prisma.substituteRecipeLine.deleteMany({ where: { substituteId: id } });
-        if (parsed.data.lines.length > 0) {
-            await app.prisma.substituteRecipeLine.createMany({
-                data: parsed.data.lines.map((l) => ({
-                    substituteId: id,
-                    ingredientId: l.ingredientId,
-                    qtyPerItem: l.qtyPerItem,
-                    unitCode: l.unitCode,
-                })),
-            });
-        }
-        const lines = await app.prisma.substituteRecipeLine.findMany({
-            where: { substituteId: id },
-            include: { ingredient: true },
-        });
-        return { lines };
     });
     // Substitute prices by size + mode (primary pricing for milk substitutes)
     const drinkModeSchema = z.enum(["ICED", "HOT", "CONCENTRATED"]);
@@ -2458,17 +2402,71 @@ export async function adminRoutes(app) {
         });
         return { prices };
     });
+    // Substitute recipe consumption by size + mode (global matrix: ingredient + qty + unit)
+    app.put("/substitutes/:id/recipe-consumption", async (req, reply) => {
+        const { id } = req.params;
+        const sub = await app.prisma.substitute.findUnique({ where: { id } });
+        if (!sub) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Substitute not found" };
+        }
+        const parsed = z.object({
+            rows: z.array(z.object({
+                sizeId: z.string(),
+                mode: drinkModeSchema,
+                ingredientId: z.string().min(1),
+                qtyPerItem: z.number().min(0),
+                unitCode: z.string().min(1),
+            })),
+        }).safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten() };
+        }
+        const sizesGroup = await app.prisma.menuSettingGroup.findUnique({ where: { key: SIZES_GROUP_KEY }, include: { menuSizes: true } });
+        if (!sizesGroup) {
+            reply.code(404);
+            return { error: "SIZES_GROUP_NOT_FOUND", message: "Sizes group not found. Run db:seed." };
+        }
+        const validSizeIds = new Set(sizesGroup.menuSizes.map((s) => s.id));
+        for (const r of parsed.data.rows) {
+            if (!validSizeIds.has(r.sizeId)) {
+                reply.code(400);
+                return { error: "INVALID_SIZE_ID", message: `Size id ${r.sizeId} is not in Menu Settings > Sizes` };
+            }
+            const ing = await app.prisma.ingredient.findUnique({ where: { id: r.ingredientId }, select: { id: true } });
+            if (!ing) {
+                reply.code(400);
+                return { error: "INVALID_INGREDIENT", message: `Ingredient ${r.ingredientId} not found` };
+            }
+        }
+        await bumpCatalogVersion(app.prisma);
+        await app.prisma.substituteRecipeConsumption.deleteMany({ where: { substituteId: id } });
+        if (parsed.data.rows.length > 0) {
+            await app.prisma.substituteRecipeConsumption.createMany({
+                data: parsed.data.rows.map((r) => ({
+                    substituteId: id,
+                    sizeId: r.sizeId,
+                    mode: r.mode,
+                    ingredientId: r.ingredientId,
+                    qtyPerItem: r.qtyPerItem,
+                    unitCode: r.unitCode,
+                })),
+                skipDuplicates: true,
+            });
+        }
+        const recipeConsumption = await app.prisma.substituteRecipeConsumption.findMany({
+            where: { substituteId: id },
+            include: { size: true, ingredient: true },
+        });
+        return { recipeConsumption };
+    });
     // Link item to flat substitutes + default milk: PUT /admin/items/:id/substitutes (primary)
-    // Payload: { substitutes: [{ substituteId, priceCents, recipeQtyMl }], defaultSubstituteId }
+    // Payload: { substituteIds: string[], defaultSubstituteId: string | null }
     app.put("/items/:id/substitutes", async (req, reply) => {
         const { id } = req.params;
-        const substituteEntrySchema = z.object({
-            substituteId: z.string(),
-            priceCents: z.number().int().min(0),
-            recipeQtyMl: z.number().min(0).optional().nullable(),
-        });
         const parsed = z.object({
-            substitutes: z.array(substituteEntrySchema),
+            substituteIds: z.array(z.string()),
             defaultSubstituteId: z.string().nullable(),
         }).safeParse(req.body);
         if (!parsed.success) {
@@ -2484,9 +2482,8 @@ export async function adminRoutes(app) {
             reply.code(400);
             return { error: "ITEM_DELETED", message: "Cannot edit a deleted item. Restore it first." };
         }
-        const substitutes = parsed.data.substitutes;
-        if (substitutes.length > 0) {
-            const substituteIds = substitutes.map((s) => s.substituteId);
+        const substituteIds = parsed.data.substituteIds;
+        if (substituteIds.length > 0) {
             const uniqueIds = new Set(substituteIds);
             if (uniqueIds.size !== substituteIds.length) {
                 reply.code(400);
@@ -2501,12 +2498,6 @@ export async function adminRoutes(app) {
                 reply.code(400);
                 return { error: "DEFAULT_MUST_BE_ALLOWED", message: "Default milk must be one of the allowed substitutes for this item" };
             }
-            for (const s of substitutes) {
-                if (s.recipeQtyMl != null && s.recipeQtyMl < 0) {
-                    reply.code(400);
-                    return { error: "INVALID_RECIPE_QTY", message: "recipeQtyMl must be non-negative when provided" };
-                }
-            }
             const subs = await app.prisma.substitute.findMany({ where: { id: { in: substituteIds } }, select: { id: true, isActive: true } });
             if (subs.length !== substituteIds.length) {
                 reply.code(400);
@@ -2519,14 +2510,9 @@ export async function adminRoutes(app) {
             }
         }
         await app.prisma.menuItemSubstitute.deleteMany({ where: { itemId: id } });
-        if (substitutes.length > 0) {
+        if (substituteIds.length > 0) {
             await app.prisma.menuItemSubstitute.createMany({
-                data: substitutes.map((s) => ({
-                    itemId: id,
-                    substituteId: s.substituteId,
-                    priceCents: s.priceCents,
-                    recipeQtyMl: s.recipeQtyMl != null ? s.recipeQtyMl : null,
-                })),
+                data: substituteIds.map((substituteId) => ({ itemId: id, substituteId })),
                 skipDuplicates: true,
             });
             await app.prisma.menuItem.update({

@@ -1692,14 +1692,37 @@ export async function adminRoutes(app: FastifyInstance) {
     return app.prisma.subCategory.update({ where: { id }, data: parsed.data });
   });
 
-  app.delete("/subcategories/:id", async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+  app.delete("/subcategories/:id", async (req: FastifyRequest<{ Params: { id: string }; Body?: { moveItemsToSubCategoryId?: string } }>, reply: FastifyReply) => {
     const { id } = req.params;
+    const moveToId = (req.body as { moveItemsToSubCategoryId?: string } | undefined)?.moveItemsToSubCategoryId;
     const itemCount = await app.prisma.menuItem.count({ where: { subCategoryId: id, deletedAt: null } });
+
     if (itemCount > 0) {
-      reply.code(409);
-      return { error: "SUBCATEGORY_NOT_EMPTY", message: "Cannot delete: subcategory has items" };
+      if (!moveToId) {
+        reply.code(409);
+        return { error: "SUBCATEGORY_NOT_EMPTY", message: "Cannot delete: subcategory has items" };
+      }
+      const sub = await app.prisma.subCategory.findUnique({ where: { id }, select: { categoryId: true } });
+      const target = await app.prisma.subCategory.findUnique({ where: { id: moveToId }, select: { categoryId: true, deletedAt: true } });
+      if (!sub || !target || target.deletedAt) {
+        reply.code(404);
+        return { error: "TARGET_NOT_FOUND", message: "Target subcategory not found" };
+      }
+      if (target.categoryId !== sub.categoryId) {
+        reply.code(400);
+        return { error: "TARGET_DIFFERENT_CATEGORY", message: "Items must be moved to a subcategory in the same category" };
+      }
+      if (moveToId === id) {
+        reply.code(400);
+        return { error: "TARGET_SELF", message: "Cannot move items to the same subcategory" };
+      }
+      await app.prisma.$transaction([
+        app.prisma.menuItem.updateMany({ where: { subCategoryId: id, deletedAt: null }, data: { subCategoryId: moveToId } }),
+        app.prisma.subCategory.update({ where: { id }, data: { deletedAt: new Date() } }),
+      ]);
+    } else {
+      await app.prisma.subCategory.update({ where: { id }, data: { deletedAt: new Date() } });
     }
-    await app.prisma.subCategory.update({ where: { id }, data: { deletedAt: new Date() } });
     return { ok: true };
   });
 
