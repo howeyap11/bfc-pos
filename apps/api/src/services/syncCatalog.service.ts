@@ -206,7 +206,7 @@ type SyncResponse = {
   }>;
   menuItemAddOnGroups?: { itemId: string; groupId: string }[];
   menuItemSubstituteGroups?: { itemId: string; groupId: string }[];
-  menuItemSubstitutes?: { itemId: string; substituteId: string; priceCents?: number; recipeQtyMl?: number | null }[];
+  menuItemSubstitutes?: { itemId: string; substituteId: string }[];
   storeSettings?: { adminPinHash: string | null };
 };
 
@@ -659,12 +659,10 @@ export async function syncCatalogFromCloud(
         }
         await tx.cloudMenuItemSubstitute.deleteMany({ where: { storeId } });
         const subLinks = data.menuItemSubstitutes ?? [];
-        const subRows: Array<{ storeId: string; menuItemCloudId: string; substituteCloudId: string; priceCents: number; recipeQtyMl: number | null }> = subLinks.map((l) => ({
+        const subRows: Array<{ storeId: string; menuItemCloudId: string; substituteCloudId: string }> = subLinks.map((l) => ({
           storeId,
           menuItemCloudId: l.itemId,
           substituteCloudId: l.substituteId,
-          priceCents: l.priceCents ?? 0,
-          recipeQtyMl: l.recipeQtyMl != null ? l.recipeQtyMl : null,
         }));
         const dedupedSubRows = Array.from(
           new Map(subRows.map((r) => [`${r.storeId}:${r.menuItemCloudId}:${r.substituteCloudId}`, r])).values()
@@ -688,11 +686,11 @@ export async function syncCatalogFromCloud(
         }
         await tx.cloudMenuItemSubstitute.deleteMany({ where: { storeId } });
         const subGroupLinks = data.menuItemSubstituteGroups ?? [];
-        const subRows: Array<{ storeId: string; menuItemCloudId: string; substituteCloudId: string; priceCents: number; recipeQtyMl: number | null }> = [];
+        const subRows: Array<{ storeId: string; menuItemCloudId: string; substituteCloudId: string }> = [];
         for (const l of subGroupLinks) {
           const opts = subOptionsByGroup.get(l.groupId) ?? [];
           for (const o of opts) {
-            subRows.push({ storeId, menuItemCloudId: l.itemId, substituteCloudId: o.id, priceCents: 0, recipeQtyMl: null });
+            subRows.push({ storeId, menuItemCloudId: l.itemId, substituteCloudId: o.id });
           }
         }
         const dedupedSubRows = Array.from(

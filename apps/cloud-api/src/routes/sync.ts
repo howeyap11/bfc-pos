@@ -290,15 +290,7 @@ export async function syncRoutes(app: FastifyInstance) {
         })),
         menuItemAddOnGroups: menuItemAddOnGroups.map((l) => ({ itemId: l.itemId, groupId: l.groupId })),
         menuItemSubstituteGroups: menuItemSubstituteGroups.map((l) => ({ itemId: l.itemId, groupId: l.groupId })),
-        menuItemSubstitutes: menuItemSubstitutes.map((l) => {
-          const link = l as { itemId: string; substituteId: string; priceCents?: number; recipeQtyMl?: number | string | null };
-          return {
-            itemId: link.itemId,
-            substituteId: link.substituteId,
-            priceCents: link.priceCents ?? 0,
-            recipeQtyMl: link.recipeQtyMl != null ? Number(link.recipeQtyMl) : null,
-          };
-        }),
+        menuItemSubstitutes: menuItemSubstitutes.map((l) => ({ itemId: l.itemId, substituteId: l.substituteId })),
       };
     }
   );
