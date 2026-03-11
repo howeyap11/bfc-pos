@@ -667,10 +667,14 @@ export const api = {
   putItemAddOnGroups(itemId: string, groupIds: string[]): Promise<{ addOnGroupLinks: { group: AddOnGroup }[] }> {
     return apiFetch(`/admin/items/${itemId}/add-on-groups`, { method: "PUT", body: JSON.stringify({ groupIds }) });
   },
-  putItemSubstitutes(itemId: string, substituteIds: string[], defaultSubstituteId: string | null): Promise<{ substituteLinks: { substitute: Substitute }[]; defaultSubstituteId: string | null; defaultSubstitute: Substitute | null }> {
+  putItemSubstitutes(
+    itemId: string,
+    substitutes: { substituteId: string; priceCents: number; recipeQtyMl: number | null }[],
+    defaultSubstituteId: string | null
+  ): Promise<{ substituteLinks: { substitute: Substitute }[]; defaultSubstituteId: string | null; defaultSubstitute: Substitute | null }> {
     return apiFetch(`/admin/items/${itemId}/substitutes`, {
       method: "PUT",
-      body: JSON.stringify({ substituteIds, defaultSubstituteId }),
+      body: JSON.stringify({ substitutes, defaultSubstituteId }),
     });
   },
   putItemSubstituteGroups(itemId: string, groupIds: string[], defaultSubstituteOptionId: string | null): Promise<{ substituteGroupLinks: { group: SubstituteGroup }[]; defaultSubstituteOptionId: string | null; defaultSubstituteOption: SubstituteOption | null }> {

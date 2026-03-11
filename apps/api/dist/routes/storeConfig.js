@@ -1,26 +1,39 @@
+// apps/api/src/routes/storeConfig.ts
+import fp from "fastify-plugin";
+import { requireStaffHook } from "../plugins/staffGuard.js";
 const STORE_ID = "store_1";
-export const storeConfigRoutes = async (app) => {
+const storeConfigRoutesImpl = async (app) => {
     // GET /store-config - Get store configuration (public, no auth required)
     app.get("/store-config", async (req, reply) => {
-        const config = await app.prisma.storeConfig.findUnique({
-            where: { storeId: STORE_ID },
-        });
-        if (!config) {
-            return reply.code(404).send({ error: "Store config not found" });
+        try {
+            const config = await app.prisma.storeConfig.findUnique({
+                where: { storeId: STORE_ID },
+            });
+            if (!config) {
+                return {
+                    storeId: STORE_ID,
+                    enabledPaymentMethods: ["CASH"],
+                    splitPaymentEnabled: true,
+                    paymentMethodOrder: null,
+                };
+            }
+            const enabledPaymentMethods = JSON.parse(config.enabledPaymentMethods || "[]");
+            const paymentMethodOrder = config.paymentMethodOrder ? JSON.parse(config.paymentMethodOrder) : null;
+            return {
+                storeId: config.storeId,
+                enabledPaymentMethods,
+                splitPaymentEnabled: config.splitPaymentEnabled ?? true,
+                paymentMethodOrder,
+            };
         }
-        // Parse JSON fields
-        const enabledPaymentMethods = JSON.parse(config.enabledPaymentMethods);
-        const paymentMethodOrder = config.paymentMethodOrder ? JSON.parse(config.paymentMethodOrder) : null;
-        return {
-            storeId: config.storeId,
-            enabledPaymentMethods,
-            splitPaymentEnabled: config.splitPaymentEnabled,
-            paymentMethodOrder,
-        };
+        catch (err) {
+            app.log.error({ err }, "[StoreConfig] Error loading config");
+            return reply.code(500).send({ error: "STORE_CONFIG_LOAD_FAILED", message: "Failed to load store config" });
+        }
     });
     // PUT /store-config - Update store configuration (protected by staff auth)
     app.put("/store-config", {
-        preHandler: app.requireStaff,
+        preHandler: requireStaffHook,
     }, async (req, reply) => {
         const body = req.body;
         const updateData = {};
@@ -52,3 +65,4 @@ export const storeConfigRoutes = async (app) => {
         };
     });
 };
+export const storeConfigRoutes = fp(storeConfigRoutesImpl, { name: "storeConfigRoutes", dependencies: ["prisma"] });

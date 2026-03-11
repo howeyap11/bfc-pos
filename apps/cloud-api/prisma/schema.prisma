@@ -210,9 +210,11 @@ model SubstituteRecipeLine {
 }
 
 model MenuItemSubstitute {
-  id           String @id @default(cuid())
+  id           String   @id @default(cuid())
   itemId       String
   substituteId String
+  priceCents   Int      @default(0)  // per-item extra price
+  recipeQtyMl  Decimal? @db.Decimal(20, 10)  // per-item recipe consumption (ml)
 
   item      MenuItem   @relation(fields: [itemId], references: [id], onDelete: Cascade)
   substitute Substitute @relation(fields: [substituteId], references: [id], onDelete: Cascade)

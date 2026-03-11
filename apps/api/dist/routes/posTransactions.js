@@ -7,22 +7,31 @@ const STORE_ID = "store_1";
 function sum(nums) {
     return nums.reduce((a, b) => a + b, 0);
 }
-function calculateShotsUpcharge(shotsQty, pricingMode) {
-    if (shotsQty === 0 || !pricingMode)
+function calculateShotsUpcharge(shotsQty, pricingMode, defaultShots, shotRule) {
+    if (shotsQty === 0)
+        return 0;
+    // Cloud: use synced rule with default included shots (null defaultShots = 0 free)
+    if (shotRule && defaultShots != null) {
+        const defShots = typeof defaultShots === "number" ? defaultShots : 0;
+        const extraShots = Math.max(0, shotsQty - defShots);
+        if (extraShots === 0)
+            return 0;
+        const bundles = Math.ceil(extraShots / shotRule.shotsPerBundle);
+        return bundles * shotRule.priceCentsPerBundle;
+    }
+    // Legacy: shotsPricingMode
+    if (!pricingMode)
         return 0;
     if (pricingMode === "ESPRESSO_FREE2_PAIR40") {
-        // First 2 shots are FREE
         const extraShots = Math.max(0, shotsQty - 2);
         if (extraShots === 0)
             return 0;
-        // Charge ₱40 per 2 shots beyond the first 2
         const chargedPairs = Math.ceil(extraShots / 2);
-        return chargedPairs * 4000; // 4000 cents = ₱40
+        return chargedPairs * 4000;
     }
-    else if (pricingMode === "PAIR40_NO_FREE") {
-        // All shots charged at ₱40 per 2-shot pair
+    if (pricingMode === "PAIR40_NO_FREE") {
         const pairs = Math.ceil(shotsQty / 2);
-        return pairs * 4000; // 4000 cents = ₱40 per pair
+        return pairs * 4000;
     }
     return 0;
 }
@@ -145,7 +154,7 @@ export async function posTransactionsRoutes(app) {
         }
         const cloudItems = await app.prisma.cloudMenuItem.findMany({
             where: { cloudId: { in: cloudIds }, storeId: STORE_ID },
-            select: { cloudId: true, isDrink: true, serveVessel: true },
+            select: { cloudId: true, isDrink: true, serveVessel: true, defaultShots: true },
         });
         const cloudItemMap = new Map(cloudItems.map((c) => [c.cloudId, c]));
         const dbOptions = await app.prisma.option.findMany({
@@ -167,6 +176,14 @@ export async function posTransactionsRoutes(app) {
             { name: o.name, priceDelta: o.priceDelta, groupName: cloudGroupNameMap.get(o.groupCloudId) ?? "" },
         ]));
         const discountCents = Math.max(0, Math.trunc(Number(body.discountCents ?? 0)));
+        // Active shot pricing rule (for cloud items when Item.shotsPricingMode is null)
+        const shotRuleRow = await app.prisma.cloudShotPricingRule.findFirst({
+            where: { storeId: STORE_ID, isActive: true },
+            orderBy: { sortOrder: "asc" },
+        });
+        const shotRule = shotRuleRow
+            ? { shotsPerBundle: shotRuleRow.shotsPerBundle, priceCentsPerBundle: shotRuleRow.priceCentsPerBundle }
+            : null;
         // Load per-size pricing for sized items (baseType + size selection)
         const sizedItems = body.items.filter((it) => it.baseType && it.sizeLabel);
         const sizePriceMap = new Map();
@@ -208,7 +225,9 @@ export async function posTransactionsRoutes(app) {
             let modifiersCents = sum(deltas);
             // Add espresso shots upcharge (server-side recalculation for money safety)
             const shotsQty = it.shotsQty ?? 0;
-            const shotsUpchargeCents = calculateShotsUpcharge(shotsQty, dbItem.shotsPricingMode);
+            const cloudItem = cloudItemMap.get(it.itemId);
+            const defaultShots = cloudItem?.defaultShots ?? null;
+            const shotsUpchargeCents = calculateShotsUpcharge(shotsQty, dbItem.shotsPricingMode, defaultShots, shotRule);
             modifiersCents += shotsUpchargeCents;
             // Add milk upcharge (₱10 for non-default milk)
             const milkUpchargeCents = calculateMilkUpcharge(it.milkChoice, dbItem.defaultMilk);
@@ -271,7 +290,6 @@ export async function posTransactionsRoutes(app) {
                 });
             }
             const optionsJson = JSON.stringify(optionsData);
-            const cloudItem = cloudItemMap.get(it.itemId);
             return {
                 itemId: dbItem.id,
                 name: dbItem.name,
@@ -380,6 +398,7 @@ export async function posTransactionsRoutes(app) {
             const lineItemsList = transaction.lineItems.map((l) => ({ name: l.name, qty: l.qty, lineTotal: l.lineTotal }));
             const uploadResult = await uploadTransactionToCloud(app.prisma, { ...transaction, status: "PAID" }, paymentsList, lineItemsList);
             if (!uploadResult.ok) {
+                console.log("[TransactionSync] Transaction queued for cloud sync (retry)", { transactionId: transaction.id });
                 await enqueueOutbox(app.prisma, {
                     storeId: transaction.storeId,
                     topic: "transaction.cloud.sync",
@@ -475,6 +494,7 @@ export async function posTransactionsRoutes(app) {
         const lineItemsList = voided.lineItems.map((l) => ({ name: l.name, qty: l.qty, lineTotal: l.lineTotal }));
         const uploadResult = await uploadTransactionToCloud(app.prisma, voided, paymentsList, lineItemsList);
         if (!uploadResult.ok) {
+            console.log("[TransactionSync] Transaction queued for cloud sync (retry)", { transactionId: voided.id });
             await enqueueOutbox(app.prisma, {
                 storeId: voided.storeId,
                 topic: "transaction.cloud.sync",

@@ -5,7 +5,7 @@ import cors from "@fastify/cors";
 import prismaPlugin from "./plugins/prisma";
 import inventoryServicePlugin from "./plugins/inventoryService";
 import { staffGuardPlugin } from "./plugins/staffGuard";
-import { staffRoutes } from "./routes/staff";
+import { staffRoutesPlugin } from "./routes/staff";
 import { staffQueueRoutes } from "./routes/staffQueue";
 import { posOrdersRoutes } from "./routes/posOrders";
 import { orderStatusRoutes } from "./routes/orderStatus";
@@ -16,6 +16,7 @@ import { registerRoutes } from "./routes/register";
 import { posTransactionsRoutes } from "./routes/posTransactions";
 import { drawerRoutes } from "./routes/drawer";
 import { adminSyncRoutes } from "./routes/admin/adminSync";
+import { storeConfigRoutes } from "./routes/storeConfig";
 import { ensureItemForCloudId } from "./services/catalogCache.service";
 import { syncCatalogFromCloud } from "./services/syncCatalog.service.js";
 import { startSyncScheduler, runTransactionSyncFlush } from "./services/syncScheduler.js";
@@ -26,7 +27,7 @@ await app.register(prismaPlugin);
 await app.register(inventoryServicePlugin);
 await app.register(staffGuardPlugin);
 // Staff routes (some public: /staff, /staff/login, /staff/verify-admin-pin)
-await app.register(staffRoutes);
+await app.register(staffRoutesPlugin);
 // Staff routes (protected by x-staff-key inside the route files)
 await app.register(staffQueueRoutes);
 await app.register(posOrdersRoutes);
@@ -38,6 +39,7 @@ await app.register(registerRoutes);
 await app.register(posTransactionsRoutes);
 await app.register(drawerRoutes);
 await app.register(adminSyncRoutes);
+await app.register(storeConfigRoutes);
 // Public routes (MUST be before listen)
 app.get("/health", async () => ({ ok: true, ts: Date.now() }));
 app.get("/tables", async () => {
@@ -48,42 +50,29 @@ app.get("/tables", async () => {
 });
 // Catalog from local cache - offline-first, no cloud dependency
 // Returns Category[] with items, using CloudCategory, CloudSubCategory, CloudMenuItem
-app.get("/menu", async () => {
-    const [categories, subCategories, items] = await Promise.all([
-        app.prisma.cloudCategory.findMany({
-            where: { storeId: "store_1" },
-            orderBy: { sortOrder: "asc" },
-        }),
-        app.prisma.cloudSubCategory.findMany({
-            where: { storeId: "store_1" },
-            orderBy: { sortOrder: "asc" },
-        }),
-        app.prisma.cloudMenuItem.findMany({
-            where: { storeId: "store_1", isActive: true, deletedAt: null },
-            orderBy: { name: "asc" },
-        }),
-    ]);
-    const subCategoryMap = new Map(subCategories.map((s) => [s.cloudId, s.name]));
-    const result = categories.map((cat) => ({
-        id: cat.cloudId,
-        name: cat.name,
-        items: items
-            .filter((i) => i.categoryCloudId === cat.cloudId)
-            .map((i) => ({
-            id: i.cloudId,
-            name: i.name,
-            basePrice: i.priceCents,
-            description: null,
-            imageUrl: i.imageUrl,
-            series: i.subCategoryCloudId ? subCategoryMap.get(i.subCategoryCloudId) ?? "Other" : "Other",
-        })),
-    }));
-    const uncategorized = items.filter((i) => !i.categoryCloudId);
-    if (uncategorized.length > 0) {
-        result.push({
-            id: "_uncategorized",
-            name: "Uncategorized",
-            items: uncategorized.map((i) => ({
+app.get("/menu", async (req, reply) => {
+    try {
+        const [categories, subCategories, items] = await Promise.all([
+            app.prisma.cloudCategory.findMany({
+                where: { storeId: "store_1" },
+                orderBy: { sortOrder: "asc" },
+            }),
+            app.prisma.cloudSubCategory.findMany({
+                where: { storeId: "store_1" },
+                orderBy: { sortOrder: "asc" },
+            }),
+            app.prisma.cloudMenuItem.findMany({
+                where: { storeId: "store_1", isActive: true, deletedAt: null },
+                orderBy: { name: "asc" },
+            }),
+        ]);
+        const subCategoryMap = new Map((subCategories ?? []).map((s) => [s.cloudId, s.name]));
+        const result = (categories ?? []).map((cat) => ({
+            id: cat.cloudId,
+            name: cat.name,
+            items: (items ?? [])
+                .filter((i) => i.categoryCloudId === cat.cloudId)
+                .map((i) => ({
                 id: i.cloudId,
                 name: i.name,
                 basePrice: i.priceCents,
@@ -91,25 +80,50 @@ app.get("/menu", async () => {
                 imageUrl: i.imageUrl,
                 series: i.subCategoryCloudId ? subCategoryMap.get(i.subCategoryCloudId) ?? "Other" : "Other",
             })),
-        });
+        }));
+        const uncategorized = (items ?? []).filter((i) => !i.categoryCloudId);
+        if (uncategorized.length > 0) {
+            result.push({
+                id: "_uncategorized",
+                name: "Uncategorized",
+                items: uncategorized.map((i) => ({
+                    id: i.cloudId,
+                    name: i.name,
+                    basePrice: i.priceCents,
+                    description: null,
+                    imageUrl: i.imageUrl,
+                    series: i.subCategoryCloudId ? subCategoryMap.get(i.subCategoryCloudId) ?? "Other" : "Other",
+                })),
+            });
+        }
+        if (result.length === 0 && (items ?? []).length > 0) {
+            return [{ id: "menu", name: "Menu", items: (items ?? []).map((i) => ({ id: i.cloudId, name: i.name, basePrice: i.priceCents, description: null, imageUrl: i.imageUrl ?? null, series: "Other" })) }];
+        }
+        return result;
     }
-    if (result.length === 0 && items.length > 0) {
-        return [{ id: "menu", name: "Menu", items: items.map((i) => ({ id: i.cloudId, name: i.name, basePrice: i.priceCents, description: null, imageUrl: i.imageUrl, series: "Other" })) }];
+    catch (err) {
+        app.log.error({ err }, "[Menu] Error loading menu");
+        return reply.code(500).send({ error: "MENU_LOAD_FAILED", message: "Failed to load menu" });
     }
-    return result;
 });
 // Transaction types (For Here, To Go, FoodPanda, etc.)
-app.get("/transaction-types", async () => {
-    const rows = await app.prisma.cloudTransactionType.findMany({
-        where: { storeId: "store_1", isActive: true },
-        orderBy: { sortOrder: "asc" },
-    });
-    return rows.map((t) => ({
-        id: t.cloudId,
-        code: t.code,
-        label: t.label,
-        priceDeltaCents: t.priceDeltaCents,
-    }));
+app.get("/transaction-types", async (req, reply) => {
+    try {
+        const rows = await app.prisma.cloudTransactionType.findMany({
+            where: { storeId: "store_1", isActive: true },
+            orderBy: { sortOrder: "asc" },
+        });
+        return (rows ?? []).map((t) => ({
+            id: t.cloudId,
+            code: t.code,
+            label: t.label,
+            priceDeltaCents: t.priceDeltaCents,
+        }));
+    }
+    catch (err) {
+        app.log.error({ err }, "[TransactionTypes] Error loading transaction types");
+        return reply.code(500).send({ error: "TRANSACTION_TYPES_LOAD_FAILED", message: "Failed to load transaction types" });
+    }
 });
 // Shot pricing rules (bundle pricing for extra shots)
 app.get("/shot-pricing-rules", async () => {
@@ -179,14 +193,24 @@ app.get("/items/:id", async (req) => {
         const MODES = ["HOT", "ICED", "CONCENTRATED"];
         const sizesByMode = { HOT: [], ICED: [], CONCENTRATED: [] };
         for (const c of drinkConfigs) {
+            const modeKey = (c.mode || "").toUpperCase();
+            if (!MODES.includes(modeKey))
+                continue;
             const name = optionNameMap.get(c.optionCloudId);
-            if (name && sizesByMode[c.mode]) {
-                const key = `${c.mode}|${c.optionCloudId}`;
-                const priceCents = priceMap.get(key);
-                sizesByMode[c.mode].push({ id: c.optionCloudId, name, priceCents: priceCents ?? undefined });
+            if (name) {
+                const priceKey = `${modeKey}|${c.optionCloudId}`;
+                const priceCents = priceMap.get(priceKey);
+                sizesByMode[modeKey].push({ id: c.optionCloudId, name, priceCents: priceCents ?? undefined });
             }
         }
         const hasSizes = drinkConfigs.length > 0 || cloud.hasSizes;
+        // [DEBUG] Temporary - remove after verifying size UI
+        if (process.env.NODE_ENV !== "production" && drinkConfigs.length > 0) {
+            const hot = sizesByMode.HOT?.length ?? 0;
+            const iced = sizesByMode.ICED?.length ?? 0;
+            const conc = sizesByMode.CONCENTRATED?.length ?? 0;
+            app.log.info({ itemId: cloud.cloudId, drinkConfigs: drinkConfigs.length, hasSizes, hot, iced, conc }, "[items/:id] sizesByMode counts");
+        }
         const itemOptionGroups = links.map((link) => {
             const g = groupMap.get(link.groupCloudId);
             if (!g)
@@ -215,8 +239,20 @@ app.get("/items/:id", async (req) => {
             };
         }).filter(Boolean);
         const defaultShots = cloud.defaultShots ?? 0;
+        const supportsShots = cloud.supportsShots ?? false;
+        // Active shot pricing rule (for cloud items: apply to shots above default)
+        let shotPricingRule;
+        if (supportsShots) {
+            const rule = await app.prisma.cloudShotPricingRule.findFirst({
+                where: { storeId, isActive: true },
+                orderBy: { sortOrder: "asc" },
+            });
+            if (rule) {
+                shotPricingRule = { shotsPerBundle: rule.shotsPerBundle, priceCentsPerBundle: rule.priceCentsPerBundle };
+            }
+        }
         // Recipe consumption for future inventory deduction (optional)
-        const [recipeLines, recipeLineSizes] = await Promise.all([
+        const [recipeLines, recipeLineSizes, addOnLinks, substituteLinks, addOns, substitutes] = await Promise.all([
             app.prisma.cloudRecipeLine.findMany({
                 where: { menuItemCloudId: cloud.cloudId, storeId, deletedAt: null },
                 select: { ingredientCloudId: true, qtyPerItem: true, unitCode: true },
@@ -225,7 +261,29 @@ app.get("/items/:id", async (req) => {
                 where: { menuItemCloudId: cloud.cloudId, storeId, deletedAt: null },
                 select: { ingredientCloudId: true, baseType: true, sizeCode: true, qtyPerItem: true, unitCode: true },
             }),
+            app.prisma.cloudMenuItemAddOn.findMany({
+                where: { menuItemCloudId: cloud.cloudId, storeId },
+            }),
+            app.prisma.cloudMenuItemSubstitute.findMany({
+                where: { menuItemCloudId: cloud.cloudId, storeId },
+            }),
+            app.prisma.cloudAddOn.findMany({ where: { storeId }, orderBy: { sortOrder: "asc" } }),
+            app.prisma.cloudSubstitute.findMany({ where: { storeId }, select: { cloudId: true, name: true }, orderBy: { sortOrder: "asc" } }),
         ]);
+        const addOnIds = new Set(addOnLinks.map((l) => l.addOnCloudId));
+        const substituteById = new Map(substitutes.map((s) => [s.cloudId, s]));
+        const itemAddOns = addOns.filter((a) => addOnIds.has(a.cloudId)).map((a) => ({ id: a.cloudId, name: a.name, priceCents: a.priceCents }));
+        const itemSubstitutes = substituteLinks.map((link) => {
+            const sub = substituteById.get(link.substituteCloudId);
+            const l = link;
+            return {
+                id: l.substituteCloudId,
+                name: sub?.name ?? l.substituteCloudId,
+                priceCents: l.priceCents ?? 0,
+                recipeQtyMl: l.recipeQtyMl ?? null,
+            };
+        });
+        const defaultSubId = cloud.defaultSubstituteCloudId ?? null;
         return {
             id: cloud.cloudId,
             name: cloud.name,
@@ -236,9 +294,13 @@ app.get("/items/:id", async (req) => {
             serveVessel: cloud.serveVessel,
             defaultSizeOptionId: cloud.defaultSizeOptionCloudId ?? null,
             defaultMilk: "FULL_CREAM",
-            supportsShots: cloud.supportsShots ?? false,
+            defaultSubstituteCloudId: defaultSubId,
+            substitutes: itemSubstitutes.length > 0 ? itemSubstitutes : undefined,
+            addOns: itemAddOns.length > 0 ? itemAddOns : undefined,
+            supportsShots,
             defaultShots12oz: defaultShots,
             defaultShots16oz: defaultShots,
+            shotPricingRule,
             itemOptionGroups,
             hasSizes: hasSizes || undefined,
             sizesByMode: hasSizes ? sizesByMode : undefined,

@@ -1,14 +1,10 @@
-import { pipeline } from "node:stream/promises";
-import { createWriteStream } from "node:fs";
-import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { buffer } from "node:stream/consumers";
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
+import { uploadImage } from "../services/r2.service.js";
 import { bumpCatalogVersion } from "../lib/catalogVersion.js";
+import { hashPassword } from "../lib/password.js";
 import { getDrinkSizesOptionGroup, getDrinkSizesOptionIds } from "../lib/drinkSizes.js";
-const UPLOADS_ITEMS = join(process.cwd(), "uploads", "items");
-const UPLOADS_INGREDIENTS = join(process.cwd(), "uploads", "ingredients");
-const UPLOADS_SIZES = join(process.cwd(), "uploads", "sizes");
 function generateSlug(name) {
     return name
         .toLowerCase()
@@ -48,6 +44,29 @@ async function adminAuthHook(req, reply) {
 }
 export async function adminRoutes(app) {
     app.addHook("preHandler", adminAuthHook);
+    // Admin PIN (Settings > Password & PIN Codes)
+    app.get("/settings/admin-pin", async () => {
+        const row = await app.prisma.storeSetting.upsert({
+            where: { id: "1" },
+            create: { id: "1", adminPinHash: null },
+            update: {},
+        });
+        return { configured: !!row.adminPinHash };
+    });
+    app.put("/settings/admin-pin", async (req, reply) => {
+        const parsed = z.object({ pin: z.string().length(4, "PIN must be 4 digits").regex(/^\d{4}$/, "PIN must be 4 digits").refine((v) => v[0] !== "0", "PIN cannot start with 0") }).safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_PIN", message: parsed.error.issues.map((issue) => issue.message).join("; ") };
+        }
+        const hash = await hashPassword(parsed.data.pin);
+        await app.prisma.storeSetting.upsert({
+            where: { id: "1" },
+            create: { id: "1", adminPinHash: hash },
+            update: { adminPinHash: hash },
+        });
+        return { ok: true };
+    });
     // MenuItem CRUD - subCategoryId required
     const drinkTempEnum = z.enum(["HOT", "ICED", "ANY"]);
     const menuItemCreateSchema = z.object({
@@ -70,12 +89,17 @@ export async function adminRoutes(app) {
         imageUrl: z.string().optional().nullable(),
         subCategoryId: z.string().min(1, "subCategoryId is required").optional(),
         defaultSizeOptionId: z.string().optional().nullable(),
+        defaultSubstituteId: z.string().optional().nullable(),
+        defaultSubstituteOptionId: z.string().optional().nullable(),
         sortOrder: z.number().int().optional(),
         hasSizes: z.boolean().optional(),
         supportsShots: z.boolean().optional(),
         defaultShots: z.number().int().min(0).optional().nullable(),
     })
         .partial();
+    const reorderOrderSchema = z.object({
+        order: z.array(z.object({ id: z.string(), sortOrder: z.number().int().min(0) })),
+    });
     app.get("/drink-sizes", async (req, reply) => {
         const result = await getDrinkSizesOptionGroup(app.prisma);
         if (!result.ok) {
@@ -223,12 +247,10 @@ export async function adminRoutes(app) {
             reply.code(400);
             return { error: "NO_FILE" };
         }
-        await mkdir(UPLOADS_SIZES, { recursive: true });
         const ext = extFromMime(data.mimetype);
         const filename = `${randomBytes(12).toString("hex")}.${ext}`;
-        const filepath = join(UPLOADS_SIZES, filename);
-        await pipeline(data.file, createWriteStream(filepath));
-        const imageUrl = `/uploads/sizes/${filename}`;
+        const buf = await buffer(data.file);
+        const imageUrl = await uploadImage(buf, filename, data.mimetype);
         await bumpCatalogVersion(app.prisma);
         const updated = await app.prisma.menuSizeAvailability.update({
             where: { id },
@@ -523,6 +545,36 @@ export async function adminRoutes(app) {
             },
         });
     });
+    app.post("/items/reorder", async (req, reply) => {
+        const parsed = reorderOrderSchema.safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten(), message: "order array of { id, sortOrder } required" };
+        }
+        const ids = parsed.data.order.map((o) => o.id);
+        const existing = await app.prisma.menuItem.findMany({ where: { id: { in: ids } }, select: { id: true, subCategoryId: true } });
+        const foundIds = new Set(existing.map((i) => i.id));
+        const missing = ids.filter((id) => !foundIds.has(id));
+        if (missing.length > 0) {
+            reply.code(400);
+            return { error: "INVALID_IDS", message: `Item ids not found: ${missing.join(", ")}` };
+        }
+        const subIds = [...new Set(existing.map((i) => i.subCategoryId))];
+        if (subIds.length > 1) {
+            reply.code(400);
+            return { error: "MIXED_SCOPE", message: "All items must belong to the same subcategory" };
+        }
+        const version = await bumpCatalogVersion(app.prisma);
+        await app.prisma.$transaction([
+            ...parsed.data.order.map(({ id, sortOrder }) => app.prisma.menuItem.update({ where: { id }, data: { sortOrder, version } })),
+        ]);
+        const list = await app.prisma.menuItem.findMany({
+            where: { id: { in: ids } },
+            orderBy: { sortOrder: "asc" },
+            include: { category: true, subCategory: true },
+        });
+        return list;
+    });
     app.post("/items", async (req, reply) => {
         const parsed = menuItemCreateSchema.safeParse(req.body);
         if (!parsed.success) {
@@ -585,6 +637,12 @@ export async function adminRoutes(app) {
                 subCategory: true,
                 defaultSize: true,
                 defaultSizeOption: true,
+                defaultSubstitute: true,
+                defaultSubstituteOption: true,
+                addOnLinks: { include: { addOn: true } },
+                substituteLinks: { include: { substitute: true } },
+                addOnGroupLinks: { include: { group: { include: { options: { include: { recipeLines: { include: { ingredient: true } } } } } } } },
+                substituteGroupLinks: { include: { group: { include: { options: { include: { recipeLines: { include: { ingredient: true } } } } } } } },
                 sizes: { orderBy: [{ sortOrder: "asc" }, { label: "asc" }] },
                 optionGroupLinks: { include: { group: { include: { options: true, defaultOption: true } } } },
                 drinkSizeConfigs: { include: { option: true } },
@@ -619,12 +677,10 @@ export async function adminRoutes(app) {
             reply.code(400);
             return { error: "NO_FILE" };
         }
-        await mkdir(UPLOADS_ITEMS, { recursive: true });
         const ext = extFromMime(data.mimetype);
         const filename = `${randomBytes(12).toString("hex")}.${ext}`;
-        const filepath = join(UPLOADS_ITEMS, filename);
-        await pipeline(data.file, createWriteStream(filepath));
-        const imageUrl = `/uploads/items/${filename}`;
+        const buf = await buffer(data.file);
+        const imageUrl = await uploadImage(buf, filename, data.mimetype);
         const version = await bumpCatalogVersion(app.prisma);
         await app.prisma.menuItem.update({ where: { id }, data: { imageUrl, version } });
         return { imageUrl };
@@ -654,11 +710,45 @@ export async function adminRoutes(app) {
                 return { error: "INVALID_DEFAULT_SIZE", message: `Default size must be from "${drinkSizes.ok ? drinkSizes.optionGroupName : "Sizes"}" option group` };
             }
         }
+        let defaultSubstituteId = parsed.data.defaultSubstituteId !== undefined ? parsed.data.defaultSubstituteId : undefined;
+        let defaultSubstituteOptionId = parsed.data.defaultSubstituteOptionId !== undefined ? parsed.data.defaultSubstituteOptionId : undefined;
+        if (defaultSubstituteId !== undefined) {
+            if (defaultSubstituteId) {
+                const sub = await app.prisma.substitute.findUnique({ where: { id: defaultSubstituteId }, select: { id: true, isActive: true } });
+                if (!sub) {
+                    reply.code(400);
+                    return { error: "SUBSTITUTE_NOT_FOUND", message: "Default milk substitute not found" };
+                }
+                if (!sub.isActive) {
+                    reply.code(400);
+                    return { error: "SUBSTITUTE_INACTIVE", message: "Default milk substitute must be active" };
+                }
+            }
+        }
+        if (defaultSubstituteOptionId !== undefined) {
+            if (defaultSubstituteOptionId) {
+                const opt = await app.prisma.substituteOption.findUnique({ where: { id: defaultSubstituteOptionId }, select: { id: true, isActive: true } });
+                if (!opt) {
+                    reply.code(400);
+                    return { error: "SUBSTITUTE_OPTION_NOT_FOUND", message: "Default milk substitute option not found" };
+                }
+                if (!opt.isActive) {
+                    reply.code(400);
+                    return { error: "SUBSTITUTE_OPTION_INACTIVE", message: "Default milk option must be active" };
+                }
+            }
+        }
         const updateData = {
             ...parsed.data,
             defaultSizeOptionId: defaultSizeOptionId ?? null,
             version,
         };
+        if (defaultSubstituteId !== undefined) {
+            updateData.defaultSubstituteId = defaultSubstituteId ?? null;
+        }
+        if (defaultSubstituteOptionId !== undefined) {
+            updateData.defaultSubstituteOptionId = defaultSubstituteOptionId ?? null;
+        }
         if (parsed.data.supportsShots === true) {
             updateData.supportsShots = true;
             updateData.defaultShots = parsed.data.defaultShots ?? 1;
@@ -967,12 +1057,10 @@ export async function adminRoutes(app) {
             reply.code(400);
             return { error: "NO_FILE" };
         }
-        await mkdir(UPLOADS_INGREDIENTS, { recursive: true });
         const ext = extFromMime(data.mimetype);
         const filename = `${randomBytes(12).toString("hex")}.${ext}`;
-        const filepath = join(UPLOADS_INGREDIENTS, filename);
-        await pipeline(data.file, createWriteStream(filepath));
-        const imageUrl = `/uploads/ingredients/${filename}`;
+        const buf = await buffer(data.file);
+        const imageUrl = await uploadImage(buf, filename, data.mimetype);
         const version = await bumpCatalogVersion(app.prisma);
         await app.prisma.ingredient.update({ where: { id }, data: { imageUrl, version } });
         return { imageUrl };
@@ -1200,6 +1288,24 @@ export async function adminRoutes(app) {
         lines: z.array(recipeLineSchema),
         sizeLines: z.array(recipeLineSizeSchema).optional(),
     });
+    /** Check if RecipeLineSize table exists (graceful fallback when migration not applied). */
+    async function safeRecipeLineSizeFindMany(menuItemId) {
+        try {
+            const lines = await app.prisma.recipeLineSize.findMany({
+                where: { menuItemId, deletedAt: null },
+            });
+            return { lines };
+        }
+        catch (err) {
+            const msg = String(err?.message ?? "");
+            const code = err?.code;
+            if (code === "P2021" || /does not exist|RecipeLineSize.*does not exist|relation.*does not exist/i.test(msg)) {
+                app.log?.warn?.({ msg: "RecipeLineSize table missing; per-size recipe unavailable until migration is applied." });
+                return { lines: [], unavailable: true };
+            }
+            throw err;
+        }
+    }
     app.get("/items/:id/recipe", async (req, reply) => {
         const { id } = req.params;
         const item = await app.prisma.menuItem.findUnique({ where: { id } });
@@ -1207,15 +1313,17 @@ export async function adminRoutes(app) {
             reply.code(404);
             return { error: "NOT_FOUND" };
         }
-        const [lines, sizeLines] = await Promise.all([
+        const [lines, sizeResult] = await Promise.all([
             app.prisma.recipeLine.findMany({
                 where: { menuItemId: id, deletedAt: null },
             }),
-            app.prisma.recipeLineSize.findMany({
-                where: { menuItemId: id, deletedAt: null },
-            }),
+            safeRecipeLineSizeFindMany(id),
         ]);
-        return { lines, sizeLines };
+        const sizeLines = sizeResult.lines;
+        const result = { lines, sizeLines };
+        if (sizeResult.unavailable)
+            result.recipeLineSizeUnavailable = true;
+        return result;
     });
     app.put("/items/:id/recipe", async (req, reply) => {
         const { id } = req.params;
@@ -1262,13 +1370,34 @@ export async function adminRoutes(app) {
         }
         const version = await bumpCatalogVersion(app.prisma);
         const menuItemId = id;
+        // Check RecipeLineSize table exists when needed (graceful fallback if migration not applied)
+        const needsRecipeLineSize = item.hasSizes; // we read/write sizeLines for hasSizes items
+        let recipeLineSizeAvailable = true;
+        if (needsRecipeLineSize) {
+            try {
+                await app.prisma.recipeLineSize.findFirst({ take: 1 });
+            }
+            catch (err) {
+                const msg = String(err?.message ?? "");
+                const code = err?.code;
+                if (code === "P2021" || /does not exist|RecipeLineSize.*does not exist|relation.*does not exist/i.test(msg)) {
+                    recipeLineSizeAvailable = false;
+                    reply.code(503);
+                    return {
+                        error: "RECIPE_LINE_SIZE_TABLE_MISSING",
+                        message: "Per-size recipe data requires the RecipeLineSize table. Run migrations: pnpm prisma migrate deploy (in apps/cloud-api). Base recipe editing works for non-sized items.",
+                    };
+                }
+                throw err;
+            }
+        }
         // Full replace: hard-delete all recipe rows for this item, then insert current payload.
         // (Soft-delete was causing unique constraint violations: old rows still hold the composite key.)
         const runReplace = async () => {
             await app.prisma.$transaction(async (tx) => {
                 await tx.recipeLine.deleteMany({ where: { menuItemId } });
-                await tx.recipeLineSize.deleteMany({ where: { menuItemId } });
-                if (item.hasSizes) {
+                if (item.hasSizes && recipeLineSizeAvailable) {
+                    await tx.recipeLineSize.deleteMany({ where: { menuItemId } });
                     if (parsed.data.sizeLines && parsed.data.sizeLines.length > 0) {
                         const raw = parsed.data.sizeLines;
                         const seen = new Map();
@@ -1335,15 +1464,17 @@ export async function adminRoutes(app) {
             }
             throw err;
         }
-        const [lines, sizeLines] = await Promise.all([
+        const [lines, sizeResult] = await Promise.all([
             app.prisma.recipeLine.findMany({
                 where: { menuItemId, deletedAt: null },
             }),
-            app.prisma.recipeLineSize.findMany({
-                where: { menuItemId, deletedAt: null },
-            }),
+            safeRecipeLineSizeFindMany(menuItemId),
         ]);
-        return { lines, sizeLines };
+        const sizeLines = sizeResult.lines;
+        const out = { lines, sizeLines };
+        if (sizeResult.unavailable)
+            out.recipeLineSizeUnavailable = true;
+        return out;
     });
     // Categories - exclude deleted
     app.get("/categories", async () => {
@@ -1385,11 +1516,33 @@ export async function adminRoutes(app) {
         const { id } = req.params;
         const subCount = await app.prisma.subCategory.count({ where: { categoryId: id, deletedAt: null } });
         if (subCount > 0) {
-            reply.code(409);
-            return { error: "CATEGORY_NOT_EMPTY", message: "Cannot delete: category has subcategories" };
+            reply.code(400);
+            return { error: "CATEGORY_NOT_EMPTY", message: "Cannot delete category while sub-categories exist." };
         }
         await app.prisma.category.update({ where: { id }, data: { deletedAt: new Date() } });
         return { ok: true };
+    });
+    app.post("/categories/reorder", async (req, reply) => {
+        const parsed = reorderOrderSchema.safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten(), message: "order array of { id, sortOrder } required" };
+        }
+        const ids = parsed.data.order.map((o) => o.id);
+        const existing = await app.prisma.category.findMany({ where: { id: { in: ids }, deletedAt: null }, select: { id: true } });
+        const foundIds = new Set(existing.map((c) => c.id));
+        const missing = ids.filter((id) => !foundIds.has(id));
+        if (missing.length > 0) {
+            reply.code(400);
+            return { error: "INVALID_IDS", message: `Category ids not found: ${missing.join(", ")}` };
+        }
+        await app.prisma.$transaction(parsed.data.order.map(({ id, sortOrder }) => app.prisma.category.update({ where: { id }, data: { sortOrder } })));
+        const list = await app.prisma.category.findMany({
+            where: { id: { in: ids }, deletedAt: null },
+            orderBy: { sortOrder: "asc" },
+            include: { subCategories: { where: { deletedAt: null }, orderBy: [{ sortOrder: "asc" }] } },
+        });
+        return list;
     });
     app.post("/categories/:categoryId/subcategories", async (req, reply) => {
         const { categoryId } = req.params;
@@ -1436,6 +1589,27 @@ export async function adminRoutes(app) {
         }
         await app.prisma.subCategory.update({ where: { id }, data: { deletedAt: new Date() } });
         return { ok: true };
+    });
+    app.post("/subcategories/reorder", async (req, reply) => {
+        const parsed = reorderOrderSchema.safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten(), message: "order array of { id, sortOrder } required" };
+        }
+        const ids = parsed.data.order.map((o) => o.id);
+        const existing = await app.prisma.subCategory.findMany({ where: { id: { in: ids }, deletedAt: null }, select: { id: true } });
+        const foundIds = new Set(existing.map((s) => s.id));
+        const missing = ids.filter((id) => !foundIds.has(id));
+        if (missing.length > 0) {
+            reply.code(400);
+            return { error: "INVALID_IDS", message: `Subcategory ids not found: ${missing.join(", ")}` };
+        }
+        await app.prisma.$transaction(parsed.data.order.map(({ id, sortOrder }) => app.prisma.subCategory.update({ where: { id }, data: { sortOrder } })));
+        const list = await app.prisma.subCategory.findMany({
+            where: { id: { in: ids }, deletedAt: null },
+            orderBy: { sortOrder: "asc" },
+        });
+        return list;
     });
     // MenuItemSize CRUD (per-item sizes)
     app.get("/items/:id/sizes", async (req, reply) => {
@@ -1518,11 +1692,14 @@ export async function adminRoutes(app) {
         });
         return { ok: true };
     });
-    // Option groups
+    // Option groups (modifiers)
     app.get("/option-groups", async () => {
         return app.prisma.menuOptionGroup.findMany({
             include: {
-                options: { orderBy: { sortOrder: "asc" } },
+                options: {
+                    orderBy: { sortOrder: "asc" },
+                    include: { recipeLines: { include: { ingredient: true } } },
+                },
                 sections: { orderBy: { sortOrder: "asc" } },
                 defaultOption: true,
             },
@@ -1530,13 +1707,19 @@ export async function adminRoutes(app) {
         });
     });
     app.post("/option-groups", async (req, reply) => {
-        const parsed = z.object({ name: z.string().min(1), required: z.boolean().optional(), multi: z.boolean().optional(), isSizeGroup: z.boolean().optional() }).safeParse(req.body);
+        const parsed = z.object({ name: z.string().min(1), required: z.boolean().optional(), multi: z.boolean().optional(), isSizeGroup: z.boolean().optional(), trackRecipeConsumption: z.boolean().optional() }).safeParse(req.body);
         if (!parsed.success) {
             reply.code(400);
             return { error: "INVALID_BODY", details: parsed.error.flatten() };
         }
         return app.prisma.menuOptionGroup.create({
-            data: { name: parsed.data.name, required: parsed.data.required ?? false, multi: parsed.data.multi ?? false, isSizeGroup: parsed.data.isSizeGroup ?? false },
+            data: {
+                name: parsed.data.name,
+                required: parsed.data.required ?? false,
+                multi: parsed.data.multi ?? false,
+                isSizeGroup: parsed.data.isSizeGroup ?? false,
+                trackRecipeConsumption: parsed.data.trackRecipeConsumption ?? false,
+            },
         });
     });
     app.patch("/option-groups/:id", async (req, reply) => {
@@ -1548,6 +1731,7 @@ export async function adminRoutes(app) {
             multi: z.boolean().optional(),
             isSizeGroup: z.boolean().optional(),
             defaultOptionId: z.string().nullable().optional(),
+            trackRecipeConsumption: z.boolean().optional(),
         })
             .partial()
             .safeParse(req.body);
@@ -1611,6 +1795,761 @@ export async function adminRoutes(app) {
         await app.prisma.menuOption.deleteMany({ where: { id: req.params.optionId, groupId: req.params.groupId } });
         return { ok: true };
     });
+    // Option choice recipe lines (for modifiers with trackRecipeConsumption)
+    app.get("/option-groups/:groupId/options/:optionId/recipe", async (req, reply) => {
+        const { groupId, optionId } = req.params;
+        const opt = await app.prisma.menuOption.findFirst({
+            where: { id: optionId, groupId },
+            include: { recipeLines: { include: { ingredient: true } } },
+        });
+        if (!opt) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Option not found" };
+        }
+        return { lines: opt.recipeLines };
+    });
+    app.put("/option-groups/:groupId/options/:optionId/recipe", async (req, reply) => {
+        const { groupId, optionId } = req.params;
+        const opt = await app.prisma.menuOption.findFirst({
+            where: { id: optionId, groupId },
+            include: { group: true },
+        });
+        if (!opt) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Option not found" };
+        }
+        if (!opt.group.trackRecipeConsumption) {
+            reply.code(400);
+            return { error: "RECIPE_DISABLED", message: "Enable 'Track recipe consumption' on the modifier section first." };
+        }
+        const parsed = z.object({
+            lines: z.array(z.object({
+                ingredientId: z.string().min(1),
+                qtyPerItem: z.number().positive(),
+                unitCode: z.string().min(1),
+            })),
+        }).safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten() };
+        }
+        for (const line of parsed.data.lines) {
+            const ing = await app.prisma.ingredient.findUnique({ where: { id: line.ingredientId }, select: { id: true } });
+            if (!ing) {
+                reply.code(400);
+                return { error: "INVALID_INGREDIENT", message: `Ingredient ${line.ingredientId} not found` };
+            }
+        }
+        await app.prisma.optionChoiceRecipeLine.deleteMany({ where: { optionId } });
+        if (parsed.data.lines.length > 0) {
+            await app.prisma.optionChoiceRecipeLine.createMany({
+                data: parsed.data.lines.map((l) => ({
+                    optionId,
+                    ingredientId: l.ingredientId,
+                    qtyPerItem: l.qtyPerItem,
+                    unitCode: l.unitCode,
+                })),
+            });
+        }
+        const lines = await app.prisma.optionChoiceRecipeLine.findMany({
+            where: { optionId },
+            include: { ingredient: true },
+        });
+        return { lines };
+    });
+    // Add-on Groups CRUD (group-based architecture)
+    app.get("/add-on-groups", async () => {
+        return app.prisma.addOnGroup.findMany({
+            include: { options: { include: { recipeLines: { include: { ingredient: true } } }, orderBy: { sortOrder: "asc" } } },
+            orderBy: { sortOrder: "asc" },
+        });
+    });
+    app.post("/add-on-groups", async (req, reply) => {
+        const parsed = z.object({
+            name: z.string().min(1, "Group name is required"),
+            isActive: z.boolean().optional().default(true),
+            sortOrder: z.number().int().optional(),
+        }).safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten() };
+        }
+        const maxOrder = await app.prisma.addOnGroup.aggregate({ _max: { sortOrder: true } });
+        const sortOrder = parsed.data.sortOrder ?? (maxOrder._max.sortOrder ?? -1) + 1;
+        return app.prisma.addOnGroup.create({
+            data: { name: parsed.data.name, isActive: parsed.data.isActive, sortOrder },
+            include: { options: true },
+        });
+    });
+    app.patch("/add-on-groups/:id", async (req, reply) => {
+        const { id } = req.params;
+        const parsed = z.object({
+            name: z.string().min(1).optional(),
+            isActive: z.boolean().optional(),
+            sortOrder: z.number().int().optional(),
+        }).partial().safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten() };
+        }
+        const existing = await app.prisma.addOnGroup.findUnique({ where: { id } });
+        if (!existing) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Add-on group not found" };
+        }
+        return app.prisma.addOnGroup.update({ where: { id }, data: parsed.data, include: { options: true } });
+    });
+    app.delete("/add-on-groups/:id", async (req, reply) => {
+        const { id } = req.params;
+        const existing = await app.prisma.addOnGroup.findUnique({ where: { id }, include: { menuItemLinks: { take: 1 } } });
+        if (!existing) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Add-on group not found" };
+        }
+        if (existing.menuItemLinks.length > 0) {
+            reply.code(400);
+            return { error: "GROUP_IN_USE", message: "This add-on group is used by items. Remove it from items first." };
+        }
+        await app.prisma.addOnGroup.delete({ where: { id } });
+        return { ok: true };
+    });
+    app.post("/add-on-groups/:groupId/options", async (req, reply) => {
+        const { groupId } = req.params;
+        const parsed = z.object({
+            name: z.string().min(1, "Option name is required"),
+            priceCents: z.number().int().min(0).optional(),
+            isActive: z.boolean().optional().default(true),
+            sortOrder: z.number().int().optional(),
+        }).safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten() };
+        }
+        const group = await app.prisma.addOnGroup.findUnique({ where: { id: groupId } });
+        if (!group) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Add-on group not found" };
+        }
+        const maxOrder = await app.prisma.addOnOption.aggregate({ where: { groupId }, _max: { sortOrder: true } });
+        const sortOrder = parsed.data.sortOrder ?? (maxOrder._max.sortOrder ?? -1) + 1;
+        return app.prisma.addOnOption.create({
+            data: {
+                groupId,
+                name: parsed.data.name,
+                priceCents: parsed.data.priceCents ?? 0,
+                isActive: parsed.data.isActive ?? true,
+                sortOrder,
+            },
+            include: { recipeLines: { include: { ingredient: true } } },
+        });
+    });
+    app.patch("/add-on-groups/:groupId/options/:optionId", async (req, reply) => {
+        const { groupId, optionId } = req.params;
+        const parsed = z.object({
+            name: z.string().min(1).optional(),
+            priceCents: z.number().int().min(0).optional(),
+            isActive: z.boolean().optional(),
+            sortOrder: z.number().int().optional(),
+        }).partial().safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten() };
+        }
+        const opt = await app.prisma.addOnOption.findFirst({ where: { id: optionId, groupId } });
+        if (!opt) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Add-on option not found" };
+        }
+        return app.prisma.addOnOption.update({
+            where: { id: optionId },
+            data: parsed.data,
+            include: { recipeLines: { include: { ingredient: true } } },
+        });
+    });
+    app.delete("/add-on-groups/:groupId/options/:optionId", async (req, reply) => {
+        const { groupId, optionId } = req.params;
+        const opt = await app.prisma.addOnOption.findFirst({ where: { id: optionId, groupId } });
+        if (!opt) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Add-on option not found" };
+        }
+        await app.prisma.addOnOption.delete({ where: { id: optionId } });
+        return { ok: true };
+    });
+    app.put("/add-on-groups/:groupId/options/:optionId/recipe", async (req, reply) => {
+        const { groupId, optionId } = req.params;
+        const opt = await app.prisma.addOnOption.findFirst({ where: { id: optionId, groupId } });
+        if (!opt) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Add-on option not found" };
+        }
+        const parsed = z.object({
+            lines: z.array(z.object({
+                ingredientId: z.string().min(1),
+                qtyPerItem: z.number().positive(),
+                unitCode: z.string().min(1),
+            })),
+        }).safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten() };
+        }
+        for (const line of parsed.data.lines) {
+            const ing = await app.prisma.ingredient.findUnique({ where: { id: line.ingredientId }, select: { id: true } });
+            if (!ing) {
+                reply.code(400);
+                return { error: "INVALID_INGREDIENT", message: `Ingredient ${line.ingredientId} not found` };
+            }
+        }
+        await app.prisma.addOnOptionRecipeLine.deleteMany({ where: { optionId } });
+        if (parsed.data.lines.length > 0) {
+            await app.prisma.addOnOptionRecipeLine.createMany({
+                data: parsed.data.lines.map((l) => ({
+                    optionId,
+                    ingredientId: l.ingredientId,
+                    qtyPerItem: l.qtyPerItem,
+                    unitCode: l.unitCode,
+                })),
+            });
+        }
+        const lines = await app.prisma.addOnOptionRecipeLine.findMany({
+            where: { optionId },
+            include: { ingredient: true },
+        });
+        return { lines };
+    });
+    // Substitute Groups CRUD (group-based architecture)
+    app.get("/substitute-groups", async () => {
+        return app.prisma.substituteGroup.findMany({
+            include: { options: { include: { recipeLines: { include: { ingredient: true } } }, orderBy: { sortOrder: "asc" } } },
+            orderBy: { sortOrder: "asc" },
+        });
+    });
+    app.post("/substitute-groups", async (req, reply) => {
+        const parsed = z.object({
+            name: z.string().min(1, "Group name is required"),
+            isActive: z.boolean().optional().default(true),
+            sortOrder: z.number().int().optional(),
+        }).safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten() };
+        }
+        const maxOrder = await app.prisma.substituteGroup.aggregate({ _max: { sortOrder: true } });
+        const sortOrder = parsed.data.sortOrder ?? (maxOrder._max.sortOrder ?? -1) + 1;
+        return app.prisma.substituteGroup.create({
+            data: { name: parsed.data.name, isActive: parsed.data.isActive, sortOrder },
+            include: { options: true },
+        });
+    });
+    app.patch("/substitute-groups/:id", async (req, reply) => {
+        const { id } = req.params;
+        const parsed = z.object({
+            name: z.string().min(1).optional(),
+            isActive: z.boolean().optional(),
+            sortOrder: z.number().int().optional(),
+        }).partial().safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten() };
+        }
+        const existing = await app.prisma.substituteGroup.findUnique({ where: { id } });
+        if (!existing) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Substitute group not found" };
+        }
+        return app.prisma.substituteGroup.update({ where: { id }, data: parsed.data, include: { options: true } });
+    });
+    app.delete("/substitute-groups/:id", async (req, reply) => {
+        const { id } = req.params;
+        const existing = await app.prisma.substituteGroup.findUnique({ where: { id }, include: { menuItemLinks: { take: 1 } } });
+        if (!existing) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Substitute group not found" };
+        }
+        if (existing.menuItemLinks.length > 0) {
+            reply.code(400);
+            return { error: "GROUP_IN_USE", message: "This substitute group is used by items. Remove it from items first." };
+        }
+        await app.prisma.substituteGroup.delete({ where: { id } });
+        return { ok: true };
+    });
+    app.post("/substitute-groups/:groupId/options", async (req, reply) => {
+        const { groupId } = req.params;
+        const parsed = z.object({
+            name: z.string().min(1, "Option name is required"),
+            priceCents: z.number().int().min(0).optional(),
+            isActive: z.boolean().optional().default(true),
+            sortOrder: z.number().int().optional(),
+        }).safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten() };
+        }
+        const group = await app.prisma.substituteGroup.findUnique({ where: { id: groupId } });
+        if (!group) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Substitute group not found" };
+        }
+        const maxOrder = await app.prisma.substituteOption.aggregate({ where: { groupId }, _max: { sortOrder: true } });
+        const sortOrder = parsed.data.sortOrder ?? (maxOrder._max.sortOrder ?? -1) + 1;
+        return app.prisma.substituteOption.create({
+            data: {
+                groupId,
+                name: parsed.data.name,
+                priceCents: parsed.data.priceCents ?? 0,
+                isActive: parsed.data.isActive ?? true,
+                sortOrder,
+            },
+            include: { recipeLines: { include: { ingredient: true } } },
+        });
+    });
+    app.patch("/substitute-groups/:groupId/options/:optionId", async (req, reply) => {
+        const { groupId, optionId } = req.params;
+        const parsed = z.object({
+            name: z.string().min(1).optional(),
+            priceCents: z.number().int().min(0).optional(),
+            isActive: z.boolean().optional(),
+            sortOrder: z.number().int().optional(),
+        }).partial().safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten() };
+        }
+        const opt = await app.prisma.substituteOption.findFirst({ where: { id: optionId, groupId } });
+        if (!opt) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Substitute option not found" };
+        }
+        return app.prisma.substituteOption.update({
+            where: { id: optionId },
+            data: parsed.data,
+            include: { recipeLines: { include: { ingredient: true } } },
+        });
+    });
+    app.delete("/substitute-groups/:groupId/options/:optionId", async (req, reply) => {
+        const { groupId, optionId } = req.params;
+        const opt = await app.prisma.substituteOption.findFirst({ where: { id: optionId, groupId } });
+        if (!opt) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Substitute option not found" };
+        }
+        await app.prisma.substituteOption.delete({ where: { id: optionId } });
+        return { ok: true };
+    });
+    app.put("/substitute-groups/:groupId/options/:optionId/recipe", async (req, reply) => {
+        const { groupId, optionId } = req.params;
+        const opt = await app.prisma.substituteOption.findFirst({ where: { id: optionId, groupId } });
+        if (!opt) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Substitute option not found" };
+        }
+        const parsed = z.object({
+            lines: z.array(z.object({
+                ingredientId: z.string().min(1),
+                qtyPerItem: z.number().positive(),
+                unitCode: z.string().min(1),
+            })),
+        }).safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten() };
+        }
+        for (const line of parsed.data.lines) {
+            const ing = await app.prisma.ingredient.findUnique({ where: { id: line.ingredientId }, select: { id: true } });
+            if (!ing) {
+                reply.code(400);
+                return { error: "INVALID_INGREDIENT", message: `Ingredient ${line.ingredientId} not found` };
+            }
+        }
+        await app.prisma.substituteOptionRecipeLine.deleteMany({ where: { optionId } });
+        if (parsed.data.lines.length > 0) {
+            await app.prisma.substituteOptionRecipeLine.createMany({
+                data: parsed.data.lines.map((l) => ({
+                    optionId,
+                    ingredientId: l.ingredientId,
+                    qtyPerItem: l.qtyPerItem,
+                    unitCode: l.unitCode,
+                })),
+            });
+        }
+        const lines = await app.prisma.substituteOptionRecipeLine.findMany({
+            where: { optionId },
+            include: { ingredient: true },
+        });
+        return { lines };
+    });
+    // Add-ons CRUD (legacy flat - deprecated, use add-on-groups)
+    app.get("/add-ons", async () => {
+        return app.prisma.addOn.findMany({
+            include: { recipeLines: { include: { ingredient: true } } },
+            orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+        });
+    });
+    app.post("/add-ons", async (req, reply) => {
+        const parsed = z.object({
+            name: z.string().min(1),
+            priceCents: z.number().int().min(0).optional(),
+            isActive: z.boolean().optional(),
+            sortOrder: z.number().int().optional(),
+        }).safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten() };
+        }
+        const maxOrder = await app.prisma.addOn.aggregate({ _max: { sortOrder: true } });
+        const sortOrder = parsed.data.sortOrder ?? (maxOrder._max.sortOrder ?? -1) + 1;
+        return app.prisma.addOn.create({
+            data: {
+                name: parsed.data.name,
+                priceCents: parsed.data.priceCents ?? 0,
+                isActive: parsed.data.isActive ?? true,
+                sortOrder,
+            },
+        });
+    });
+    app.patch("/add-ons/:id", async (req, reply) => {
+        const { id } = req.params;
+        const parsed = z.object({
+            name: z.string().min(1).optional(),
+            priceCents: z.number().int().min(0).optional(),
+            isActive: z.boolean().optional(),
+            sortOrder: z.number().int().optional(),
+        }).partial().safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten() };
+        }
+        const existing = await app.prisma.addOn.findUnique({ where: { id } });
+        if (!existing) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Add-on not found" };
+        }
+        return app.prisma.addOn.update({ where: { id }, data: parsed.data });
+    });
+    app.delete("/add-ons/:id", async (req, reply) => {
+        const { id } = req.params;
+        const existing = await app.prisma.addOn.findUnique({ where: { id }, include: { menuItemLinks: { take: 1 } } });
+        if (!existing) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Add-on not found" };
+        }
+        if (existing.menuItemLinks.length > 0) {
+            reply.code(400);
+            return { error: "ADDON_IN_USE", message: "This add-on is used by items. Remove it from items first, or deactivate instead of deleting." };
+        }
+        await app.prisma.addOn.delete({ where: { id } });
+        return { ok: true };
+    });
+    app.get("/add-ons/:id/recipe", async (req, reply) => {
+        const addOn = await app.prisma.addOn.findUnique({
+            where: { id: req.params.id },
+            include: { recipeLines: { include: { ingredient: true } } },
+        });
+        if (!addOn) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Add-on not found" };
+        }
+        return { lines: addOn.recipeLines };
+    });
+    app.put("/add-ons/:id/recipe", async (req, reply) => {
+        const { id } = req.params;
+        const addOn = await app.prisma.addOn.findUnique({ where: { id } });
+        if (!addOn) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Add-on not found" };
+        }
+        const parsed = z.object({
+            lines: z.array(z.object({
+                ingredientId: z.string().min(1),
+                qtyPerItem: z.number().positive(),
+                unitCode: z.string().min(1),
+            })),
+        }).safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten() };
+        }
+        for (const line of parsed.data.lines) {
+            const ing = await app.prisma.ingredient.findUnique({ where: { id: line.ingredientId }, select: { id: true } });
+            if (!ing) {
+                reply.code(400);
+                return { error: "INVALID_INGREDIENT", message: `Ingredient ${line.ingredientId} not found` };
+            }
+        }
+        await app.prisma.addOnRecipeLine.deleteMany({ where: { addOnId: id } });
+        if (parsed.data.lines.length > 0) {
+            await app.prisma.addOnRecipeLine.createMany({
+                data: parsed.data.lines.map((l) => ({
+                    addOnId: id,
+                    ingredientId: l.ingredientId,
+                    qtyPerItem: l.qtyPerItem,
+                    unitCode: l.unitCode,
+                })),
+            });
+        }
+        const lines = await app.prisma.addOnRecipeLine.findMany({
+            where: { addOnId: id },
+            include: { ingredient: true },
+        });
+        return { lines };
+    });
+    // Substitutes CRUD (flat milk types - primary architecture)
+    app.get("/substitutes", async () => {
+        return app.prisma.substitute.findMany({
+            include: {
+                recipeLines: { include: { ingredient: true } },
+                prices: { include: { size: true } },
+            },
+            orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+        });
+    });
+    app.post("/substitutes", async (req, reply) => {
+        const parsed = z.object({
+            name: z.string().min(1),
+            priceCents: z.number().int().min(0).optional(),
+            isActive: z.boolean().optional(),
+            sortOrder: z.number().int().optional(),
+        }).safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten() };
+        }
+        const maxOrder = await app.prisma.substitute.aggregate({ _max: { sortOrder: true } });
+        const sortOrder = parsed.data.sortOrder ?? (maxOrder._max.sortOrder ?? -1) + 1;
+        return app.prisma.substitute.create({
+            data: {
+                name: parsed.data.name,
+                priceCents: parsed.data.priceCents ?? 0,
+                isActive: parsed.data.isActive ?? true,
+                sortOrder,
+            },
+        });
+    });
+    app.patch("/substitutes/:id", async (req, reply) => {
+        const { id } = req.params;
+        const parsed = z.object({
+            name: z.string().min(1).optional(),
+            priceCents: z.number().int().min(0).optional(),
+            isActive: z.boolean().optional(),
+            sortOrder: z.number().int().optional(),
+        }).partial().safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten() };
+        }
+        const existing = await app.prisma.substitute.findUnique({ where: { id } });
+        if (!existing) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Substitute not found" };
+        }
+        return app.prisma.substitute.update({ where: { id }, data: parsed.data });
+    });
+    app.delete("/substitutes/:id", async (req, reply) => {
+        const { id } = req.params;
+        const existing = await app.prisma.substitute.findUnique({ where: { id }, include: { menuItemLinks: { take: 1 }, asDefaultFor: { take: 1 } } });
+        if (!existing) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Substitute not found" };
+        }
+        if (existing.menuItemLinks.length > 0 || existing.asDefaultFor.length > 0) {
+            reply.code(400);
+            return { error: "SUBSTITUTE_IN_USE", message: "This substitute is used by items. Remove it from items first, or deactivate instead of deleting." };
+        }
+        await app.prisma.substitute.delete({ where: { id } });
+        return { ok: true };
+    });
+    app.get("/substitutes/:id/recipe", async (req, reply) => {
+        const sub = await app.prisma.substitute.findUnique({
+            where: { id: req.params.id },
+            include: { recipeLines: { include: { ingredient: true } } },
+        });
+        if (!sub) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Substitute not found" };
+        }
+        return { lines: sub.recipeLines };
+    });
+    app.put("/substitutes/:id/recipe", async (req, reply) => {
+        const { id } = req.params;
+        const sub = await app.prisma.substitute.findUnique({ where: { id } });
+        if (!sub) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Substitute not found" };
+        }
+        const parsed = z.object({
+            lines: z.array(z.object({
+                ingredientId: z.string().min(1),
+                qtyPerItem: z.number().positive(),
+                unitCode: z.string().min(1),
+            })),
+        }).safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten() };
+        }
+        for (const line of parsed.data.lines) {
+            const ing = await app.prisma.ingredient.findUnique({ where: { id: line.ingredientId }, select: { id: true } });
+            if (!ing) {
+                reply.code(400);
+                return { error: "INVALID_INGREDIENT", message: `Ingredient ${line.ingredientId} not found` };
+            }
+        }
+        await app.prisma.substituteRecipeLine.deleteMany({ where: { substituteId: id } });
+        if (parsed.data.lines.length > 0) {
+            await app.prisma.substituteRecipeLine.createMany({
+                data: parsed.data.lines.map((l) => ({
+                    substituteId: id,
+                    ingredientId: l.ingredientId,
+                    qtyPerItem: l.qtyPerItem,
+                    unitCode: l.unitCode,
+                })),
+            });
+        }
+        const lines = await app.prisma.substituteRecipeLine.findMany({
+            where: { substituteId: id },
+            include: { ingredient: true },
+        });
+        return { lines };
+    });
+    // Substitute prices by size + mode (primary pricing for milk substitutes)
+    const drinkModeSchema = z.enum(["ICED", "HOT", "CONCENTRATED"]);
+    app.put("/substitutes/:id/prices", async (req, reply) => {
+        const { id } = req.params;
+        const sub = await app.prisma.substitute.findUnique({ where: { id } });
+        if (!sub) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Substitute not found" };
+        }
+        const parsed = z.object({
+            prices: z.array(z.object({
+                sizeId: z.string(),
+                mode: drinkModeSchema,
+                priceCents: z.number().int().min(0),
+            })),
+        }).safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten() };
+        }
+        const sizesGroup = await app.prisma.menuSettingGroup.findUnique({ where: { key: SIZES_GROUP_KEY }, include: { menuSizes: true } });
+        if (!sizesGroup) {
+            reply.code(404);
+            return { error: "SIZES_GROUP_NOT_FOUND", message: "Sizes group not found. Run db:seed." };
+        }
+        const validSizeIds = new Set(sizesGroup.menuSizes.map((s) => s.id));
+        for (const p of parsed.data.prices) {
+            if (!validSizeIds.has(p.sizeId)) {
+                reply.code(400);
+                return { error: "INVALID_SIZE_ID", message: `Size id ${p.sizeId} is not in Menu Settings > Sizes` };
+            }
+        }
+        await bumpCatalogVersion(app.prisma);
+        await app.prisma.substitutePrice.deleteMany({ where: { substituteId: id } });
+        if (parsed.data.prices.length > 0) {
+            await app.prisma.substitutePrice.createMany({
+                data: parsed.data.prices.map((p) => ({ substituteId: id, sizeId: p.sizeId, mode: p.mode, priceCents: p.priceCents })),
+                skipDuplicates: true,
+            });
+        }
+        const prices = await app.prisma.substitutePrice.findMany({
+            where: { substituteId: id },
+            include: { size: true },
+        });
+        return { prices };
+    });
+    // Link item to flat substitutes + default milk: PUT /admin/items/:id/substitutes (primary)
+    // Payload: { substitutes: [{ substituteId, priceCents, recipeQtyMl }], defaultSubstituteId }
+    app.put("/items/:id/substitutes", async (req, reply) => {
+        const { id } = req.params;
+        const substituteEntrySchema = z.object({
+            substituteId: z.string(),
+            priceCents: z.number().int().min(0),
+            recipeQtyMl: z.number().min(0).optional().nullable(),
+        });
+        const parsed = z.object({
+            substitutes: z.array(substituteEntrySchema),
+            defaultSubstituteId: z.string().nullable(),
+        }).safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten() };
+        }
+        const item = await app.prisma.menuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
+        if (!item) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Item not found" };
+        }
+        if (item.deletedAt) {
+            reply.code(400);
+            return { error: "ITEM_DELETED", message: "Cannot edit a deleted item. Restore it first." };
+        }
+        const substitutes = parsed.data.substitutes;
+        if (substitutes.length > 0) {
+            const substituteIds = substitutes.map((s) => s.substituteId);
+            const uniqueIds = new Set(substituteIds);
+            if (uniqueIds.size !== substituteIds.length) {
+                reply.code(400);
+                return { error: "DUPLICATE_SUBSTITUTE", message: "substituteIds must be unique" };
+            }
+            const defaultId = parsed.data.defaultSubstituteId;
+            if (!defaultId) {
+                reply.code(400);
+                return { error: "DEFAULT_MILK_REQUIRED", message: "Default milk is required when substitutes are enabled. Set defaultSubstituteId." };
+            }
+            if (!substituteIds.includes(defaultId)) {
+                reply.code(400);
+                return { error: "DEFAULT_MUST_BE_ALLOWED", message: "Default milk must be one of the allowed substitutes for this item" };
+            }
+            for (const s of substitutes) {
+                if (s.recipeQtyMl != null && s.recipeQtyMl < 0) {
+                    reply.code(400);
+                    return { error: "INVALID_RECIPE_QTY", message: "recipeQtyMl must be non-negative when provided" };
+                }
+            }
+            const subs = await app.prisma.substitute.findMany({ where: { id: { in: substituteIds } }, select: { id: true, isActive: true } });
+            if (subs.length !== substituteIds.length) {
+                reply.code(400);
+                return { error: "INVALID_SUBSTITUTE", message: "One or more substitutes not found" };
+            }
+            const inactive = subs.find((s) => !s.isActive);
+            if (inactive) {
+                reply.code(400);
+                return { error: "SUBSTITUTE_INACTIVE", message: "All substitutes must be active" };
+            }
+        }
+        await app.prisma.menuItemSubstitute.deleteMany({ where: { itemId: id } });
+        if (substitutes.length > 0) {
+            await app.prisma.menuItemSubstitute.createMany({
+                data: substitutes.map((s) => ({
+                    itemId: id,
+                    substituteId: s.substituteId,
+                    priceCents: s.priceCents,
+                    recipeQtyMl: s.recipeQtyMl != null ? s.recipeQtyMl : null,
+                })),
+                skipDuplicates: true,
+            });
+            await app.prisma.menuItem.update({
+                where: { id },
+                data: { defaultSubstituteId: parsed.data.defaultSubstituteId },
+            });
+        }
+        else {
+            await app.prisma.menuItem.update({
+                where: { id },
+                data: { defaultSubstituteId: null },
+            });
+        }
+        const links = await app.prisma.menuItemSubstitute.findMany({
+            where: { itemId: id },
+            include: { substitute: { select: { id: true, name: true, isActive: true } } },
+        });
+        const updated = await app.prisma.menuItem.findUnique({
+            where: { id },
+            select: { defaultSubstituteId: true, defaultSubstitute: { select: { id: true, name: true } } },
+        });
+        return { substituteLinks: links, defaultSubstituteId: updated?.defaultSubstituteId ?? null, defaultSubstitute: updated?.defaultSubstitute ?? null };
+    });
     // Link item to option groups: PUT /admin/items/:id/option-groups
     app.put("/items/:id/option-groups", async (req, reply) => {
         const { id } = req.params;
@@ -1640,5 +2579,320 @@ export async function adminRoutes(app) {
             include: { group: { include: { options: true, defaultOption: true } } },
         });
         return { optionGroupLinks: links };
+    });
+    // Link item to add-on groups: PUT /admin/items/:id/add-on-groups
+    app.put("/items/:id/add-on-groups", async (req, reply) => {
+        const { id } = req.params;
+        const parsed = z.object({ groupIds: z.array(z.string()) }).safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten() };
+        }
+        const item = await app.prisma.menuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
+        if (!item) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Item not found" };
+        }
+        if (item.deletedAt) {
+            reply.code(400);
+            return { error: "ITEM_DELETED", message: "Cannot edit a deleted item. Restore it first." };
+        }
+        if (parsed.data.groupIds.length > 0) {
+            const groups = await app.prisma.addOnGroup.findMany({ where: { id: { in: parsed.data.groupIds } }, select: { id: true, isActive: true } });
+            if (groups.length !== parsed.data.groupIds.length) {
+                reply.code(400);
+                return { error: "INVALID_ADDON_GROUP", message: "One or more add-on groups not found" };
+            }
+        }
+        await app.prisma.menuItemAddOnGroup.deleteMany({ where: { itemId: id } });
+        if (parsed.data.groupIds.length > 0) {
+            await app.prisma.menuItemAddOnGroup.createMany({
+                data: parsed.data.groupIds.map((groupId) => ({ itemId: id, groupId })),
+                skipDuplicates: true,
+            });
+        }
+        const links = await app.prisma.menuItemAddOnGroup.findMany({
+            where: { itemId: id },
+            include: { group: { include: { options: { include: { recipeLines: { include: { ingredient: true } } } } } } },
+        });
+        return { addOnGroupLinks: links };
+    });
+    // Link item to substitute groups + default milk: PUT /admin/items/:id/substitute-groups
+    app.put("/items/:id/substitute-groups", async (req, reply) => {
+        const { id } = req.params;
+        const parsed = z.object({
+            groupIds: z.array(z.string()),
+            defaultSubstituteOptionId: z.string().nullable(),
+        }).safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten() };
+        }
+        const item = await app.prisma.menuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
+        if (!item) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Item not found" };
+        }
+        if (item.deletedAt) {
+            reply.code(400);
+            return { error: "ITEM_DELETED", message: "Cannot edit a deleted item. Restore it first." };
+        }
+        if (parsed.data.groupIds.length > 0) {
+            const groups = await app.prisma.substituteGroup.findMany({
+                where: { id: { in: parsed.data.groupIds } },
+                select: { id: true, isActive: true },
+            });
+            if (groups.length !== parsed.data.groupIds.length) {
+                reply.code(400);
+                return { error: "INVALID_SUBSTITUTE_GROUP", message: "One or more substitute groups not found" };
+            }
+            const defaultId = parsed.data.defaultSubstituteOptionId;
+            if (!defaultId) {
+                reply.code(400);
+                return { error: "DEFAULT_MILK_REQUIRED", message: "Default milk is required when substitutes are enabled. Set defaultSubstituteOptionId." };
+            }
+            const defaultOpt = await app.prisma.substituteOption.findUnique({
+                where: { id: defaultId },
+                select: { id: true, groupId: true, isActive: true },
+            });
+            if (!defaultOpt) {
+                reply.code(400);
+                return { error: "DEFAULT_NOT_FOUND", message: "Default substitute option not found" };
+            }
+            if (!defaultOpt.isActive) {
+                reply.code(400);
+                return { error: "DEFAULT_INACTIVE", message: "Default milk option must be active" };
+            }
+            if (!parsed.data.groupIds.includes(defaultOpt.groupId)) {
+                reply.code(400);
+                return { error: "DEFAULT_MUST_BE_IN_SELECTED_GROUP", message: "Default milk must be from one of the selected substitute groups" };
+            }
+        }
+        await app.prisma.menuItemSubstituteGroup.deleteMany({ where: { itemId: id } });
+        if (parsed.data.groupIds.length > 0) {
+            await app.prisma.menuItemSubstituteGroup.createMany({
+                data: parsed.data.groupIds.map((groupId) => ({ itemId: id, groupId })),
+                skipDuplicates: true,
+            });
+            await app.prisma.menuItem.update({
+                where: { id },
+                data: { defaultSubstituteOptionId: parsed.data.defaultSubstituteOptionId },
+            });
+        }
+        else {
+            await app.prisma.menuItem.update({
+                where: { id },
+                data: { defaultSubstituteOptionId: null },
+            });
+        }
+        const links = await app.prisma.menuItemSubstituteGroup.findMany({
+            where: { itemId: id },
+            include: { group: { include: { options: { include: { recipeLines: { include: { ingredient: true } } } } } } },
+        });
+        const updated = await app.prisma.menuItem.findUnique({
+            where: { id },
+            select: { defaultSubstituteOptionId: true, defaultSubstituteOption: true },
+        });
+        return { substituteGroupLinks: links, defaultSubstituteOptionId: updated?.defaultSubstituteOptionId ?? null, defaultSubstituteOption: updated?.defaultSubstituteOption ?? null };
+    });
+    // Export transactions (must be before /transactions to avoid path conflicts)
+    app.get("/transactions/export", async (req, reply) => {
+        const storeId = req.query.storeId || "store_1";
+        const fromStr = req.query.from;
+        const toStr = req.query.to;
+        if (!fromStr || !toStr) {
+            reply.code(400);
+            return { error: "INVALID_QUERY", message: "from and to date required (YYYY-MM-DD)" };
+        }
+        const from = new Date(fromStr + "T00:00:00.000Z");
+        const to = new Date(toStr + "T23:59:59.999Z");
+        if (isNaN(from.getTime()) || isNaN(to.getTime())) {
+            reply.code(400);
+            return { error: "INVALID_DATES", message: "Invalid date format" };
+        }
+        if (from > to) {
+            reply.code(400);
+            return { error: "INVALID_RANGE", message: "From date must be before or equal to To date" };
+        }
+        const maxExport = 10000;
+        const items = await app.prisma.syncedTransaction.findMany({
+            where: { storeId, createdAt: { gte: from, lte: to } },
+            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+            take: maxExport + 1,
+        });
+        if (items.length > maxExport) {
+            reply.code(400);
+            return { error: "RANGE_TOO_LARGE", message: `Date range has more than ${maxExport} transactions. Narrow the range.` };
+        }
+        const rows = items.map((t) => {
+            let payments = [];
+            try {
+                payments = JSON.parse(t.paymentsJson);
+            }
+            catch {
+                /* ignore */
+            }
+            let lineItems = [];
+            try {
+                if (t.lineItemsSummaryJson)
+                    lineItems = JSON.parse(t.lineItemsSummaryJson);
+            }
+            catch {
+                /* ignore */
+            }
+            const primaryMethod = payments[0]?.method ?? "CASH";
+            return {
+                Date: t.createdAt.toISOString().slice(0, 10),
+                Time: t.createdAt.toISOString().slice(11, 19),
+                "Receipt No.": t.transactionNo,
+                Cashier: t.cashierName ?? "",
+                Status: t.status,
+                Source: t.source,
+                "Service Type": t.serviceType,
+                "Payment Method": primaryMethod,
+                Subtotal: (t.subtotalCents / 100).toFixed(2),
+                Discount: (t.discountCents / 100).toFixed(2),
+                Total: (t.totalCents / 100).toFixed(2),
+                "Items Count": t.itemsCount,
+                "Items Summary": lineItems.map((l) => `${l.name} x${l.qty}`).join("; ") || "",
+            };
+        });
+        return { items: rows };
+    });
+    // Synced transactions list (for Cloud Admin)
+    app.get("/transactions", async (req, reply) => {
+        const storeId = req.query.storeId || "store_1";
+        const from = req.query.from ? new Date(req.query.from + "T00:00:00.000Z") : null;
+        const to = req.query.to ? new Date(req.query.to + "T23:59:59.999Z") : null;
+        const limit = Math.min(parseInt(req.query.limit || "50", 10) || 50, 200);
+        const cursor = req.query.cursor ? req.query.cursor : null;
+        const where = { storeId };
+        if (from || to) {
+            where.createdAt = {};
+            if (from)
+                where.createdAt.gte = from;
+            if (to)
+                where.createdAt.lte = to;
+        }
+        const skip = cursor ? parseInt(cursor, 10) || 0 : 0;
+        const items = await app.prisma.syncedTransaction.findMany({
+            where,
+            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+            skip,
+            take: limit + 1,
+        });
+        const hasMore = items.length > limit;
+        const list = hasMore ? items.slice(0, limit) : items;
+        const nextCursor = hasMore ? String(skip + limit) : null;
+        const rows = list.map((t) => {
+            let payments = [];
+            try {
+                payments = JSON.parse(t.paymentsJson);
+            }
+            catch {
+                // ignore
+            }
+            let lineItems = [];
+            try {
+                if (t.lineItemsSummaryJson)
+                    lineItems = JSON.parse(t.lineItemsSummaryJson);
+            }
+            catch {
+                // ignore
+            }
+            return {
+                id: t.id,
+                sourceTransactionId: t.sourceTransactionId,
+                transactionNo: t.transactionNo,
+                status: t.status,
+                source: t.source,
+                serviceType: t.serviceType,
+                cashierName: t.cashierName,
+                totalCents: t.totalCents,
+                subtotalCents: t.subtotalCents,
+                discountCents: t.discountCents,
+                itemsCount: t.itemsCount,
+                createdAt: t.createdAt.toISOString(),
+                voidedAt: t.voidedAt?.toISOString() ?? null,
+                voidReason: t.voidReason,
+                payments,
+                lineItems,
+            };
+        });
+        return { items: rows, nextCursor, hasMore };
+    });
+    // Daily report
+    app.get("/reports/daily", async (req, reply) => {
+        const storeId = req.query.storeId || "store_1";
+        const dateStr = req.query.date || new Date().toISOString().slice(0, 10);
+        const start = new Date(dateStr + "T00:00:00.000Z");
+        const end = new Date(dateStr + "T23:59:59.999Z");
+        const txs = await app.prisma.syncedTransaction.findMany({
+            where: { storeId, status: "PAID", createdAt: { gte: start, lte: end } },
+        });
+        let totalSales = 0;
+        let totalDiscounts = 0;
+        const byMethod = {};
+        for (const t of txs) {
+            totalSales += t.totalCents;
+            totalDiscounts += t.discountCents;
+            try {
+                const payments = JSON.parse(t.paymentsJson);
+                for (const p of payments) {
+                    byMethod[p.method] = (byMethod[p.method] ?? 0) + p.amountCents;
+                }
+            }
+            catch {
+                // ignore
+            }
+        }
+        const itemsCount = txs.reduce((s, t) => s + t.itemsCount, 0);
+        return {
+            date: dateStr,
+            storeId,
+            transactionCount: txs.length,
+            itemsCount,
+            totalSales,
+            totalDiscounts,
+            byPaymentMethod: byMethod,
+        };
+    });
+    // Monthly report
+    app.get("/reports/monthly", async (req, reply) => {
+        const storeId = req.query.storeId || "store_1";
+        const year = parseInt(req.query.year || String(new Date().getFullYear()), 10);
+        const month = parseInt(req.query.month || String(new Date().getMonth() + 1), 10);
+        const start = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0));
+        const end = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999));
+        const txs = await app.prisma.syncedTransaction.findMany({
+            where: { storeId, status: "PAID", createdAt: { gte: start, lte: end } },
+        });
+        let totalSales = 0;
+        let totalDiscounts = 0;
+        const byMethod = {};
+        for (const t of txs) {
+            totalSales += t.totalCents;
+            totalDiscounts += t.discountCents;
+            try {
+                const payments = JSON.parse(t.paymentsJson);
+                for (const p of payments) {
+                    byMethod[p.method] = (byMethod[p.method] ?? 0) + p.amountCents;
+                }
+            }
+            catch {
+                // ignore
+            }
+        }
+        const itemsCount = txs.reduce((s, t) => s + t.itemsCount, 0);
+        return {
+            year,
+            month,
+            storeId,
+            transactionCount: txs.length,
+            itemsCount,
+            totalSales,
+            totalDiscounts,
+            byPaymentMethod: byMethod,
+        };
     });
 }

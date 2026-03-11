@@ -1,16 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, type Substitute, type MenuSize, type Ingredient, type IngredientCategory } from "@/lib/api";
+import { api, type Substitute, type Ingredient, type IngredientCategory } from "@/lib/api";
 import { SearchableIngredientSelect } from "@/components/SearchableIngredientSelect";
-
-type DrinkMode = "ICED" | "HOT" | "CONCENTRATED";
-const MODES: DrinkMode[] = ["ICED", "HOT", "CONCENTRATED"];
-const MODE_LABELS: Record<DrinkMode, string> = { ICED: "Iced", HOT: "Hot", CONCENTRATED: "Concentrated" };
 
 export default function SubstitutesPage() {
   const [substitutes, setSubstitutes] = useState<Substitute[]>([]);
-  const [sizes, setSizes] = useState<MenuSize[]>([]);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [ingredientCategories, setIngredientCategories] = useState<IngredientCategory[]>([]);
   const [loading, setLoading] = useState(true);
@@ -25,9 +20,6 @@ export default function SubstitutesPage() {
   const [recipeSaving, setRecipeSaving] = useState(false);
   const [newIngredientId, setNewIngredientId] = useState("");
   const [newQty, setNewQty] = useState("");
-  const [priceModal, setPriceModal] = useState<Substitute | null>(null);
-  const [priceMatrix, setPriceMatrix] = useState<Record<string, number>>({}); // key: sizeId_mode
-  const [priceSaving, setPriceSaving] = useState(false);
 
   function refresh() {
     setLoading(true);
@@ -38,9 +30,6 @@ export default function SubstitutesPage() {
   }
 
   useEffect(() => { refresh(); }, []);
-  useEffect(() => {
-    api.getMenuSizes().then((r) => setSizes(r.sizes ?? [])).catch(() => {});
-  }, []);
   useEffect(() => {
     Promise.all([api.getIngredients(), api.getIngredientCategories()])
       .then(([ings, cats]) => {
@@ -149,56 +138,11 @@ export default function SubstitutesPage() {
     setNewQty("");
   }
 
-  function openPricing(sub: Substitute) {
-    setPriceModal(sub);
-    const matrix: Record<string, number> = {};
-    for (const size of sizes) {
-      for (const mode of MODES) {
-        const k = `${size.id}_${mode}`;
-        const existing = (sub.prices ?? []).find((pr) => pr.sizeId === size.id && pr.mode === mode);
-        matrix[k] = existing?.priceCents ?? 0;
-      }
-    }
-    setPriceMatrix(matrix);
-  }
-
-  function setPriceCell(sizeId: string, mode: DrinkMode, cents: number) {
-    setPriceMatrix((prev) => ({ ...prev, [`${sizeId}_${mode}`]: cents }));
-  }
-
-  function getPriceCell(sizeId: string, mode: DrinkMode): number {
-    return priceMatrix[`${sizeId}_${mode}`] ?? 0;
-  }
-
-  async function savePricing() {
-    if (!priceModal) return;
-    setPriceSaving(true);
-    setError("");
-    try {
-      const prices: { sizeId: string; mode: DrinkMode; priceCents: number }[] = [];
-      for (const size of sizes) {
-        for (const mode of MODES) {
-          const cents = getPriceCell(size.id, mode);
-          if (cents > 0) {
-            prices.push({ sizeId: size.id, mode, priceCents: cents });
-          }
-        }
-      }
-      await api.putSubstitutePrices(priceModal.id, prices);
-      setPriceModal(null);
-      setSuccess("Pricing saved");
-      refresh();
-      setTimeout(() => setSuccess(""), 2000);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save pricing");
-    } finally { setPriceSaving(false); }
-  }
-
   return (
     <div className="mx-auto max-w-5xl py-6">
       <h1 className="mb-4 text-2xl font-semibold">Milk Substitutes</h1>
       <p className="mb-6 text-sm text-gray-600">
-        Define milk substitute types and set prices by size and temperature. Default milk is free. Assign substitutes to items in Create/Edit Item.
+        Manage the master list of milk substitute types. Assign substitutes to items and set price + recipe consumption per item in Create/Edit Item.
       </p>
 
       {success && <p className="mb-3 text-sm text-green-600">{success}</p>}
@@ -255,35 +199,14 @@ export default function SubstitutesPage() {
                     {sub.isActive ? "Deactivate" : "Activate"}
                   </button>
                   <button type="button" onClick={() => openRecipe(sub)} className="rounded border px-2 py-1 text-xs hover:bg-gray-100">Recipe</button>
-                  <button type="button" onClick={() => openPricing(sub)} className="rounded border px-2 py-1 text-xs hover:bg-gray-100">Pricing</button>
                   <button type="button" onClick={() => handleDelete(sub)} className="text-red-600 text-sm hover:underline">Delete</button>
                 </div>
               </div>
               {expandedId === sub.id && (
                 <div className="mt-4 border-t border-gray-200 pt-4">
-                  <p className="mb-2 text-sm text-gray-600">Price entries: {(sub.prices ?? []).length}</p>
-                  {sub.prices && sub.prices.length > 0 && (
-                    <div className="overflow-x-auto text-sm">
-                      <table className="min-w-[200px]">
-                        <thead>
-                          <tr>
-                            <th className="text-left font-medium">Size</th>
-                            <th className="text-left font-medium">Mode</th>
-                            <th className="text-right font-medium">Price (₱)</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {sub.prices.map((p) => (
-                            <tr key={`${p.sizeId}-${p.mode}`}>
-                              <td>{(p as { size?: { label: string } }).size?.label ?? p.sizeId}</td>
-                              <td>{MODE_LABELS[p.mode as DrinkMode] ?? p.mode}</td>
-                              <td className="text-right">{(p.priceCents / 100).toFixed(2)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
+                  <p className="text-sm text-gray-600">
+                    Recipe: {(sub.recipeLines ?? []).length} ingredient(s). Pricing is configured per item in Create/Edit Item.
+                  </p>
                 </div>
               )}
             </div>
@@ -320,54 +243,6 @@ export default function SubstitutesPage() {
         </div>
       )}
 
-      {priceModal && (
-        <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/50 p-4">
-          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-lg bg-white p-4 shadow-lg">
-            <h3 className="mb-4 font-semibold">Pricing: {priceModal.name}</h3>
-            <p className="mb-4 text-sm text-gray-600">Set prices by size and temperature. Leave blank or 0 for free. Default milk is always free.</p>
-            <div className="overflow-x-auto text-sm">
-              <table className="w-full border-collapse">
-                <thead>
-                  <tr>
-                    <th className="border border-gray-200 px-2 py-1 text-left font-medium">Size</th>
-                    {MODES.map((m) => (
-                      <th key={m} className="border border-gray-200 px-2 py-1 text-center font-medium">{MODE_LABELS[m]}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {sizes.filter((s) => s.isActive).map((size) => (
-                    <tr key={size.id}>
-                      <td className="border border-gray-200 px-2 py-1 font-medium">{size.label}</td>
-                      {MODES.map((mode) => (
-                        <td key={mode} className="border border-gray-200 px-2 py-1">
-                          <input
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            value={getPriceCell(size.id, mode) / 100}
-                            onChange={(e) => {
-                              const v = parseFloat(e.target.value);
-                              setPriceCell(size.id, mode, Number.isNaN(v) || v < 0 ? 0 : Math.round(v * 100));
-                            }}
-                            className="w-full rounded border px-2 py-0.5"
-                            placeholder="0"
-                          />
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            {sizes.filter((s) => s.isActive).length === 0 && <p className="py-4 text-amber-600 text-sm">No sizes defined. Add sizes in Menu Settings &gt; Sizes first.</p>}
-            <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => setPriceModal(null)} className="rounded border px-3 py-1.5 text-sm">Cancel</button>
-              <button type="button" onClick={savePricing} disabled={priceSaving} className="rounded bg-teal-600 px-3 py-1.5 text-sm text-white disabled:opacity-50">{priceSaving ? "Saving…" : "Save"}</button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

@@ -1238,10 +1238,12 @@ model CloudMenuItemAddOn {
 }
 
 model CloudMenuItemSubstitute {
-  id                String @id @default(cuid())
-  storeId           String @default("store_1")
+  id                String  @id @default(cuid())
+  storeId           String  @default("store_1")
   menuItemCloudId   String
   substituteCloudId String
+  priceCents        Int     @default(0)  // per-item extra price
+  recipeQtyMl       Int?    // per-item recipe consumption (ml), SQLite-compatible
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 

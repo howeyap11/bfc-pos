@@ -2617,10 +2617,16 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   // Link item to flat substitutes + default milk: PUT /admin/items/:id/substitutes (primary)
+  // Payload: { substitutes: [{ substituteId, priceCents, recipeQtyMl }], defaultSubstituteId }
   app.put("/items/:id/substitutes", async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
     const { id } = req.params;
+    const substituteEntrySchema = z.object({
+      substituteId: z.string(),
+      priceCents: z.number().int().min(0),
+      recipeQtyMl: z.number().min(0).optional().nullable(),
+    });
     const parsed = z.object({
-      substituteIds: z.array(z.string()),
+      substitutes: z.array(substituteEntrySchema),
       defaultSubstituteId: z.string().nullable(),
     }).safeParse(req.body);
     if (!parsed.success) {
@@ -2636,35 +2642,49 @@ export async function adminRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "ITEM_DELETED", message: "Cannot edit a deleted item. Restore it first." };
     }
-    if (parsed.data.substituteIds.length > 0) {
+    const substitutes = parsed.data.substitutes;
+    if (substitutes.length > 0) {
+      const substituteIds = substitutes.map((s) => s.substituteId);
+      const uniqueIds = new Set(substituteIds);
+      if (uniqueIds.size !== substituteIds.length) {
+        reply.code(400);
+        return { error: "DUPLICATE_SUBSTITUTE", message: "substituteIds must be unique" };
+      }
       const defaultId = parsed.data.defaultSubstituteId;
       if (!defaultId) {
         reply.code(400);
         return { error: "DEFAULT_MILK_REQUIRED", message: "Default milk is required when substitutes are enabled. Set defaultSubstituteId." };
       }
-      const defaultSub = await app.prisma.substitute.findUnique({ where: { id: defaultId }, select: { id: true, isActive: true } });
-      if (!defaultSub) {
-        reply.code(400);
-        return { error: "DEFAULT_NOT_FOUND", message: "Default substitute not found" };
-      }
-      if (!defaultSub.isActive) {
-        reply.code(400);
-        return { error: "DEFAULT_INACTIVE", message: "Default milk must be active" };
-      }
-      if (!parsed.data.substituteIds.includes(defaultId)) {
+      if (!substituteIds.includes(defaultId)) {
         reply.code(400);
         return { error: "DEFAULT_MUST_BE_ALLOWED", message: "Default milk must be one of the allowed substitutes for this item" };
       }
-      const subs = await app.prisma.substitute.findMany({ where: { id: { in: parsed.data.substituteIds } }, select: { id: true, isActive: true } });
-      if (subs.length !== parsed.data.substituteIds.length) {
+      for (const s of substitutes) {
+        if (s.recipeQtyMl != null && s.recipeQtyMl < 0) {
+          reply.code(400);
+          return { error: "INVALID_RECIPE_QTY", message: "recipeQtyMl must be non-negative when provided" };
+        }
+      }
+      const subs = await app.prisma.substitute.findMany({ where: { id: { in: substituteIds } }, select: { id: true, isActive: true } });
+      if (subs.length !== substituteIds.length) {
         reply.code(400);
         return { error: "INVALID_SUBSTITUTE", message: "One or more substitutes not found" };
       }
+      const inactive = subs.find((s) => !s.isActive);
+      if (inactive) {
+        reply.code(400);
+        return { error: "SUBSTITUTE_INACTIVE", message: "All substitutes must be active" };
+      }
     }
     await app.prisma.menuItemSubstitute.deleteMany({ where: { itemId: id } });
-    if (parsed.data.substituteIds.length > 0) {
+    if (substitutes.length > 0) {
       await app.prisma.menuItemSubstitute.createMany({
-        data: parsed.data.substituteIds.map((substituteId) => ({ itemId: id, substituteId })),
+        data: substitutes.map((s) => ({
+          itemId: id,
+          substituteId: s.substituteId,
+          priceCents: s.priceCents,
+          recipeQtyMl: s.recipeQtyMl != null ? s.recipeQtyMl : null,
+        })),
         skipDuplicates: true,
       });
       await app.prisma.menuItem.update({
@@ -2679,11 +2699,11 @@ export async function adminRoutes(app: FastifyInstance) {
     }
     const links = await app.prisma.menuItemSubstitute.findMany({
       where: { itemId: id },
-      include: { substitute: { include: { recipeLines: { include: { ingredient: true } }, prices: { include: { size: true } } } } },
+      include: { substitute: { select: { id: true, name: true, isActive: true } } },
     });
     const updated = await app.prisma.menuItem.findUnique({
       where: { id },
-      select: { defaultSubstituteId: true, defaultSubstitute: true },
+      select: { defaultSubstituteId: true, defaultSubstitute: { select: { id: true, name: true } } },
     });
     return { substituteLinks: links, defaultSubstituteId: updated?.defaultSubstituteId ?? null, defaultSubstitute: updated?.defaultSubstitute ?? null };
   });

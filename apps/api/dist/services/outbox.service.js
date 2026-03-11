@@ -1,4 +1,7 @@
 export async function enqueueOutbox(prisma, params) {
+    if (!prisma.localOutbox) {
+        throw new Error("Prisma client missing LocalOutbox model. Run: cd apps/api && pnpm exec prisma generate");
+    }
     const { storeId, topic, payload } = params;
     const record = await prisma.localOutbox.create({
         data: {
@@ -16,6 +19,9 @@ export async function enqueueOutbox(prisma, params) {
  * Call from cron or admin endpoint to retry failed inventory deductions.
  */
 export async function processOutboxForTopic(prisma, inventoryService, topic, maxItems = 10) {
+    if (!prisma.localOutbox) {
+        throw new Error("Prisma client missing LocalOutbox model. Run: cd apps/api && pnpm exec prisma generate");
+    }
     const items = await prisma.localOutbox.findMany({
         where: { topic, status: "PENDING" },
         take: maxItems,
@@ -68,6 +74,9 @@ export async function processOutboxForTopic(prisma, inventoryService, topic, max
  * Loads transaction by transactionId, calls uploadFn, marks SENT or FAILED.
  */
 export async function processTransactionSyncOutbox(prisma, uploadFn, maxItems = 10) {
+    if (!prisma.localOutbox) {
+        throw new Error("Prisma client missing LocalOutbox model. Run: cd apps/api && pnpm exec prisma generate");
+    }
     const items = await prisma.localOutbox.findMany({
         where: { topic: "transaction.cloud.sync", status: "PENDING" },
         take: maxItems,
@@ -109,15 +118,20 @@ export async function processTransactionSyncOutbox(prisma, uploadFn, maxItems = 
             succeeded++;
         }
         catch (err) {
+            const attempts = item.attempts + 1;
+            const lastError = err?.message ?? String(err);
+            // Keep PENDING for retry up to 10 attempts, then mark FAILED
+            const status = attempts >= 10 ? "FAILED" : "PENDING";
             await prisma.localOutbox.update({
                 where: { id: item.id },
                 data: {
-                    status: "FAILED",
-                    attempts: item.attempts + 1,
-                    lastError: err?.message ?? String(err),
+                    status,
+                    attempts,
+                    lastError,
                 },
             });
-            failed++;
+            if (status === "FAILED")
+                failed++;
         }
     }
     return { processed: items.length, succeeded, failed };

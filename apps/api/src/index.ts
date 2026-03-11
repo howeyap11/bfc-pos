@@ -290,18 +290,19 @@ app.get("/items/:id", async (req) => {
         where: { menuItemCloudId: cloud.cloudId, storeId },
       }),
       app.prisma.cloudAddOn.findMany({ where: { storeId }, orderBy: { sortOrder: "asc" } }),
-      app.prisma.cloudSubstitute.findMany({ where: { storeId }, include: { prices: true }, orderBy: { sortOrder: "asc" } }),
+      app.prisma.cloudSubstitute.findMany({ where: { storeId }, select: { cloudId: true, name: true }, orderBy: { sortOrder: "asc" } }),
     ]);
     const addOnIds = new Set(addOnLinks.map((l) => l.addOnCloudId));
-    const substituteIds = new Set(substituteLinks.map((l) => l.substituteCloudId));
+    const substituteById = new Map(substitutes.map((s) => [s.cloudId, s]));
     const itemAddOns = addOns.filter((a) => addOnIds.has(a.cloudId)).map((a) => ({ id: a.cloudId, name: a.name, priceCents: a.priceCents }));
-    const itemSubstitutes = substitutes.filter((s) => substituteIds.has(s.cloudId)).map((s) => {
-      const sub = s as { cloudId: string; name: string; priceCents: number; prices?: Array<{ sizeCloudId: string; mode: string; priceCents: number }> };
+    const itemSubstitutes = substituteLinks.map((link) => {
+      const sub = substituteById.get(link.substituteCloudId);
+      const l = link as { substituteCloudId: string; priceCents?: number; recipeQtyMl?: number | null };
       return {
-        id: sub.cloudId,
-        name: sub.name,
-        priceCents: sub.priceCents,
-        prices: (sub.prices ?? []).map((p) => ({ sizeCloudId: p.sizeCloudId, mode: p.mode, priceCents: p.priceCents })),
+        id: l.substituteCloudId,
+        name: sub?.name ?? l.substituteCloudId,
+        priceCents: l.priceCents ?? 0,
+        recipeQtyMl: l.recipeQtyMl ?? null,
       };
     });
     const defaultSubId = (cloud as { defaultSubstituteCloudId?: string | null }).defaultSubstituteCloudId ?? null;

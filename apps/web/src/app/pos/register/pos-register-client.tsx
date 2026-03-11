@@ -1556,6 +1556,19 @@ export default function PosRegisterClient() {
     }
   }
 
+  // #region agent log
+  useEffect(() => {
+    if (registerView === "CUSTOMIZE" && configuringItem) {
+      const hasSizes = !!(configuringItem as { hasSizes?: boolean }).hasSizes;
+      const sm = (configuringItem as { sizesByMode?: Record<string, unknown[]> }).sizesByMode;
+      const hotLen = sm?.HOT?.length ?? 0;
+      const icedLen = sm?.ICED?.length ?? 0;
+      const concLen = sm?.CONCENTRATED?.length ?? 0;
+      fetch('http://127.0.0.1:7330/ingest/e360f4f2-ab8d-4cc6-b94b-f45235f7b95a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f13644'},body:JSON.stringify({sessionId:'f13644',location:'pos-register-client.tsx:customizeRender',message:'Customize view state',data:{itemId:configuringItem.id,hasSizes,hasSizesByMode:!!sm,HOT:hotLen,ICED:icedLen,CONCENTRATED:concLen,configBaseType,configSizeOptionId:configSizeOption?.id,addDisabled:!!(hasSizes && sm && (!configBaseType || !configSizeOption))},hypothesisId:'H2',timestamp:Date.now()})}).catch(()=>{});
+    }
+  }, [registerView, configuringItem, configBaseType, configSizeOption]);
+  // #endregion
+
   useEffect(() => {
     loadMenu();
     loadStoreConfig();
@@ -1879,6 +1892,9 @@ export default function PosRegisterClient() {
   }
 
   async function openItemConfig(itemId: string) {
+    // #region agent log
+    fetch('http://127.0.0.1:7330/ingest/e360f4f2-ab8d-4cc6-b94b-f45235f7b95a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f13644'},body:JSON.stringify({sessionId:'f13644',location:'pos-register-client.tsx:openItemConfig:entry',message:'openItemConfig called',data:{itemId,prevConfiguringId:configuringItem?.id},hypothesisId:'H5',timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     // Defensive guard
     if (!itemId) {
       console.warn("[openItemConfig] No itemId provided");
@@ -1895,28 +1911,37 @@ export default function PosRegisterClient() {
         return;
       }
 
+      const hasSizes = !!(item as { hasSizes?: boolean }).hasSizes;
+      const sm = (item as { sizesByMode?: Record<string, Array<{ id: string; name: string }>> }).sizesByMode;
+      const hotLen = sm?.HOT?.length ?? 0;
+      const icedLen = sm?.ICED?.length ?? 0;
+      const concLen = sm?.CONCENTRATED?.length ?? 0;
+      // #region agent log
+      fetch('http://127.0.0.1:7330/ingest/e360f4f2-ab8d-4cc6-b94b-f45235f7b95a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f13644'},body:JSON.stringify({sessionId:'f13644',location:'pos-register-client.tsx:openItemConfig:afterFetch',message:'item fetched',data:{itemId:item.id,hasSizes,hasSizesByMode:!!sm,HOT:hotLen,ICED:icedLen,CONCENTRATED:concLen},hypothesisId:'H1',timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+
       setConfiguringItem(item);
 
       // [DEBUG] Temporary - remove after verifying size UI
-      if (process.env.NODE_ENV !== "production" && (item as { hasSizes?: boolean }).hasSizes) {
-        const sm = (item as { sizesByMode?: Record<string, unknown[]> }).sizesByMode;
-        const hot = sm?.HOT?.length ?? 0;
-        const iced = sm?.ICED?.length ?? 0;
-        const conc = sm?.CONCENTRATED?.length ?? 0;
-        console.log("[openItemConfig] itemId:", item.id, "hasSizes:", true, "HOT:", hot, "ICED:", iced, "CONCENTRATED:", conc);
+      if (process.env.NODE_ENV !== "production" && hasSizes) {
+        console.log("[openItemConfig] itemId:", item.id, "hasSizes:", true, "HOT:", hotLen, "ICED:", icedLen, "CONCENTRATED:", concLen);
       }
 
       // For hasSizes + sizesByMode: init mode and size
-      if ((item as { hasSizes?: boolean }).hasSizes && (item as { sizesByMode?: Record<string, Array<{ id: string; name: string; priceCents?: number }>> }).sizesByMode) {
-        const sm = (item as { sizesByMode: Record<string, Array<{ id: string; name: string }>> }).sizesByMode;
-        const firstMode = (["HOT", "ICED", "CONCENTRATED"] as const).find((m) => sm[m]?.length);
-        const firstSize = firstMode ? sm[firstMode]?.[0] : null;
-        setConfigBaseType(firstMode ?? null);
-        setConfigSizeOption(firstSize ? { id: firstSize.id, name: firstSize.name } : null);
+      let firstMode: "HOT" | "ICED" | "CONCENTRATED" | null = null;
+      let firstSize: { id: string; name: string } | null = null;
+      if (hasSizes && sm) {
+        firstMode = (["HOT", "ICED", "CONCENTRATED"] as const).find((m) => sm[m]?.length) ?? null;
+        firstSize = firstMode && sm[firstMode]?.[0] ? { id: sm[firstMode]![0].id, name: sm[firstMode]![0].name } : null;
+        setConfigBaseType(firstMode);
+        setConfigSizeOption(firstSize);
       } else {
         setConfigBaseType(null);
         setConfigSizeOption(null);
       }
+      // #region agent log
+      fetch('http://127.0.0.1:7330/ingest/e360f4f2-ab8d-4cc6-b94b-f45235f7b95a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f13644'},body:JSON.stringify({sessionId:'f13644',location:'pos-register-client.tsx:openItemConfig:initMode',message:'init mode and size',data:{firstMode,firstSizeId:firstSize?.id},hypothesisId:'H3',timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
 
       // Pre-select defaults
       const defaults: Record<string, string[]> = {};
@@ -2006,6 +2031,9 @@ export default function PosRegisterClient() {
   }
   
   function closeItemConfig() {
+    // #region agent log
+    fetch('http://127.0.0.1:7330/ingest/e360f4f2-ab8d-4cc6-b94b-f45235f7b95a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f13644'},body:JSON.stringify({sessionId:'f13644',location:'pos-register-client.tsx:closeItemConfig',message:'closeItemConfig called',data:{wasItemId:configuringItem?.id},hypothesisId:'H5',timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     setConfiguringItem(null);
     setSelectedOptions({});
     setConfigBaseType(null);

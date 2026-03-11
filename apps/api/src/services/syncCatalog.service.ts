@@ -206,7 +206,7 @@ type SyncResponse = {
   }>;
   menuItemAddOnGroups?: { itemId: string; groupId: string }[];
   menuItemSubstituteGroups?: { itemId: string; groupId: string }[];
-  menuItemSubstitutes?: { itemId: string; substituteId: string }[];
+  menuItemSubstitutes?: { itemId: string; substituteId: string; priceCents?: number; recipeQtyMl?: number | null }[];
   storeSettings?: { adminPinHash: string | null };
 };
 
@@ -624,9 +624,31 @@ export async function syncCatalogFromCloud(
         }
         await tx.cloudSubstitutePrice.deleteMany({ where: { storeId } });
         const substitutePrices = data.substitutePrices ?? [];
-        if (substitutePrices.length > 0) {
+        const validSubstituteCloudIds = new Set(flatSubstitutes.map((s) => s.id));
+        const validSizeCloudIds = new Set((data.menuSizes ?? []).map((s) => s.id));
+        const validRows = substitutePrices.filter(
+          (p) => validSubstituteCloudIds.has(p.substituteId) && validSizeCloudIds.has(p.sizeId)
+        );
+        const skipped = substitutePrices.length - validRows.length;
+        if (skipped > 0) {
+          const missingSubstitute = substitutePrices
+            .filter((p) => !validSubstituteCloudIds.has(p.substituteId))
+            .map((p) => p.substituteId);
+          const missingSize = substitutePrices
+            .filter((p) => !validSizeCloudIds.has(p.sizeId))
+            .map((p) => p.sizeId);
+          const sampleSub = [...new Set(missingSubstitute)].slice(0, 5);
+          const sampleSize = [...new Set(missingSize)].slice(0, 5);
+          console.warn("[SyncCatalog] cloudSubstitutePrice: skipped rows with missing parent references", {
+            skipped,
+            totalReceived: substitutePrices.length,
+            sampleMissingSubstituteIds: sampleSub,
+            sampleMissingSizeIds: sampleSize,
+          });
+        }
+        if (validRows.length > 0) {
           await tx.cloudSubstitutePrice.createMany({
-            data: substitutePrices.map((p) => ({
+            data: validRows.map((p) => ({
               storeId,
               substituteCloudId: p.substituteId,
               sizeCloudId: p.sizeId,
@@ -637,8 +659,12 @@ export async function syncCatalogFromCloud(
         }
         await tx.cloudMenuItemSubstitute.deleteMany({ where: { storeId } });
         const subLinks = data.menuItemSubstitutes ?? [];
-        const subRows: Array<{ storeId: string; menuItemCloudId: string; substituteCloudId: string }> = subLinks.map((l) => ({
-          storeId, menuItemCloudId: l.itemId, substituteCloudId: l.substituteId,
+        const subRows: Array<{ storeId: string; menuItemCloudId: string; substituteCloudId: string; priceCents: number; recipeQtyMl: number | null }> = subLinks.map((l) => ({
+          storeId,
+          menuItemCloudId: l.itemId,
+          substituteCloudId: l.substituteId,
+          priceCents: l.priceCents ?? 0,
+          recipeQtyMl: l.recipeQtyMl != null ? l.recipeQtyMl : null,
         }));
         const dedupedSubRows = Array.from(
           new Map(subRows.map((r) => [`${r.storeId}:${r.menuItemCloudId}:${r.substituteCloudId}`, r])).values()
@@ -662,11 +688,11 @@ export async function syncCatalogFromCloud(
         }
         await tx.cloudMenuItemSubstitute.deleteMany({ where: { storeId } });
         const subGroupLinks = data.menuItemSubstituteGroups ?? [];
-        const subRows: Array<{ storeId: string; menuItemCloudId: string; substituteCloudId: string }> = [];
+        const subRows: Array<{ storeId: string; menuItemCloudId: string; substituteCloudId: string; priceCents: number; recipeQtyMl: number | null }> = [];
         for (const l of subGroupLinks) {
           const opts = subOptionsByGroup.get(l.groupId) ?? [];
           for (const o of opts) {
-            subRows.push({ storeId, menuItemCloudId: l.itemId, substituteCloudId: o.id });
+            subRows.push({ storeId, menuItemCloudId: l.itemId, substituteCloudId: o.id, priceCents: 0, recipeQtyMl: null });
           }
         }
         const dedupedSubRows = Array.from(
