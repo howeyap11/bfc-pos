@@ -78,6 +78,16 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         lineItems: {
           include: {
             refundItems: true,
+            item: {
+              select: {
+                category: {
+                  select: {
+                    id: true,
+                    name: true,
+                  },
+                },
+              },
+            },
           },
         },
         payments: true,

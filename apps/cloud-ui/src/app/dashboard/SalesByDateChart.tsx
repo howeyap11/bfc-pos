@@ -37,7 +37,7 @@ export function SalesByDateChart({
 
   if (loading) {
     return (
-      <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+      <div className="rounded-2xl border border-teal-100 bg-white p-6 shadow-sm">
         <h3 className="text-lg font-semibold text-gray-800">Sales by Date</h3>
         <p className="mb-4 text-sm text-gray-500">{rangeLabel}</p>
         <div className="flex gap-2">
@@ -53,7 +53,7 @@ export function SalesByDateChart({
   }
 
   return (
-    <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+    <div className="rounded-2xl border border-teal-100 bg-white p-6 shadow-sm">
       <h3 className="text-lg font-semibold text-gray-800">Sales by Date</h3>
       <p className="mb-4 text-sm text-gray-500">{rangeLabel}</p>
       <div className="mb-4 flex gap-2">

@@ -22,8 +22,11 @@ import { ItemsSoldTable } from "./ItemsSoldTable";
 
 function getDefaultDates(): { startDate: string; endDate: string } {
   const n = new Date();
-  const d = n.toISOString().slice(0, 10);
-  return { startDate: d, endDate: d };
+  const y = n.getFullYear();
+  const m = String(n.getMonth() + 1).padStart(2, "0");
+  const d = String(n.getDate()).padStart(2, "0");
+  const date = `${y}-${m}-${d}`;
+  return { startDate: date, endDate: date };
 }
 
 function formatPesos(cents: number): string {
@@ -40,7 +43,9 @@ function getGreeting(): string {
 function formatLastSynced(iso: string | null): string {
   if (!iso) return "Last synced: —";
   const d = new Date(iso);
-  return `Last synced at ${d.toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "short", day: "numeric" })}, ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }).toLowerCase()}`;
+  const datePart = d.toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "short", day: "numeric" });
+  const timePart = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }).replace(/\s/gi, "");
+  return `Last synced at ${datePart}, ${timePart}`;
 }
 
 export function DashboardContent() {
@@ -109,16 +114,10 @@ export function DashboardContent() {
   const kpis = summary?.kpis;
 
   return (
-    <div className="min-h-screen bg-gray-100/90">
+    <div className="min-h-screen bg-teal-50/60">
       <div className="mx-auto max-w-7xl p-6">
-        {/* Header: title + last synced */}
-        <div className="mb-2 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-          <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-          <p className="text-sm text-gray-500">{formatLastSynced(summary?.lastSyncedAt ?? null)}</p>
-        </div>
-
-        {/* KPI cards */}
-        <div className="mb-8 grid grid-cols-2 gap-4 sm:grid-cols-4">
+        {/* 1. Top summary cards */}
+        <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
           <SummaryCard
             title="Total Net Sales"
             value={kpis ? formatPesos(kpis.totalNetSalesCents) : "—"}
@@ -169,22 +168,25 @@ export function DashboardContent() {
           />
         </div>
 
-        {/* Greeting + date filter */}
+        {/* 2. Greeting + date filter + last synced */}
         <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <h2 className="text-lg font-semibold text-gray-800">
-            {getGreeting()}, {storeName.toUpperCase()}!
+          <h2 className="text-lg font-semibold text-teal-900">
+            {getGreeting()}, {storeName}!
           </h2>
-          <DateRangeFilter
+          <div className="flex flex-col items-end gap-2 sm:flex-row sm:items-center">
+            <DateRangeFilter
             startDate={startDate}
             endDate={endDate}
             onStartDateChange={setStartDate}
             onEndDateChange={setEndDate}
             disabled={loading}
           />
+            <p className="text-sm text-teal-700/80">{formatLastSynced(summary?.lastSyncedAt ?? null)}</p>
+          </div>
         </div>
 
         {error && (
-          <div className="mb-6 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+          <div className="mb-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
             {error}
             <button
               type="button"
@@ -196,7 +198,7 @@ export function DashboardContent() {
           </div>
         )}
 
-        {/* Sales by Date + Payment Types */}
+        {/* 3. Sales by Date chart + 4. Payment Types card */}
         <div className="mb-8 grid gap-6 lg:grid-cols-3">
           <div className="lg:col-span-2">
             <SalesByDateChart
@@ -218,7 +220,7 @@ export function DashboardContent() {
           </div>
         </div>
 
-        {/* Four donut charts */}
+        {/* 5. Four donut charts */}
         <div className="mb-8 grid gap-6 sm:grid-cols-2 xl:grid-cols-4">
           <DonutChartCard
             title="Sales by Category"
@@ -251,9 +253,8 @@ export function DashboardContent() {
           />
         </div>
 
-        {/* List of Items Sold */}
+        {/* 6. List of Items Sold table */}
         <ItemsSoldTable
-          key={`${startDate}-${endDate}`}
           startDate={startDate}
           endDate={endDate}
           initialRows={itemsSold}

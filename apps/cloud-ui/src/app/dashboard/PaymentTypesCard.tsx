@@ -34,7 +34,7 @@ export function PaymentTypesCard({
 
   if (loading) {
     return (
-      <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+      <div className="rounded-2xl border border-teal-100 bg-white p-6 shadow-sm">
         <h3 className="text-lg font-semibold text-gray-800">Payment Types</h3>
         <p className="mb-4 text-sm text-gray-500">{rangeLabel}</p>
         <div className="space-y-3">
@@ -50,7 +50,7 @@ export function PaymentTypesCard({
   }
 
   return (
-    <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+    <div className="rounded-2xl border border-teal-100 bg-white p-6 shadow-sm">
       <h3 className="text-lg font-semibold text-gray-800">Payment Types</h3>
       <p className="mb-4 text-sm text-gray-500">{rangeLabel}</p>
       <div className="space-y-3">

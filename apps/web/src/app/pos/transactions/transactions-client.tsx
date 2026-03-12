@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { COLORS } from "@/lib/theme";
 import { useOnScreenKeyboard, OnScreenKeyboard } from "@/lib/useOnScreenKeyboard";
 
@@ -29,6 +29,12 @@ type Transaction = {
     lineTotal: number;
     optionsJson?: string | null;
     note?: string | null;
+    item?: {
+      category?: {
+        id: string;
+        name: string;
+      } | null;
+    } | null;
     refundItems: Array<{
       id: string;
       qtyRefunded: number;
@@ -76,6 +82,9 @@ export default function TransactionsClient() {
   const [refundReason, setRefundReason] = useState("");
   const [refundBusy, setRefundBusy] = useState(false);
   const [refundError, setRefundError] = useState("");
+
+  const [selectedDateKey, setSelectedDateKey] = useState<string | null>(null);
+  const [ejournalCashierFilter, setEjournalCashierFilter] = useState<string>("ALL");
 
   useEffect(() => {
     // Load active staff from localStorage
@@ -160,6 +169,11 @@ export default function TransactionsClient() {
       setLoading(false);
       setLoadingMore(false);
     }
+  }
+
+  function getDateKey(dateStr: string): string {
+    const date = new Date(dateStr);
+    return date.toLocaleDateString("en-CA");
   }
 
   function openRefundModal(transaction: Transaction) {
@@ -309,6 +323,192 @@ export default function TransactionsClient() {
   function isLineRefunded(line: Transaction["lineItems"][0]): boolean {
     const totalRefunded = line.refundItems.reduce((sum, ri) => sum + ri.qtyRefunded, 0);
     return totalRefunded >= line.qty;
+  }
+
+  const dateGroups = useMemo(
+    () =>
+      transactions.length === 0
+        ? []
+        : (() => {
+            const map = new Map<
+              string,
+              { dateKey: string; dateLabel: string; transactions: Transaction[] }
+            >();
+            for (const tx of transactions) {
+              const key = getDateKey(tx.createdAt);
+              const existing = map.get(key);
+              if (existing) {
+                existing.transactions.push(tx);
+              } else {
+                map.set(key, {
+                  dateKey: key,
+                  dateLabel: formatDate(tx.createdAt),
+                  transactions: [tx],
+                });
+              }
+            }
+            const keys = Array.from(map.keys()).sort((a, b) =>
+              a < b ? 1 : a > b ? -1 : 0
+            );
+            return keys.map((k) => map.get(k)!);
+          })(),
+    [transactions]
+  );
+
+  useEffect(() => {
+    if (transactions.length === 0 || dateGroups.length === 0) {
+      setSelectedDateKey(null);
+      return;
+    }
+
+    const todayKey = getDateKey(new Date().toISOString());
+    const hasToday = dateGroups.some((g) => g.dateKey === todayKey);
+
+    setSelectedDateKey((prev) => {
+      if (prev && dateGroups.some((g) => g.dateKey === prev)) {
+        return prev;
+      }
+      if (hasToday) return todayKey;
+      return dateGroups[0]?.dateKey ?? prev;
+    });
+  }, [transactions, dateGroups]);
+
+  useEffect(() => {
+    setEjournalCashierFilter("ALL");
+  }, [selectedDateKey]);
+
+  const report = useMemo(() => {
+    if (!selectedDateKey) return null;
+    const group = dateGroups.find((g) => g.dateKey === selectedDateKey);
+    if (!group) return null;
+
+    const txsForReport = group.transactions.filter((tx) => tx.status !== "VOID");
+    if (txsForReport.length === 0) return null;
+
+    const categoriesMap = new Map<
+      string,
+      { name: string; qty: number; amountCents: number }
+    >();
+    const cashierSet = new Set<string>();
+    const ejournalRows: {
+      id: string;
+      label: string;
+      categoryName: string | null;
+      cashier: string;
+      qty: number;
+      amountCents: number;
+    }[] = [];
+    let totalQty = 0;
+    let totalAmountCents = 0;
+
+    for (const tx of txsForReport) {
+      const cashier = tx.createdBy || "Unknown";
+      cashierSet.add(cashier);
+      const includeThisTxInFilter =
+        ejournalCashierFilter === "ALL" || ejournalCashierFilter === cashier;
+
+      for (const line of tx.lineItems) {
+        const totalRefundedQty = line.refundItems.reduce(
+          (sum, ri) => sum + ri.qtyRefunded,
+          0
+        );
+        const totalRefundedAmount = line.refundItems.reduce(
+          (sum, ri) => sum + ri.amountRefundedCents,
+          0
+        );
+        const netQty = line.qty - totalRefundedQty;
+        const netAmount = line.lineTotal - totalRefundedAmount;
+        if (netQty <= 0 && netAmount <= 0) continue;
+
+        const categoryName =
+          line.item && line.item.category ? line.item.category.name : null;
+        const catKey = categoryName || "Uncategorized";
+        const existingCat = categoriesMap.get(catKey) || {
+          name: catKey,
+          qty: 0,
+          amountCents: 0,
+        };
+        existingCat.qty += netQty;
+        existingCat.amountCents += netAmount;
+        categoriesMap.set(catKey, existingCat);
+
+        if (includeThisTxInFilter) {
+          ejournalRows.push({
+            id: `${tx.id}-${line.id}`,
+            label: line.name,
+            categoryName,
+            cashier,
+            qty: netQty,
+            amountCents: netAmount,
+          });
+          totalQty += netQty;
+          totalAmountCents += netAmount;
+        }
+      }
+    }
+
+    const categories = Array.from(categoriesMap.values()).sort(
+      (a, b) => b.amountCents - a.amountCents
+    );
+    const cashiers = Array.from(cashierSet.values()).sort();
+
+    return {
+      dateLabel:
+        group.transactions.length > 0
+          ? formatDate(group.transactions[0].createdAt)
+          : "",
+      categories,
+      ejournal: {
+        cashiers,
+        rows: ejournalRows,
+        totalQty,
+        totalAmountCents,
+      },
+    };
+  }, [selectedDateKey, dateGroups, ejournalCashierFilter]);
+
+  function handlePrintCategorySummary() {
+    if (!report) return;
+    const lines =
+      report.categories.length === 0
+        ? ["No category sales for this date."]
+        : report.categories.map(
+            (c) =>
+              `${c.name}: ${c.qty} item(s) — ${formatPesos(c.amountCents)}`
+          );
+    console.log("[Print] Category summary", {
+      date: report.dateLabel,
+      lines,
+    });
+    alert(
+      `Print Category Summary\n${report.dateLabel}\n\n` + lines.join("\n")
+    );
+  }
+
+  function handlePrintEjournal() {
+    if (!report) return;
+    const scopeLabel =
+      ejournalCashierFilter === "ALL"
+        ? "All cashiers"
+        : `Cashier: ${ejournalCashierFilter}`;
+    const lines =
+      report.ejournal.rows.length === 0
+        ? ["No sold items for this selection."]
+        : report.ejournal.rows.map((row) => {
+            const cat = row.categoryName ? ` [${row.categoryName}]` : "";
+            return `${row.label}${cat} — ${row.qty} × ${formatPesos(
+              Math.round(row.amountCents / Math.max(row.qty, 1))
+            )} = ${formatPesos(row.amountCents)}`;
+          });
+    console.log("[Print] eJournal", {
+      date: report.dateLabel,
+      scope: scopeLabel,
+      lines,
+    });
+    alert(
+      `Print eJournal\n${report.dateLabel}\n${scopeLabel}\n\n` +
+        lines.join("\n")
+    );
   }
 
   if (!authenticated) {
@@ -492,7 +692,7 @@ export default function TransactionsClient() {
         )}
       </div>
 
-      {/* Scrollable Transactions Table */}
+      {/* Scrollable Transactions Table + Reporting Panel */}
       <div style={{ 
         flex: "1 1 auto",
         overflowY: "auto",
@@ -500,7 +700,15 @@ export default function TransactionsClient() {
         paddingRight: 24,
         paddingBottom: 24
       }}>
-        <div style={{ maxWidth: 1600, margin: "0 auto" }}>
+        <div
+          style={{
+            maxWidth: 1600,
+            margin: "0 auto",
+            display: "grid",
+            gridTemplateColumns: "minmax(0, 2.3fr) minmax(320px, 1.7fr)",
+            gap: 16,
+          }}
+        >
           <div style={{ overflowX: "auto", background: "#2a2a2a", borderRadius: 8, border: "1px solid #3a3a3a" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
@@ -533,240 +741,616 @@ export default function TransactionsClient() {
                   </td>
                 </tr>
               ) : (
-                transactions.map((tx) => {
-                  const netTotal = calculateNetTotal(tx);
-                  const hasRefunds = tx.refunds.length > 0;
-                  const isVoided = tx.status === "VOID";
-                  
-                  // Get unique payment methods
-                  const paymentMethods = [...new Set(tx.payments.map(p => p.method))];
-                  const isSplit = paymentMethods.length > 1;
+                dateGroups.map((group) => (
+                  <React.Fragment key={group.dateKey}>
+                    <tr>
+                      <td colSpan={6} style={{ padding: 0, borderBottom: "1px solid #3a3a3a" }}>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedDateKey(group.dateKey)}
+                          style={{
+                            width: "100%",
+                            textAlign: "left",
+                            padding: "10px 16px",
+                            background:
+                              selectedDateKey === group.dateKey ? "#111827" : "#030712",
+                            border: "none",
+                            borderBottom: "1px solid #3a3a3a",
+                            cursor: "pointer",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            fontSize: 14,
+                            fontWeight: 600,
+                            color:
+                              selectedDateKey === group.dateKey ? "#f9fafb" : "#e5e7eb",
+                          }}
+                        >
+                          <span>{group.dateLabel}</span>
+                          <span
+                            style={{
+                              fontSize: 12,
+                              padding: "2px 8px",
+                              borderRadius: 999,
+                              background:
+                                selectedDateKey === group.dateKey
+                                  ? COLORS.primary
+                                  : "#374151",
+                              color: "#f9fafb",
+                            }}
+                          >
+                            {group.transactions.length} tx
+                          </span>
+                        </button>
+                      </td>
+                    </tr>
+                    {group.transactions.map((tx) => {
+                      const netTotal = calculateNetTotal(tx);
+                      const hasRefunds = tx.refunds.length > 0;
+                      const isVoided = tx.status === "VOID";
+                      
+                      // Get unique payment methods
+                      const paymentMethods = [...new Set(tx.payments.map(p => p.method))];
+                      const isSplit = paymentMethods.length > 1;
 
-                  return (
-                    <tr 
-                      key={tx.id} 
-                      style={{ 
-                        borderBottom: "1px solid #3a3a3a",
-                        opacity: isVoided ? 0.5 : 1,
-                      }}
-                    >
-                      {/* Date / ID / Payment */}
-                      <td style={{ padding: 16, verticalAlign: "top" }}>
-                        <div style={{ fontSize: 14, color: "#ddd", marginBottom: 4 }}>
-                          {formatDate(tx.createdAt)}
-                        </div>
-                        <div style={{ fontSize: 12, color: "#888", marginBottom: 8, fontFamily: "monospace" }}>
-                          {tx.id.slice(-8)}
-                        </div>
-                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                          {isSplit ? (
-                            <>
-                              <span style={{
-                                padding: "4px 8px",
+                      return (
+                        <tr 
+                          key={tx.id} 
+                          style={{ 
+                            borderBottom: "1px solid #3a3a3a",
+                            opacity: isVoided ? 0.5 : 1,
+                          }}
+                        >
+                          {/* Date / ID / Payment */}
+                          <td style={{ padding: 16, verticalAlign: "top" }}>
+                            <div style={{ fontSize: 14, color: "#ddd", marginBottom: 4 }}>
+                              {formatDate(tx.createdAt)}
+                            </div>
+                            <div style={{ fontSize: 12, color: "#888", marginBottom: 8, fontFamily: "monospace" }}>
+                              {tx.id.slice(-8)}
+                            </div>
+                            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                              {isSplit ? (
+                                <>
+                                  <span style={{
+                                    padding: "4px 8px",
+                                    borderRadius: 4,
+                                    fontSize: 11,
+                                    fontWeight: "600",
+                                    background: "#6b7280",
+                                    color: "#fff",
+                                  }}>
+                                    SPLIT
+                                  </span>
+                                  {paymentMethods.map(method => (
+                                    <span
+                                      key={method}
+                                      style={{
+                                        padding: "4px 8px",
+                                        borderRadius: 4,
+                                        fontSize: 10,
+                                        fontWeight: "600",
+                                        background: getPaymentMethodBadgeColor(method),
+                                        color: "#fff",
+                                      }}
+                                    >
+                                      {method}
+                                    </span>
+                                  ))}
+                                </>
+                              ) : (
+                                <span style={{
+                                  padding: "4px 8px",
+                                  borderRadius: 4,
+                                  fontSize: 11,
+                                  fontWeight: "600",
+                                  background: getPaymentMethodBadgeColor(paymentMethods[0] || "CASH"),
+                                  color: "#fff",
+                                }}>
+                                  {paymentMethods[0] || "CASH"}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+
+                          {/* Time */}
+                          <td style={{ padding: 16, verticalAlign: "top", fontSize: 14, color: "#ddd" }}>
+                            {formatTime(tx.createdAt)}
+                          </td>
+
+                          {/* Receipt # */}
+                          <td style={{ padding: 16, verticalAlign: "top", fontSize: 14, color: "#ddd", fontWeight: "600" }}>
+                            #{tx.transactionNo}
+                          </td>
+
+                          {/* Cashier */}
+                          <td style={{ padding: 16, verticalAlign: "top", fontSize: 14, color: "#ddd" }}>
+                            {tx.createdBy || "—"}
+                          </td>
+
+                          {/* Items */}
+                          <td style={{ padding: 16, verticalAlign: "top" }}>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                              {tx.lineItems.map(line => {
+                                const refunded = isLineRefunded(line);
+                                const options = line.optionsJson ? JSON.parse(line.optionsJson) : [];
+                                
+                                return (
+                                  <div 
+                                    key={line.id}
+                                    style={{
+                                      fontSize: 13,
+                                      color: refunded ? "#666" : "#ddd",
+                                      textDecoration: refunded ? "line-through" : "none",
+                                    }}
+                                  >
+                                    <span style={{ fontWeight: "600" }}>
+                                      {line.qty}× {line.name}
+                                    </span>
+                                    {options.length > 0 && (
+                                      <span style={{ color: refunded ? "#555" : "#888", fontSize: 11, marginLeft: 4 }}>
+                                        ({options.map((o: any) => o.name).join(", ")})
+                                      </span>
+                                    )}
+                                    {line.note && (
+                                      <span style={{ color: refunded ? "#555" : "#fbbf24", fontSize: 11, marginLeft: 4, fontStyle: "italic" }}>
+                                        — {line.note}
+                                      </span>
+                                    )}
+                                    {refunded && (
+                                      <span style={{
+                                        marginLeft: 6,
+                                        padding: "2px 6px",
+                                        borderRadius: 3,
+                                        fontSize: 9,
+                                        fontWeight: "600",
+                                        background: "#7f1d1d",
+                                        color: "#fca5a5",
+                                      }}>
+                                        REFUNDED
+                                      </span>
+                                    )}
+                                    <span style={{ 
+                                      marginLeft: 8, 
+                                      color: refunded ? "#555" : "#4ade80",
+                                      fontWeight: "600"
+                                    }}>
+                                      {formatPesos(line.lineTotal)}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </td>
+
+                          {/* Total + Actions */}
+                          <td style={{ padding: 16, verticalAlign: "top", textAlign: "right" }}>
+                            <div style={{ marginBottom: 12 }}>
+                              {hasRefunds && (
+                                <div style={{ 
+                                  fontSize: 12, 
+                                  color: "#888", 
+                                  textDecoration: "line-through",
+                                  marginBottom: 4
+                                }}>
+                                  {formatPesos(tx.totalCents)}
+                                </div>
+                              )}
+                              <div style={{ 
+                                fontSize: 18, 
+                                fontWeight: "bold", 
+                                color: hasRefunds ? "#fbbf24" : "#4ade80"
+                              }}>
+                                {formatPesos(netTotal)}
+                              </div>
+                              {hasRefunds && (
+                                <div style={{ fontSize: 10, color: "#888", marginTop: 2 }}>
+                                  (after refunds)
+                                </div>
+                              )}
+                            </div>
+                            
+                            {!isVoided && (
+                              <button
+                                onClick={() => openRefundModal(tx)}
+                                style={{
+                                  padding: "8px 16px",
+                                  fontSize: 13,
+                                  fontWeight: "600",
+                                  background: "#dc2626",
+                                  color: "#fff",
+                                  border: "none",
+                                  borderRadius: 6,
+                                  cursor: "pointer",
+                                }}
+                              >
+                                Refund
+                              </button>
+                            )}
+                            
+                            {isVoided && (
+                              <div style={{
+                                padding: "6px 12px",
                                 borderRadius: 4,
                                 fontSize: 11,
                                 fontWeight: "600",
-                                background: "#6b7280",
-                                color: "#fff",
+                                background: "#7f1d1d",
+                                color: "#fca5a5",
+                                display: "inline-block",
                               }}>
-                                SPLIT
-                              </span>
-                              {paymentMethods.map(method => (
-                                <span
-                                  key={method}
-                                  style={{
-                                    padding: "4px 8px",
-                                    borderRadius: 4,
-                                    fontSize: 10,
-                                    fontWeight: "600",
-                                    background: getPaymentMethodBadgeColor(method),
-                                    color: "#fff",
-                                  }}
-                                >
-                                  {method}
-                                </span>
-                              ))}
-                            </>
-                          ) : (
-                            <span style={{
-                              padding: "4px 8px",
-                              borderRadius: 4,
-                              fontSize: 11,
-                              fontWeight: "600",
-                              background: getPaymentMethodBadgeColor(paymentMethods[0] || "CASH"),
-                              color: "#fff",
-                            }}>
-                              {paymentMethods[0] || "CASH"}
-                            </span>
-                          )}
-                        </div>
-                      </td>
-
-                      {/* Time */}
-                      <td style={{ padding: 16, verticalAlign: "top", fontSize: 14, color: "#ddd" }}>
-                        {formatTime(tx.createdAt)}
-                      </td>
-
-                      {/* Receipt # */}
-                      <td style={{ padding: 16, verticalAlign: "top", fontSize: 14, color: "#ddd", fontWeight: "600" }}>
-                        #{tx.transactionNo}
-                      </td>
-
-                      {/* Cashier */}
-                      <td style={{ padding: 16, verticalAlign: "top", fontSize: 14, color: "#ddd" }}>
-                        {tx.createdBy || "—"}
-                      </td>
-
-                      {/* Items */}
-                      <td style={{ padding: 16, verticalAlign: "top" }}>
-                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                          {tx.lineItems.map(line => {
-                            const refunded = isLineRefunded(line);
-                            const options = line.optionsJson ? JSON.parse(line.optionsJson) : [];
-                            
-                            return (
-                              <div 
-                                key={line.id}
-                                style={{
-                                  fontSize: 13,
-                                  color: refunded ? "#666" : "#ddd",
-                                  textDecoration: refunded ? "line-through" : "none",
-                                }}
-                              >
-                                <span style={{ fontWeight: "600" }}>
-                                  {line.qty}× {line.name}
-                                </span>
-                                {options.length > 0 && (
-                                  <span style={{ color: refunded ? "#555" : "#888", fontSize: 11, marginLeft: 4 }}>
-                                    ({options.map((o: any) => o.name).join(", ")})
-                                  </span>
-                                )}
-                                {line.note && (
-                                  <span style={{ color: refunded ? "#555" : "#fbbf24", fontSize: 11, marginLeft: 4, fontStyle: "italic" }}>
-                                    — {line.note}
-                                  </span>
-                                )}
-                                {refunded && (
-                                  <span style={{
-                                    marginLeft: 6,
-                                    padding: "2px 6px",
-                                    borderRadius: 3,
-                                    fontSize: 9,
-                                    fontWeight: "600",
-                                    background: "#7f1d1d",
-                                    color: "#fca5a5",
-                                  }}>
-                                    REFUNDED
-                                  </span>
-                                )}
-                                <span style={{ 
-                                  marginLeft: 8, 
-                                  color: refunded ? "#555" : "#4ade80",
-                                  fontWeight: "600"
-                                }}>
-                                  {formatPesos(line.lineTotal)}
-                                </span>
+                                VOIDED
                               </div>
-                            );
-                          })}
-                        </div>
-                      </td>
-
-                      {/* Total + Actions */}
-                      <td style={{ padding: 16, verticalAlign: "top", textAlign: "right" }}>
-                        <div style={{ marginBottom: 12 }}>
-                          {hasRefunds && (
-                            <div style={{ 
-                              fontSize: 12, 
-                              color: "#888", 
-                              textDecoration: "line-through",
-                              marginBottom: 4
-                            }}>
-                              {formatPesos(tx.totalCents)}
-                            </div>
-                          )}
-                          <div style={{ 
-                            fontSize: 18, 
-                            fontWeight: "bold", 
-                            color: hasRefunds ? "#fbbf24" : "#4ade80"
-                          }}>
-                            {formatPesos(netTotal)}
-                          </div>
-                          {hasRefunds && (
-                            <div style={{ fontSize: 10, color: "#888", marginTop: 2 }}>
-                              (after refunds)
-                            </div>
-                          )}
-                        </div>
-                        
-                        {!isVoided && (
-                          <button
-                            onClick={() => openRefundModal(tx)}
-                            style={{
-                              padding: "8px 16px",
-                              fontSize: 13,
-                              fontWeight: "600",
-                              background: "#dc2626",
-                              color: "#fff",
-                              border: "none",
-                              borderRadius: 6,
-                              cursor: "pointer",
-                            }}
-                          >
-                            Refund
-                          </button>
-                        )}
-                        
-                        {isVoided && (
-                          <div style={{
-                            padding: "6px 12px",
-                            borderRadius: 4,
-                            fontSize: 11,
-                            fontWeight: "600",
-                            background: "#7f1d1d",
-                            color: "#fca5a5",
-                            display: "inline-block",
-                          }}>
-                            VOIDED
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </React.Fragment>
+                ))
               )}
             </tbody>
           </table>
         </div>
 
-        {/* Load More Button */}
-        {hasMore && (
-          <div style={{ marginTop: 16, textAlign: "center" }}>
-            <button
-              onClick={() => loadTransactions(true)}
-              disabled={loadingMore}
+        {/* Right-side reporting panel */}
+        <div
+          style={{
+            background: "#111827",
+            borderRadius: 8,
+            border: "1px solid #374151",
+            padding: 16,
+            color: "#f9fafb",
+            display: "flex",
+            flexDirection: "column",
+            minHeight: 0,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: 12,
+            }}
+          >
+            <div>
+              <div
+                style={{
+                  fontSize: 16,
+                  fontWeight: 700,
+                  marginBottom: 4,
+                }}
+              >
+                Summary & eJournal
+              </div>
+              <div
+                style={{
+                  fontSize: 13,
+                  color: "#9ca3af",
+                }}
+              >
+                {report?.dateLabel || "Select a date from the list"}
+              </div>
+            </div>
+          </div>
+
+          {/* All Categories section */}
+          <div
+            style={{
+              padding: 12,
+              borderRadius: 8,
+              background: "#020617",
+              border: "1px solid #1f2937",
+              marginBottom: 12,
+            }}
+          >
+            <div
               style={{
-                padding: "16px 32px",
-                fontSize: 16,
-                fontWeight: "600",
-                background: loadingMore ? "#3a3a3a" : COLORS.primary,
-                color: "#fff",
-                border: "none",
-                borderRadius: 8,
-                cursor: loadingMore ? "not-allowed" : "pointer",
-                minWidth: 200,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 8,
               }}
             >
-              {loadingMore ? "Loading..." : "Load More"}
-            </button>
+              <div style={{ fontSize: 14, fontWeight: 700 }}>All Categories</div>
+              <button
+                type="button"
+                onClick={handlePrintCategorySummary}
+                style={{
+                  padding: "6px 10px",
+                  fontSize: 12,
+                  borderRadius: 999,
+                  border: "1px solid #4b5563",
+                  background: "#111827",
+                  color: "#e5e7eb",
+                  cursor: "pointer",
+                }}
+              >
+                🖨️ Print
+              </button>
+            </div>
+            <div
+              style={{
+                maxHeight: 180,
+                overflowY: "auto",
+                paddingRight: 4,
+              }}
+            >
+              {!report || report.categories.length === 0 ? (
+                <div style={{ fontSize: 12, color: "#6b7280" }}>
+                  No category sales for this date.
+                </div>
+              ) : (
+                <table
+                  style={{
+                    width: "100%",
+                    borderCollapse: "collapse",
+                    fontSize: 12,
+                  }}
+                >
+                  <thead>
+                    <tr style={{ color: "#9ca3af" }}>
+                      <th
+                        style={{
+                          textAlign: "left",
+                          paddingBottom: 4,
+                          fontWeight: 500,
+                        }}
+                      >
+                        Category
+                      </th>
+                      <th
+                        style={{
+                          textAlign: "right",
+                          paddingBottom: 4,
+                          fontWeight: 500,
+                          width: 50,
+                        }}
+                      >
+                        Qty
+                      </th>
+                      <th
+                        style={{
+                          textAlign: "right",
+                          paddingBottom: 4,
+                          fontWeight: 500,
+                          width: 90,
+                        }}
+                      >
+                        Amount
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {report.categories.map((cat) => (
+                      <tr key={cat.name}>
+                        <td
+                          style={{
+                            padding: "2px 0",
+                            paddingRight: 4,
+                          }}
+                        >
+                          {cat.name}
+                        </td>
+                        <td
+                          style={{
+                            padding: "2px 0",
+                            textAlign: "right",
+                          }}
+                        >
+                          {cat.qty}
+                        </td>
+                        <td
+                          style={{
+                            padding: "2px 0",
+                            textAlign: "right",
+                            color: "#4ade80",
+                            fontWeight: 600,
+                          }}
+                        >
+                          {formatPesos(cat.amountCents)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
           </div>
-        )}
 
-        {!hasMore && transactions.length > 0 && (
-          <div style={{ marginTop: 16, textAlign: "center", color: "#666", fontSize: 14 }}>
-            No more transactions
+          {/* eJournal section */}
+          <div
+            style={{
+              padding: 12,
+              borderRadius: 8,
+              background: "#020617",
+              border: "1px solid #1f2937",
+              flex: 1,
+              minHeight: 0,
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 8,
+              }}
+            >
+              <div style={{ fontSize: 14, fontWeight: 700 }}>eJournal</div>
+              <button
+                type="button"
+                onClick={handlePrintEjournal}
+                style={{
+                  padding: "6px 10px",
+                  fontSize: 12,
+                  borderRadius: 999,
+                  border: "1px solid #4b5563",
+                  background: "#111827",
+                  color: "#e5e7eb",
+                  cursor: "pointer",
+                }}
+              >
+                🖨️ Print
+              </button>
+            </div>
+
+            {/* Cashier filter */}
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 6,
+                marginBottom: 8,
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setEjournalCashierFilter("ALL")}
+                style={{
+                  padding: "4px 10px",
+                  fontSize: 11,
+                  borderRadius: 999,
+                  border:
+                    ejournalCashierFilter === "ALL"
+                      ? `2px solid ${COLORS.primary}`
+                      : "1px solid #4b5563",
+                  background:
+                    ejournalCashierFilter === "ALL" ? "#111827" : "#020617",
+                  color: "#e5e7eb",
+                  cursor: "pointer",
+                  fontWeight: ejournalCashierFilter === "ALL" ? 700 : 500,
+                }}
+              >
+                All
+              </button>
+              {(report?.ejournal.cashiers ?? []).map((cashier) => (
+                <button
+                  key={cashier}
+                  type="button"
+                  onClick={() => setEjournalCashierFilter(cashier)}
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: 11,
+                    borderRadius: 999,
+                    border:
+                      ejournalCashierFilter === cashier
+                        ? `2px solid ${COLORS.primary}`
+                        : "1px solid #4b5563",
+                    background:
+                      ejournalCashierFilter === cashier ? "#111827" : "#020617",
+                    color: "#e5e7eb",
+                    cursor: "pointer",
+                    fontWeight:
+                      ejournalCashierFilter === cashier ? 700 : 500,
+                  }}
+                >
+                  {cashier}
+                </button>
+              ))}
+            </div>
+
+            {/* Totals */}
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                fontSize: 12,
+                marginBottom: 8,
+                padding: "6px 8px",
+                borderRadius: 6,
+                background: "#020617",
+                border: "1px dashed #374151",
+              }}
+            >
+              <div style={{ color: "#9ca3af" }}>Total Qty</div>
+              <div style={{ fontWeight: 700 }}>
+                {report?.ejournal.totalQty ?? 0}
+              </div>
+              <div style={{ color: "#9ca3af" }}>Total Amount</div>
+              <div style={{ fontWeight: 700, color: "#4ade80" }}>
+                {formatPesos(report?.ejournal.totalAmountCents ?? 0)}
+              </div>
+            </div>
+
+            {/* Items list */}
+            <div
+              style={{
+                flex: 1,
+                minHeight: 0,
+                overflowY: "auto",
+                paddingRight: 4,
+              }}
+            >
+              {!report || report.ejournal.rows.length === 0 ? (
+                <div style={{ fontSize: 12, color: "#6b7280" }}>
+                  No items for this filter.
+                </div>
+              ) : (
+                report.ejournal.rows.map((row) => (
+                  <div
+                    key={row.id}
+                    style={{
+                      padding: "6px 4px",
+                      borderBottom: "1px solid #111827",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                    }}
+                  >
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 600,
+                          whiteSpace: "nowrap",
+                          textOverflow: "ellipsis",
+                          overflow: "hidden",
+                        }}
+                      >
+                        {row.label}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color: "#9ca3af",
+                          display: "flex",
+                          gap: 6,
+                          marginTop: 2,
+                        }}
+                      >
+                        {row.categoryName && (
+                          <span>{row.categoryName}</span>
+                        )}
+                        <span>|</span>
+                        <span>{row.cashier}</span>
+                      </div>
+                    </div>
+                    <div
+                      style={{
+                        textAlign: "right",
+                        fontSize: 12,
+                        minWidth: 80,
+                      }}
+                    >
+                      <div>{row.qty}×</div>
+                      <div
+                        style={{
+                          color: "#4ade80",
+                          fontWeight: 600,
+                        }}
+                      >
+                        {formatPesos(row.amountCents)}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
-        )}
         </div>
       </div>
 

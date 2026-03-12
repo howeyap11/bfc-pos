@@ -40,7 +40,7 @@ export function DonutChartCard({
 
   if (loading) {
     return (
-      <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+      <div className="rounded-2xl border border-teal-100 bg-white p-6 shadow-sm">
         <h3 className="text-lg font-semibold text-gray-800">{title}</h3>
         <p className="mb-4 text-sm text-gray-500">{rangeLabel}</p>
         <div className="mx-auto h-48 w-48 animate-pulse rounded-full bg-gray-100" />
@@ -49,7 +49,7 @@ export function DonutChartCard({
   }
 
   return (
-    <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+    <div className="rounded-2xl border border-teal-100 bg-white p-6 shadow-sm">
       <h3 className="text-lg font-semibold text-gray-800">{title}</h3>
       <p className="mb-4 text-sm text-gray-500">{rangeLabel}</p>
       {chartData.length === 0 ? (

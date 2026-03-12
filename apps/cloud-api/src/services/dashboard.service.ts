@@ -405,15 +405,21 @@ export function getStoreName(): string {
   return process.env.STORE_NAME || process.env.BUSINESS_NAME || "Store";
 }
 
+/** Build date range using local timezone (12:00am to 11:59pm). */
 export function buildDateRange(startDate: string, endDate: string): DateRange {
-  const start = new Date(startDate + "T00:00:00.000Z");
-  const end = new Date(endDate + "T23:59:59.999Z");
+  const [sy, sm, sd] = startDate.split("-").map(Number);
+  const [ey, em, ed] = endDate.split("-").map(Number);
+  const start = new Date(sy, sm - 1, sd, 0, 0, 0, 0);
+  const end = new Date(ey, em - 1, ed, 23, 59, 59, 999);
   return { start, end };
 }
 
+/** Default date filter: today in local timezone. */
 export function getDefaultDateRange(): { startDate: string; endDate: string } {
   const n = new Date();
-  const startDate = n.toISOString().slice(0, 10);
-  const endDate = n.toISOString().slice(0, 10);
-  return { startDate, endDate };
+  const y = n.getFullYear();
+  const m = String(n.getMonth() + 1).padStart(2, "0");
+  const d = String(n.getDate()).padStart(2, "0");
+  const date = `${y}-${m}-${d}`;
+  return { startDate: date, endDate: date };
 }

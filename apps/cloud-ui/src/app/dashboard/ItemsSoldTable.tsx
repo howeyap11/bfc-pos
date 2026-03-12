@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   api,
   type ItemsSoldRow,
@@ -39,6 +39,22 @@ export function ItemsSoldTable({
   const [sortBy, setSortBy] = useState<"qty" | "amount" | "profit">(initialSortBy);
   const [order, setOrder] = useState<"asc" | "desc">(initialOrder);
   const [loading, setLoading] = useState(false);
+
+  // Sync from parent when date range changes and parent has loaded new data
+  useEffect(() => {
+    setRows(initialRows);
+    setTotal(initialTotal);
+    setPage(initialPage);
+    setSortBy(initialSortBy);
+    setOrder(initialOrder);
+  }, [startDate, endDate]);
+
+  useEffect(() => {
+    if (page === 1 && sortBy === initialSortBy && order === initialOrder) {
+      setRows(initialRows);
+      setTotal(initialTotal);
+    }
+  }, [initialRows, initialTotal, page, sortBy, order, initialSortBy, initialOrder]);
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const start = (page - 1) * pageSize;
@@ -83,7 +99,7 @@ export function ItemsSoldTable({
   const rangeLabel = formatDateRangeLabel(startDate, endDate);
 
   return (
-    <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+    <div className="rounded-2xl border border-teal-100 bg-white p-6 shadow-sm">
       <h3 className="text-lg font-semibold text-gray-800">List of Items</h3>
       <p className="mb-4 text-sm text-gray-500">{rangeLabel}</p>
       <div className="overflow-x-auto">
