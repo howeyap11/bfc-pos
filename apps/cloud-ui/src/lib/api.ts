@@ -431,6 +431,34 @@ export type DeviceDetail = DeviceInfo & {
   commands: DeviceCommandRow[];
 };
 
+export type DashboardKpis = {
+  totalNetSalesCents: number;
+  transactionCount: number;
+  itemsCount: number;
+  totalRefundsCents: number;
+  totalDiscountsCents: number;
+  costOfGoodsCents: number;
+  profitCents: number;
+  totalOnlineOrdersCount: number;
+};
+
+export type DashboardSummary = {
+  startDate: string;
+  endDate: string;
+  storeId: string;
+  storeName: string;
+  lastSyncedAt: string | null;
+  kpis: DashboardKpis;
+};
+
+export type SalesByDateBucket = { label: string; date: string; amountCents: number };
+export type PaymentTypeTotal = { method: string; amountCents: number; percentage?: number };
+export type SalesByCategoryRow = { category: string; amountCents: number };
+export type SalesByItemRow = { item: string; amountCents: number };
+export type SalesByCashierRow = { cashier: string; amountCents: number };
+export type SalesByPaymentRow = { method: string; amountCents: number };
+export type ItemsSoldRow = { rank: number; subCategory: string; item: string; qty: number; amountCents: number; profitCents: number };
+
 export const api = {
   getItems(includeDeleted?: boolean): Promise<MenuItem[]> {
     const qs = includeDeleted ? "?includeDeleted=1" : "";
@@ -936,6 +964,68 @@ export const api = {
     if (params.year) q.set("year", String(params.year));
     if (params.month) q.set("month", String(params.month));
     return apiFetch(`/admin/reports/monthly?${q}`);
+  },
+
+  getDashboardSummary(params: { startDate?: string; endDate?: string; storeId?: string }): Promise<DashboardSummary> {
+    const q = new URLSearchParams();
+    if (params.startDate) q.set("startDate", params.startDate);
+    if (params.endDate) q.set("endDate", params.endDate);
+    if (params.storeId) q.set("storeId", params.storeId);
+    return apiFetch(`/admin/dashboard/summary?${q}`);
+  },
+  getDashboardSalesByDate(params: { startDate?: string; endDate?: string; storeId?: string; granularity?: "hourly" | "daily" | "monthly" }): Promise<{ buckets: SalesByDateBucket[] }> {
+    const q = new URLSearchParams();
+    if (params.startDate) q.set("startDate", params.startDate);
+    if (params.endDate) q.set("endDate", params.endDate);
+    if (params.storeId) q.set("storeId", params.storeId);
+    if (params.granularity) q.set("granularity", params.granularity);
+    return apiFetch(`/admin/dashboard/sales-by-date?${q}`);
+  },
+  getDashboardPaymentTypes(params: { startDate?: string; endDate?: string; storeId?: string }): Promise<{ paymentTypes: PaymentTypeTotal[] }> {
+    const q = new URLSearchParams();
+    if (params.startDate) q.set("startDate", params.startDate);
+    if (params.endDate) q.set("endDate", params.endDate);
+    if (params.storeId) q.set("storeId", params.storeId);
+    return apiFetch(`/admin/dashboard/payment-types?${q}`);
+  },
+  getDashboardSalesByCategory(params: { startDate?: string; endDate?: string; storeId?: string }): Promise<{ rows: SalesByCategoryRow[] }> {
+    const q = new URLSearchParams();
+    if (params.startDate) q.set("startDate", params.startDate);
+    if (params.endDate) q.set("endDate", params.endDate);
+    if (params.storeId) q.set("storeId", params.storeId);
+    return apiFetch(`/admin/dashboard/sales-by-category?${q}`);
+  },
+  getDashboardSalesByItem(params: { startDate?: string; endDate?: string; storeId?: string }): Promise<{ rows: SalesByItemRow[] }> {
+    const q = new URLSearchParams();
+    if (params.startDate) q.set("startDate", params.startDate);
+    if (params.endDate) q.set("endDate", params.endDate);
+    if (params.storeId) q.set("storeId", params.storeId);
+    return apiFetch(`/admin/dashboard/sales-by-item?${q}`);
+  },
+  getDashboardSalesByCashier(params: { startDate?: string; endDate?: string; storeId?: string }): Promise<{ rows: SalesByCashierRow[] }> {
+    const q = new URLSearchParams();
+    if (params.startDate) q.set("startDate", params.startDate);
+    if (params.endDate) q.set("endDate", params.endDate);
+    if (params.storeId) q.set("storeId", params.storeId);
+    return apiFetch(`/admin/dashboard/sales-by-cashier?${q}`);
+  },
+  getDashboardSalesByPayment(params: { startDate?: string; endDate?: string; storeId?: string }): Promise<{ rows: SalesByPaymentRow[] }> {
+    const q = new URLSearchParams();
+    if (params.startDate) q.set("startDate", params.startDate);
+    if (params.endDate) q.set("endDate", params.endDate);
+    if (params.storeId) q.set("storeId", params.storeId);
+    return apiFetch(`/admin/dashboard/sales-by-payment?${q}`);
+  },
+  getDashboardItemsSold(params: { startDate?: string; endDate?: string; storeId?: string; sortBy?: "qty" | "amount" | "profit"; order?: "asc" | "desc"; page?: number; pageSize?: number }): Promise<{ rows: ItemsSoldRow[]; total: number; page: number; pageSize: number }> {
+    const q = new URLSearchParams();
+    if (params.startDate) q.set("startDate", params.startDate);
+    if (params.endDate) q.set("endDate", params.endDate);
+    if (params.storeId) q.set("storeId", params.storeId);
+    if (params.sortBy) q.set("sortBy", params.sortBy);
+    if (params.order) q.set("order", params.order);
+    if (params.page != null) q.set("page", String(params.page));
+    if (params.pageSize != null) q.set("pageSize", String(params.pageSize));
+    return apiFetch(`/admin/dashboard/items-sold?${q}`);
   },
 
   // Device management & remote commands

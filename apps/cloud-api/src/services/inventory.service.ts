@@ -4,7 +4,7 @@
  * - Idempotent sale deduction via sourceType + sourceId
  * - No silent overwrite; corrections use reversing entries
  */
-import type { PrismaClient, StockMovementType } from "../generated/prisma/index.js";
+import type { PrismaClient, StockMovementType } from "@prisma/client";
 
 export class InventoryService {
   constructor(private readonly prisma: PrismaClient) {}

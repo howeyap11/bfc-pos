@@ -110,12 +110,6 @@
       "namedRegex": "^/menu\\-settings/add\\-ons(?:/)?$"
     },
     {
-      "page": "/menu-settings/ingredients",
-      "regex": "^/menu\\-settings/ingredients(?:/)?$",
-      "routeKeys": {},
-      "namedRegex": "^/menu\\-settings/ingredients(?:/)?$"
-    },
-    {
       "page": "/menu-settings/modifiers",
       "regex": "^/menu\\-settings/modifiers(?:/)?$",
       "routeKeys": {},

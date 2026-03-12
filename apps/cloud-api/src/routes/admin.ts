@@ -6,6 +6,20 @@ import { uploadImage } from "../services/r2.service.js";
 import { bumpCatalogVersion } from "../lib/catalogVersion.js";
 import { hashPassword, verifyPassword } from "../lib/password.js";
 import { getDrinkSizesOptionGroup, getDrinkSizesOptionIds } from "../lib/drinkSizes.js";
+import {
+  getDashboardKpis,
+  getSalesByDate,
+  getPaymentTypeTotals,
+  getSalesByCategory,
+  getSalesByItem,
+  getSalesByCashier,
+  getSalesByPayment,
+  getItemsSold,
+  getLastSyncedAt,
+  getStoreName,
+  buildDateRange,
+  getDefaultDateRange,
+} from "../services/dashboard.service.js";
 
 function generateSlug(name: string): string {
   return name
@@ -3066,5 +3080,88 @@ export async function adminRoutes(app: FastifyInstance) {
       totalDiscounts,
       byPaymentMethod: byMethod,
     };
+  });
+
+  // ----- Dashboard (Cloud Admin)
+  const dashboardStoreId = () => "store_1";
+  const dashboardDateRange = (req: { query: { startDate?: string; endDate?: string } }) => {
+    const def = getDefaultDateRange();
+    const startDate = req.query.startDate || def.startDate;
+    const endDate = req.query.endDate || def.endDate;
+    return { startDate, endDate, range: buildDateRange(startDate, endDate) };
+  };
+
+  app.get("/dashboard/summary", async (req: FastifyRequest<{ Querystring: { startDate?: string; endDate?: string; storeId?: string } }>) => {
+    const storeId = (req.query.storeId || dashboardStoreId()) as string;
+    const { startDate, endDate, range } = dashboardDateRange(req);
+    const [kpis, lastSyncedAt, storeName] = await Promise.all([
+      getDashboardKpis(app.prisma, storeId, range),
+      getLastSyncedAt(app.prisma, storeId),
+      Promise.resolve(getStoreName()),
+    ]);
+    return {
+      startDate,
+      endDate,
+      storeId,
+      storeName,
+      lastSyncedAt: lastSyncedAt?.toISOString() ?? null,
+      kpis,
+    };
+  });
+
+  app.get("/dashboard/sales-by-date", async (req: FastifyRequest<{ Querystring: { startDate?: string; endDate?: string; storeId?: string; granularity?: string } }>) => {
+    const storeId = (req.query.storeId || dashboardStoreId()) as string;
+    const { range } = dashboardDateRange(req);
+    const granularity = (req.query.granularity === "daily" || req.query.granularity === "monthly")
+      ? req.query.granularity
+      : "hourly";
+    const buckets = await getSalesByDate(app.prisma, storeId, range, granularity);
+    return { buckets };
+  });
+
+  app.get("/dashboard/payment-types", async (req: FastifyRequest<{ Querystring: { startDate?: string; endDate?: string; storeId?: string } }>) => {
+    const storeId = (req.query.storeId || dashboardStoreId()) as string;
+    const { range } = dashboardDateRange(req);
+    const paymentTypes = await getPaymentTypeTotals(app.prisma, storeId, range);
+    return { paymentTypes };
+  });
+
+  app.get("/dashboard/sales-by-category", async (req: FastifyRequest<{ Querystring: { startDate?: string; endDate?: string; storeId?: string } }>) => {
+    const storeId = (req.query.storeId || dashboardStoreId()) as string;
+    const { range } = dashboardDateRange(req);
+    const rows = await getSalesByCategory(app.prisma, storeId, range);
+    return { rows };
+  });
+
+  app.get("/dashboard/sales-by-item", async (req: FastifyRequest<{ Querystring: { startDate?: string; endDate?: string; storeId?: string } }>) => {
+    const storeId = (req.query.storeId || dashboardStoreId()) as string;
+    const { range } = dashboardDateRange(req);
+    const rows = await getSalesByItem(app.prisma, storeId, range);
+    return { rows };
+  });
+
+  app.get("/dashboard/sales-by-cashier", async (req: FastifyRequest<{ Querystring: { startDate?: string; endDate?: string; storeId?: string } }>) => {
+    const storeId = (req.query.storeId || dashboardStoreId()) as string;
+    const { range } = dashboardDateRange(req);
+    const rows = await getSalesByCashier(app.prisma, storeId, range);
+    return { rows };
+  });
+
+  app.get("/dashboard/sales-by-payment", async (req: FastifyRequest<{ Querystring: { startDate?: string; endDate?: string; storeId?: string } }>) => {
+    const storeId = (req.query.storeId || dashboardStoreId()) as string;
+    const { range } = dashboardDateRange(req);
+    const rows = await getSalesByPayment(app.prisma, storeId, range);
+    return { rows };
+  });
+
+  app.get("/dashboard/items-sold", async (req: FastifyRequest<{ Querystring: { startDate?: string; endDate?: string; storeId?: string; sortBy?: string; order?: string; page?: string; pageSize?: string } }>) => {
+    const storeId = (req.query.storeId || dashboardStoreId()) as string;
+    const { range } = dashboardDateRange(req);
+    const sortBy = (req.query.sortBy === "qty" || req.query.sortBy === "profit") ? req.query.sortBy : "amount";
+    const order = req.query.order === "asc" ? "asc" : "desc";
+    const page = Math.max(1, parseInt(req.query.page || "1", 10) || 1);
+    const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize || "10", 10) || 10));
+    const { rows, total } = await getItemsSold(app.prisma, storeId, range, { sortBy, order, page, pageSize });
+    return { rows, total, page, pageSize };
   });
 }
