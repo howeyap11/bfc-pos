@@ -1,11 +1,20 @@
 #!/usr/bin/env node
 /**
- * Cloud startup: migrate deploy, db seed, then start server.
+ * Cloud startup: prisma generate, migrate deploy, db seed, then start server.
  * Logs each step for Railway/deployment debugging.
  */
 import { execSync } from "node:child_process";
 
 const opts = { stdio: "inherit" };
+
+console.log("[cloud-start] prisma generate started");
+try {
+  execSync("prisma generate", opts);
+  console.log("[cloud-start] prisma generate success");
+} catch (e) {
+  console.error("[cloud-start] prisma generate FAILED:", e?.message ?? e);
+  process.exit(1);
+}
 
 console.log("[cloud-start] migrate deploy started");
 try {
