@@ -61,6 +61,7 @@ function MenuPageContent() {
   const [editSubId, setEditSubId] = useState<string | null>(null);
   const [editSubName, setEditSubName] = useState("");
   const [saving, setSaving] = useState(false);
+  const [deleteSubModal, setDeleteSubModal] = useState<{ sub: SubCategory; categoryId: string } | null>(null);
 
   const safeCategories = Array.isArray(categories) ? categories : [];
   const currentCategory = safeCategories.find((c) => c.id === selectedCategoryId);
@@ -234,6 +235,28 @@ function MenuPageContent() {
       setError(err instanceof Error ? err.message : "Failed");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleDeleteSubCategory(sub: SubCategory, categoryId: string, moveToId?: string) {
+    if (!moveToId && !confirm(`Delete subcategory "${sub.name}"?`)) return;
+    setError("");
+    try {
+      await api.deleteSubCategory(sub.id, moveToId ? { moveItemsToSubCategoryId: moveToId } : undefined);
+      setEditSubId(null);
+      setDeleteSubModal(null);
+      setSelectedSubCategoryId(null);
+      setSuccess("Subcategory deleted");
+      refresh();
+      setTimeout(() => setSuccess(""), 3000);
+    } catch (err: unknown) {
+      const body = (err as { body?: { error?: string } })?.body;
+      if (body?.error === "SUBCATEGORY_NOT_EMPTY") {
+        setEditSubId(null);
+        setDeleteSubModal({ sub, categoryId });
+      } else {
+        setError(err instanceof Error ? err.message : "Failed");
+      }
     }
   }
 
@@ -716,7 +739,7 @@ function MenuPageContent() {
         </div>
       )}
 
-      {editSubId && (
+      {editSubId && selectedSubcategory && currentCategory && (
         <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/50 p-4">
           <div className="w-full max-w-sm rounded-lg bg-white p-4 shadow-lg">
             <h3 className="mb-3 font-semibold">Edit Subcategory</h3>
@@ -730,26 +753,107 @@ function MenuPageContent() {
                   className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
                 />
               </div>
-              <div className="flex justify-end gap-2">
+              <div className="flex justify-between gap-2">
                 <button
                   type="button"
-                  onClick={() => setEditSubId(null)}
-                  className="rounded border border-gray-300 px-3 py-1.5 text-sm"
+                  onClick={() => handleDeleteSubCategory(selectedSubcategory, currentCategory.id)}
+                  className="rounded border border-red-200 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50"
                 >
-                  Cancel
+                  Delete
                 </button>
-                <button
-                  type="submit"
-                  disabled={saving || !editSubName.trim()}
-                  className="rounded bg-blue-600 px-3 py-1.5 text-sm text-white disabled:opacity-50"
-                >
-                  Save
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditSubId(null)}
+                    className="rounded border border-gray-300 px-3 py-1.5 text-sm"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={saving || !editSubName.trim()}
+                    className="rounded bg-blue-600 px-3 py-1.5 text-sm text-white disabled:opacity-50"
+                  >
+                    Save
+                  </button>
+                </div>
               </div>
             </form>
           </div>
         </div>
       )}
+
+      {deleteSubModal && (
+        <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-lg border bg-white p-6 shadow-lg">
+            <h3 className="mb-2 font-semibold">Subcategory has items</h3>
+            <p className="mb-4 text-sm text-gray-600">
+              Move items from &quot;{deleteSubModal.sub.name}&quot; to another subcategory, then delete.
+            </p>
+            <DeleteSubModalContent
+              sub={deleteSubModal.sub}
+              categoryId={deleteSubModal.categoryId}
+              categories={safeCategories}
+              onMoveAndDelete={(moveToId) => handleDeleteSubCategory(deleteSubModal.sub, deleteSubModal.categoryId, moveToId)}
+              onCancel={() => setDeleteSubModal(null)}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DeleteSubModalContent({
+  sub,
+  categoryId,
+  categories,
+  onMoveAndDelete,
+  onCancel,
+}: {
+  sub: SubCategory;
+  categoryId: string;
+  categories: Category[];
+  onMoveAndDelete: (moveToId: string) => void;
+  onCancel: () => void;
+}) {
+  const [moveToId, setMoveToId] = useState("");
+  const cat = categories.find((c) => c.id === categoryId);
+  const others = (cat ? normalizeSubCategories(cat.subCategories) : []).filter((s) => s.id !== sub.id);
+  return (
+    <div>
+      <select
+        value={moveToId}
+        onChange={(e) => setMoveToId(e.target.value)}
+        className="mb-4 w-full rounded border border-gray-300 px-3 py-2 text-sm"
+      >
+        <option value="">Select subcategory to move items to</option>
+        {others.map((s) => (
+          <option key={s.id} value={s.id}>
+            {s.name}
+          </option>
+        ))}
+      </select>
+      {others.length === 0 && (
+        <p className="mb-4 text-sm text-amber-600">No other subcategories in this category. Add one first.</p>
+      )}
+      <div className="flex justify-end gap-2">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-50"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={() => moveToId && onMoveAndDelete(moveToId)}
+          disabled={!moveToId}
+          className="rounded bg-red-600 px-3 py-1.5 text-sm text-white hover:bg-red-700 disabled:opacity-50"
+        >
+          Move & Delete
+        </button>
+      </div>
     </div>
   );
 }

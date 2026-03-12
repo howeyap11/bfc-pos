@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { resolve, join } from "node:path";
 import { existsSync } from "node:fs";
 import { runCatalogSync, runTransactionSyncFlush } from "./syncScheduler.js";
-import { setCommandState } from "./commandState.service.js";
+import { setCommandState, setLastUpdateAt } from "./commandState.service.js";
 
 const CLOUD_URL = process.env.CLOUD_URL ?? "";
 const DEVICE_KEY = process.env.DEVICE_KEY ?? "";
@@ -41,7 +41,7 @@ async function postStatus(
  * - UPDATE_SCRIPT env: must be absolute path under repo root, extension .cmd or .bat
  * Never uses shell input or arbitrary paths.
  */
-function getTrustedUpdateScriptPath(): string | null {
+export function getTrustedUpdateScriptPath(): string | null {
   const repoRoot = resolve(process.cwd(), "..", "..");
   const defaultPath = join(repoRoot, "scripts", "windows", "update-pos.cmd");
 
@@ -123,6 +123,57 @@ async function runCommand(
     app.log.warn({ err, commandId, type }, "Command execution failed");
     await postStatus(commandId, "FAILED", msg);
   }
+}
+
+/**
+ * Execute a command locally (no cloud). Used by System page.
+ */
+export async function executeLocalCommand(
+  app: FastifyInstance,
+  type: "UPDATE_POS" | "RESTART_POS" | "FORCE_SYNC"
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    if (type === "FORCE_SYNC") {
+      setCommandState("syncing");
+      try {
+        await runCatalogSync(app);
+        await runTransactionSyncFlush(app);
+        return { ok: true };
+      } finally {
+        setCommandState("idle");
+      }
+    }
+    if (type === "RESTART_POS") {
+      setCommandState("restarting");
+      setTimeout(() => process.exit(0), 3000);
+      return { ok: true };
+    }
+    if (type === "UPDATE_POS") {
+      const scriptPath = getTrustedUpdateScriptPath();
+      if (!scriptPath) {
+        setCommandState("failed", "Update script not found");
+        return { ok: false, error: "Update script not found" };
+      }
+      setCommandState("updating");
+      const { spawn } = await import("node:child_process");
+      const repoRoot = resolve(process.cwd(), "..", "..");
+      const child = spawn(scriptPath, [], { shell: true, stdio: "pipe", cwd: repoRoot });
+      let stderr = "";
+      child.stderr?.on("data", (ch) => (stderr += String(ch)));
+      await new Promise<void>((resolve, reject) => {
+        child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(stderr || `Exit ${code}`))));
+        child.on("error", reject);
+      });
+      setCommandState("idle");
+      setLastUpdateAt();
+      return { ok: true };
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    setCommandState("failed", msg);
+    return { ok: false, error: msg };
+  }
+  return { ok: false, error: "Unknown command" };
 }
 
 export async function pollDeviceCommands(app: FastifyInstance): Promise<void> {

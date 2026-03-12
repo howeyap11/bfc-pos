@@ -46,6 +46,7 @@ type CloudCategory = {
   name: string;
   slug: string;
   sortOrder: number;
+  deletedAt?: string | null;
 };
 
 type CloudSubCategory = {
@@ -53,6 +54,7 @@ type CloudSubCategory = {
   name: string;
   categoryId: string;
   sortOrder: number;
+  deletedAt?: string | null;
 };
 
 type CloudMenuOptionGroup = {
@@ -270,12 +272,54 @@ export async function syncCatalogFromCloud(
 
   // 2) Network: fetch from cloud (cloud unreachable vs local Prisma)
   try {
-    const url = `${CLOUD_URL.replace(/\/$/, "")}/sync/catalog?sinceVersion=${sinceVersion}`;
+    const base = CLOUD_URL.replace(/\/$/, "");
+    const url = `${base}/sync/catalog?sinceVersion=${sinceVersion}`;
+    // #region agent log
+    try {
+      const parsed = base ? new URL(base + "/") : null;
+      const cloudHost = parsed?.host ?? "EMPTY";
+      const cloudPath = parsed?.pathname ?? "";
+      fetch("http://127.0.0.1:7330/ingest/e360f4f2-ab8d-4cc6-b94b-f45235f7b95a", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "e7ca7a" },
+        body: JSON.stringify({
+          sessionId: "e7ca7a",
+          location: "syncCatalog.service.ts:preFetch",
+          message: "catalog sync request",
+          data: {
+            cloudHost,
+            cloudPathFromUrl: cloudPath || "(root)",
+            fullRequestPath: base ? new URL(url).pathname : "N/A",
+            method: "GET",
+            hypothesisId: "H1",
+          },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+    } catch (_) {}
+    // #endregion
     const res = await fetch(url, {
       method: "GET",
       headers: { Accept: "application/json" },
       signal: AbortSignal.timeout(30000),
     });
+    // #region agent log
+    try {
+      const cloudHost = base ? new URL(base + "/").host : "EMPTY";
+      fetch("http://127.0.0.1:7330/ingest/e360f4f2-ab8d-4cc6-b94b-f45235f7b95a", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "e7ca7a" },
+        body: JSON.stringify({
+          sessionId: "e7ca7a",
+          location: "syncCatalog.service.ts:postFetch",
+          message: "catalog sync response",
+          data: { status: res.status, ok: res.ok, cloudHost, path: "/sync/catalog" },
+          timestamp: Date.now(),
+          hypothesisId: res.status === 404 ? "H1" : res.ok ? "H0" : "H4",
+        }),
+      }).catch(() => {});
+    } catch (_) {}
+    // #endregion
 
     if (!res.ok) {
       return {
@@ -387,7 +431,7 @@ export async function syncCatalogFromCloud(
         }
       }
 
-      const validCategories = (data.categories ?? []).filter((c: { deletedAt?: string | null }) => !c.deletedAt);
+      const validCategories = (data.categories ?? []).filter((c) => !c.deletedAt);
       const validCategoryIds = validCategories.map((c) => c.id);
       await tx.cloudCategory.deleteMany({
         where: { storeId, cloudId: { notIn: validCategoryIds } },
@@ -406,7 +450,7 @@ export async function syncCatalogFromCloud(
         });
       }
 
-      const validSubCategories = (data.subCategories ?? []).filter((s: { deletedAt?: string | null }) => !s.deletedAt);
+      const validSubCategories = (data.subCategories ?? []).filter((s) => !s.deletedAt);
       const validSubCategoryIds = validSubCategories.map((s) => s.id);
       await tx.cloudSubCategory.deleteMany({
         where: { storeId, cloudId: { notIn: validSubCategoryIds } },

@@ -9,6 +9,7 @@ import inventoryPlugin from "./plugins/inventory.js";
 import { authRoutes } from "./routes/auth.js";
 import { adminRoutes } from "./routes/admin.js";
 import { deviceRoutes } from "./routes/devices.js";
+import { syncRoutes } from "./routes/sync.js";
 const app = Fastify({ logger: true });
 app.setErrorHandler((err, _req, reply) => {
     app.log.error(err);
@@ -36,5 +37,21 @@ app.get("/health", async () => ({ ok: true, ts: Date.now() }));
 await app.register(authRoutes, { prefix: "/auth" });
 await app.register(adminRoutes, { prefix: "/admin" });
 await app.register(deviceRoutes, { prefix: "/admin" });
+await app.register(syncRoutes, { prefix: "/sync" });
+// #region agent log
+try {
+    const fs = await import("fs");
+    const syncRegistered = !!syncRoutes;
+    fs.appendFileSync("debug-f13644.log", JSON.stringify({
+        sessionId: "f13644",
+        location: "cloud-api/index.ts:routes",
+        message: "sync routes registration check",
+        data: { syncRoutesImported: true, syncRoutesRegistered: false, routesThatExist: ["/auth", "/admin", "/health"], routesMissing: ["/sync/catalog"] },
+        timestamp: Date.now(),
+        hypothesisId: "H1",
+    }) + "\n");
+}
+catch (_) { }
+// #endregion
 const port = parseInt(process.env.PORT ?? "4000", 10);
 await app.listen({ host: "0.0.0.0", port });

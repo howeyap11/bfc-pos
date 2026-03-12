@@ -200,6 +200,10 @@ function SplitPaymentIcon() {
   );
 }
 
+// Cart persistence keys (shared between Register and Orders navigation)
+const CART_STORAGE_KEY = "bfc_pos_cart";
+const QR_ORDER_STORAGE_KEY = "bfc_pos_qr_order_id";
+
 // Discount presets
 const DISCOUNT_PRESETS = {
   SNR: 20,
@@ -1578,13 +1582,40 @@ export default function PosRegisterClient() {
     
     // Check if loading cart from QR order acceptance
     const urlParams = new URLSearchParams(window.location.search);
-    const qrOrderId = urlParams.get("qrOrderId");
-    if (qrOrderId) {
-      loadCartFromQROrder(qrOrderId);
-      // Clean up URL
+    const qrOrderIdParam = urlParams.get("qrOrderId");
+    if (qrOrderIdParam) {
+      loadCartFromQROrder(qrOrderIdParam);
       window.history.replaceState({}, "", window.location.pathname);
+    } else {
+      // Restore cart from localStorage (persists between Register and Orders)
+      try {
+        const stored = localStorage.getItem(CART_STORAGE_KEY);
+        if (stored) {
+          const parsed = JSON.parse(stored) as CartItem[];
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setCart(parsed);
+            const storedQrId = localStorage.getItem(QR_ORDER_STORAGE_KEY);
+            if (storedQrId) setQrOrderId(storedQrId);
+          }
+        }
+      } catch (e) {
+        console.warn("[Register] Failed to restore cart from localStorage", e);
+      }
     }
   }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(cart));
+      if (qrOrderId) {
+        localStorage.setItem(QR_ORDER_STORAGE_KEY, qrOrderId);
+      } else {
+        localStorage.removeItem(QR_ORDER_STORAGE_KEY);
+      }
+    } catch (e) {
+      console.warn("[Register] Failed to persist cart", e);
+    }
+  }, [cart, qrOrderId]);
 
   function checkActiveStaff() {
     try {
@@ -1777,23 +1808,29 @@ export default function PosRegisterClient() {
         // CASH flow: Load items into cart for cashier to process
         console.log("[QR Accept] CASH order accepted, loading cart:", data.cartPayload);
         
-        const cartItems: CartItem[] = data.cartPayload.map((item: any) => ({
-          tempId: `qr-${Date.now()}-${Math.random()}`,
-          itemId: item.itemId,
-          itemName: item.itemName,
-          basePrice: item.basePrice,
-          qty: item.qty,
-          selectedOptions: item.selectedOptions.map((opt: any) => ({
-            id: opt.id,
-            name: opt.name,
-            groupName: "", // Not provided in payload
-            priceDelta: opt.priceDelta,
-          })),
-          discountPct: 0,
-          discountAmount: 0,
-          discountTag: null,
-          note: item.note || "",
-        }));
+        const cartItems: CartItem[] = data.cartPayload.map((item: any) => {
+          const opts = item.selectedOptions || [];
+          const optionTotalCents = opts.reduce((s: number, o: any) => s + (o.priceDelta || 0), 0);
+          return {
+            tempId: `qr-${Date.now()}-${Math.random()}`,
+            itemId: item.itemId,
+            itemName: item.itemName,
+            basePrice: item.basePrice,
+            qty: item.qty,
+            selectedOptions: opts.map((opt: any) => ({
+              id: opt.id,
+              name: opt.name,
+              groupName: opt.groupName ?? "",
+              priceDelta: opt.priceDelta ?? 0,
+            })),
+            optionTotalCents,
+            surchargeCents: 0,
+            discountPct: 0,
+            discountAmount: 0,
+            discountTag: null,
+            note: item.note || "",
+          };
+        });
         
         setCart(cartItems);
         setQrOrderId(data.orderId); // Track QR order for later linking

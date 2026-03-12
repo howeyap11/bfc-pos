@@ -10,7 +10,6 @@ const TABS = [
   { href: "/menu-settings/substitutes", label: "Substitutes" },
   { href: "/menu-settings/shots", label: "Shots" },
   { href: "/menu-settings/transaction-types", label: "Transaction Types" },
-  { href: "/menu-settings/ingredients", label: "Ingredients" },
 ];
 
 export function MenuSettingsNav() {

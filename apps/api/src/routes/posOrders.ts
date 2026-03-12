@@ -15,14 +15,14 @@ export const posOrdersRoutes: FastifyPluginAsync = async (app) => {
         storeId: "store_1",
         ...(tab === "qr"
           ? {
-              status: { notIn: ["CANCELLED", "COMPLETED"] },
+              status: "PLACED",
               source: { in: ["QR_UNPAID", "QR_PAYMONGO"] },
             }
           : {
-              status: { in: ["PLACED", "IN_PREP", "READY"] },
+              status: { in: ["PLACED", "ACCEPTED", "IN_PREP", "READY"] },
             }),
       },
-      orderBy: { createdAt: "desc" },
+      orderBy: { createdAt: "asc" },
       take: 100,
       include: {
         table: { include: { zone: true } },

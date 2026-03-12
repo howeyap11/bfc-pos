@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { COLORS } from "@/lib/theme";
 import { useOnScreenKeyboard, OnScreenKeyboard } from "@/lib/useOnScreenKeyboard";
 
@@ -441,6 +442,19 @@ export default function SettingsClient() {
               </div>
             </>
           )}
+        </div>
+
+        <div style={{ marginTop: 24, paddingTop: 24, borderTop: `1px solid ${COLORS.borderLight}` }}>
+          <Link
+            href="/pos/settings/system"
+            style={{
+              fontSize: 13,
+              color: COLORS.textMuted,
+              textDecoration: "none",
+            }}
+          >
+            System
+          </Link>
         </div>
       </div>
     </div>
