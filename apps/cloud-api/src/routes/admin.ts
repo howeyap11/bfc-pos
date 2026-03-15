@@ -87,6 +87,95 @@ export async function adminRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  // Staff (POS cashiers/managers) - source of truth for names and PINs; syncs to POS
+  const STAFF_STORE_ID = "store_1";
+  const staffCreateSchema = z.object({
+    name: z.string().min(1, "Name is required").max(120).trim(),
+    passcode: z.string().min(4, "PIN must be at least 4 characters").max(20).regex(/^\d+$/, "PIN must be digits only"),
+    role: z.string().min(1).default("CASHIER"),
+    isActive: z.boolean().optional().default(true),
+  });
+  const staffUpdateSchema = z.object({
+    name: z.string().min(1).max(120).trim().optional(),
+    passcode: z.string().min(4).max(20).regex(/^\d+$/).optional(),
+    role: z.string().min(1).optional(),
+    isActive: z.boolean().optional(),
+  });
+
+  app.get("/staff", async (req: FastifyRequest, reply: FastifyReply) => {
+    const list = await app.prisma.staff.findMany({
+      where: { storeId: STAFF_STORE_ID },
+      orderBy: { name: "asc" },
+      select: { id: true, name: true, role: true, isActive: true, createdAt: true, updatedAt: true },
+    });
+    return { staff: list };
+  });
+
+  app.post("/staff", async (req: FastifyRequest, reply: FastifyReply) => {
+    const parsed = staffCreateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "VALIDATION_ERROR", message: parsed.error.issues.map((i) => i.message).join("; ") };
+    }
+    const { name, passcode, role, isActive } = parsed.data;
+    const existing = await app.prisma.staff.findUnique({ where: { storeId_name: { storeId: STAFF_STORE_ID, name } } });
+    if (existing) {
+      reply.code(409);
+      return { error: "DUPLICATE_NAME", message: "A staff member with this name already exists" };
+    }
+    const staff = await app.prisma.staff.create({
+      data: { storeId: STAFF_STORE_ID, name, passcode, role, isActive },
+      select: { id: true, name: true, role: true, isActive: true, createdAt: true, updatedAt: true },
+    });
+    return staff;
+  });
+
+  app.get("/staff/:id", async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    const staff = await app.prisma.staff.findFirst({
+      where: { id: req.params.id, storeId: STAFF_STORE_ID },
+      select: { id: true, name: true, role: true, isActive: true, createdAt: true, updatedAt: true },
+    });
+    if (!staff) {
+      reply.code(404);
+      return { error: "NOT_FOUND" };
+    }
+    return staff;
+  });
+
+  app.patch("/staff/:id", async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>, reply: FastifyReply) => {
+    const parsed = staffUpdateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "VALIDATION_ERROR", message: parsed.error.issues.map((i) => i.message).join("; ") };
+    }
+    const existing = await app.prisma.staff.findFirst({
+      where: { id: req.params.id, storeId: STAFF_STORE_ID },
+    });
+    if (!existing) {
+      reply.code(404);
+      return { error: "NOT_FOUND" };
+    }
+    const { name, passcode, role, isActive } = parsed.data;
+    if (name !== undefined && name !== existing.name) {
+      const duplicate = await app.prisma.staff.findUnique({ where: { storeId_name: { storeId: STAFF_STORE_ID, name } } });
+      if (duplicate) {
+        reply.code(409);
+        return { error: "DUPLICATE_NAME", message: "A staff member with this name already exists" };
+      }
+    }
+    const updateData: { name?: string; passcode?: string; role?: string; isActive?: boolean } = {};
+    if (name !== undefined) updateData.name = name;
+    if (passcode !== undefined) updateData.passcode = passcode;
+    if (role !== undefined) updateData.role = role;
+    if (isActive !== undefined) updateData.isActive = isActive;
+    const staff = await app.prisma.staff.update({
+      where: { id: req.params.id },
+      data: updateData,
+      select: { id: true, name: true, role: true, isActive: true, createdAt: true, updatedAt: true },
+    });
+    return staff;
+  });
+
   // MenuItem CRUD - subCategoryId required
   const drinkTempEnum = z.enum(["HOT", "ICED", "ANY"]);
   const menuItemCreateSchema = z.object({

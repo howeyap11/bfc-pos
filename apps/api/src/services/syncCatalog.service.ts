@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import { randomBytes } from "crypto";
 
 const CLOUD_URL = process.env.CLOUD_URL ?? "";
 const ADMIN_ROLES = ["ADMIN", "OIC", "AUDITOR", "MANAGER"];
@@ -219,6 +220,14 @@ type SyncResponse = {
   menuItemSubstituteGroups?: { itemId: string; groupId: string }[];
   menuItemSubstitutes?: { itemId: string; substituteId: string }[];
   storeSettings?: { adminPinHash: string | null };
+  staff?: Array<{
+    id: string;
+    name: string;
+    passcode: string;
+    role: string;
+    isActive: boolean;
+    updatedAt: string;
+  }>;
 };
 
 export type SyncCatalogResult = {
@@ -348,6 +357,7 @@ export async function syncCatalogFromCloud(
       menuItemSubstitutesReceived: (data.menuItemSubstitutes ?? []).length,
       menuItemAddOnGroupsReceived: (data.menuItemAddOnGroups ?? []).length,
       menuItemSubstituteGroupsReceived: (data.menuItemSubstituteGroups ?? []).length,
+      staffReceived: (data.staff ?? []).length,
       latestVersion: data.latestVersion,
     });
   } catch (err) {
@@ -954,6 +964,48 @@ export async function syncCatalogFromCloud(
             adminPinHash: data.storeSettings.adminPinHash ?? null,
           },
         });
+      }
+
+      // Sync staff from Cloud Admin (source of truth for names and PINs)
+      if (data.staff && Array.isArray(data.staff) && prisma.staff) {
+        for (const s of data.staff) {
+          const cloudId = s.id;
+          const name = String(s.name ?? "").trim();
+          const passcode = String(s.passcode ?? "").trim();
+          const role = String(s.role ?? "CASHIER").trim() || "CASHIER";
+          const isActive = !!s.isActive;
+          if (!name || !passcode) continue;
+          const existingByCloudId = await tx.staff.findUnique({ where: { cloudId } });
+          if (existingByCloudId) {
+            await tx.staff.update({
+              where: { id: existingByCloudId.id },
+              data: { name, passcode, role, isActive, updatedAt: new Date() },
+            });
+            continue;
+          }
+          const existingByName = await tx.staff.findUnique({
+            where: { storeId_name: { storeId, name } },
+          });
+          if (existingByName) {
+            await tx.staff.update({
+              where: { id: existingByName.id },
+              data: { cloudId, passcode, role, isActive, updatedAt: new Date() },
+            });
+            continue;
+          }
+          const newKey = "staff_" + randomBytes(16).toString("hex");
+          await tx.staff.create({
+            data: {
+              storeId,
+              cloudId,
+              name,
+              passcode,
+              role,
+              isActive,
+              key: newKey,
+            },
+          });
+        }
       }
 
       await tx.syncState.upsert({

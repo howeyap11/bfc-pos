@@ -52,6 +52,7 @@ model StoreConfig {
 model Staff {
   id        String   @id @default(cuid())
   storeId   String   @default("store_1")
+  cloudId   String?  @unique  // Cloud Admin staff id; set when synced from cloud
   name      String
   passcode  String   @default("1000")
   key       String?  @unique

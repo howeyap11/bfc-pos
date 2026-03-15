@@ -69,6 +69,7 @@ export async function syncRoutes(app: FastifyInstance) {
         transactionTypes,
         shotPricingRules,
         storeSetting,
+        staffList,
       ] = await Promise.all([
         app.prisma.catalogVersion.findUnique({ where: { id: 1 } }),
         app.prisma.menuItem.findMany({
@@ -105,6 +106,11 @@ export async function syncRoutes(app: FastifyInstance) {
         app.prisma.transactionTypeSetting.findMany({ where: { isActive: true }, orderBy: { sortOrder: "asc" } }),
         app.prisma.shotPricingRule.findMany({ where: { isActive: true }, orderBy: { sortOrder: "asc" } }),
         app.prisma.storeSetting.findUnique({ where: { id: "1" } }),
+        app.prisma.staff.findMany({
+          where: { storeId: "store_1" },
+          orderBy: { name: "asc" },
+          select: { id: true, name: true, passcode: true, role: true, isActive: true, updatedAt: true },
+        }),
       ]);
 
       const latestVersion = catalogVersion?.latestVersion ?? 0;
@@ -154,6 +160,7 @@ export async function syncRoutes(app: FastifyInstance) {
         transactionTypes: transactionTypes.length,
         menuOptionGroups: menuOptionGroups.length,
         menuItemOptionGroups: menuItemOptionGroups.length,
+        staffCount: staffList.length,
       }, "[Sync] Catalog delta counts");
 
       return {
@@ -232,6 +239,14 @@ export async function syncRoutes(app: FastifyInstance) {
           sortOrder: s.sortOrder,
         })),
         storeSettings: storeSetting ? { adminPinHash: storeSetting.adminPinHash ?? null } : undefined,
+        staff: staffList.map((s) => ({
+          id: s.id,
+          name: s.name,
+          passcode: s.passcode,
+          role: s.role,
+          isActive: s.isActive,
+          updatedAt: s.updatedAt.toISOString(),
+        })),
         addOnGroups: addOnGroups.map((g) => ({
           id: g.id,
           name: g.name,

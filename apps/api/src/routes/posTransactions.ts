@@ -484,16 +484,17 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     const totalPaid = sum(allPayments.map((p) => p.amountCents));
 
     if (totalPaid >= transaction.totalCents && transaction.status === "OPEN") {
+      const staff = (req as { staff?: { id: string; name: string } }).staff;
       await app.prisma.transaction.update({
         where: { id: transaction.id },
-        data: { status: "PAID" },
+        data: { status: "PAID", createdBy: staff?.name ?? undefined },
       });
       // Sync to cloud (best effort, non-blocking)
       const paymentsList = allPayments.map((p) => ({ method: p.method, amountCents: p.amountCents }));
       const lineItemsList = transaction.lineItems.map((l) => ({ name: l.name, qty: l.qty, lineTotal: l.lineTotal }));
       const uploadResult = await uploadTransactionToCloud(
         app.prisma,
-        { ...transaction, status: "PAID" },
+        { ...transaction, status: "PAID", createdBy: staff?.name ?? transaction.createdBy ?? null },
         paymentsList,
         lineItemsList
       );
@@ -506,7 +507,6 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         });
       }
       // Inventory auto-deduction (best effort): do not block sale on failure
-      const staff = (req as { staff?: { id: string } }).staff;
       const lineItems = transaction.lineItems
         .filter((l) => l.itemId)
         .map((l) => {

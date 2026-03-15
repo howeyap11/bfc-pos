@@ -12,7 +12,9 @@
     "start:prod": "node dist/index.js",
     "prod": "pnpm build && pnpm start:prod",
     "db:push": "prisma db push",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "db:baseline": "tsx prisma/baseline-and-deploy.ts",
+    "db:debug-migrate": "tsx prisma/debug-migrate-state.ts"
   },
   "keywords": [],
   "author": "",

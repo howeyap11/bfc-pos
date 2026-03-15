@@ -417,6 +417,15 @@ export type DeviceCommandRow = {
   completedAt: string | null;
 };
 
+export type CloudStaffRow = {
+  id: string;
+  name: string;
+  role: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type DeviceInfo = {
   id: string;
   storeId: string;
@@ -956,6 +965,20 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ pin }),
     });
+  },
+
+  // Staff (POS cashiers/managers) - source of truth for names and PINs; syncs to POS
+  getStaff(): Promise<{ staff: CloudStaffRow[] }> {
+    return apiFetch("/admin/staff");
+  },
+  createStaff(body: { name: string; passcode: string; role?: string; isActive?: boolean }): Promise<CloudStaffRow> {
+    return apiFetch("/admin/staff", { method: "POST", body: JSON.stringify(body) });
+  },
+  getStaffById(id: string): Promise<CloudStaffRow> {
+    return apiFetch(`/admin/staff/${id}`);
+  },
+  patchStaff(id: string, body: { name?: string; passcode?: string; role?: string; isActive?: boolean }): Promise<CloudStaffRow> {
+    return apiFetch(`/admin/staff/${id}`, { method: "PATCH", body: JSON.stringify(body) });
   },
 
   getMonthlyReport(params: { storeId?: string; year?: number; month?: number }): Promise<MonthlyReport> {

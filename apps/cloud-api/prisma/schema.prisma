@@ -532,6 +532,21 @@ model StoreSetting {
   updatedAt  DateTime @updatedAt
 }
 
+// Staff (POS cashiers/managers): source of truth for names and PINs; syncs to POS
+model Staff {
+  id        String   @id @default(cuid())
+  storeId   String   @default("store_1")
+  name      String
+  passcode  String   // PIN for POS login; stored plaintext for offline verification on POS
+  role      String   @default("CASHIER") // CASHIER | MANAGER | ADMIN | etc.
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([storeId, name])
+  @@index([storeId])
+}
+
 // Synced from POS for Cloud Admin reporting
 model SyncedTransaction {
   id                   String    @id @default(cuid())

@@ -25,6 +25,7 @@ const SECTIONS = [
     group: "Security",
     items: [
       { href: "/settings/password-pins", label: "Password & PIN Codes" },
+      { href: "/settings/staff", label: "Staff (POS Login)" },
       { href: "/settings/devices", label: "Devices Used" },
     ],
   },

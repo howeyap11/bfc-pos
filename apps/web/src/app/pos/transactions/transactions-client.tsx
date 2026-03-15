@@ -1620,5 +1620,6 @@ export default function TransactionsClient() {
         onDone={keyboard.handleDone}
       />
     </div>
+    </div>
   );
 }

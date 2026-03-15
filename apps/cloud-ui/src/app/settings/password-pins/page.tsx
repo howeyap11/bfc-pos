@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { api } from "@/lib/api";
 import { COLORS } from "@/lib/theme";
 
@@ -127,11 +128,15 @@ export default function PasswordPinsPage() {
       >
         <h2 className="mb-2 text-sm font-semibold text-white">Staff PINs</h2>
         <p className="mb-4 text-sm text-white/60">
-          Cashier and staff members with their PINs for POS login.
+          Cashier and staff members with their PINs for POS login. Managed in Cloud Admin and synced to POS.
         </p>
-        <p className="text-sm text-white/50">
-          Staff PIN management coming soon. Staff are currently managed in the POS.
-        </p>
+        <Link
+          href="/settings/staff"
+          className="inline-block rounded px-3 py-1.5 text-sm font-medium text-black"
+          style={{ background: COLORS.primary }}
+        >
+          Manage staff
+        </Link>
       </div>
     </div>
   );
