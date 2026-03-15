@@ -1,10 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, type CloudStaffRow } from "@/lib/api";
+import { api, type CloudStaffRow, STAFF_ROLES, STAFF_ROLE_LABELS } from "@/lib/api";
 import { COLORS } from "@/lib/theme";
-
-const ROLES = ["CASHIER", "MANAGER", "ADMIN"];
 
 export default function StaffPage() {
   const [list, setList] = useState<CloudStaffRow[]>([]);
@@ -12,8 +10,9 @@ export default function StaffPage() {
   const [error, setError] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formName, setFormName] = useState("");
+  const [formEmail, setFormEmail] = useState("");
   const [formPin, setFormPin] = useState("");
-  const [formRole, setFormRole] = useState("CASHIER");
+  const [formRole, setFormRole] = useState("BARISTA");
   const [formActive, setFormActive] = useState(true);
   const [saving, setSaving] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
@@ -41,8 +40,9 @@ export default function StaffPage() {
     setShowAdd(true);
     setEditingId(null);
     setFormName("");
+    setFormEmail("");
     setFormPin("");
-    setFormRole("CASHIER");
+    setFormRole("BARISTA");
     setFormActive(true);
   }
 
@@ -50,8 +50,9 @@ export default function StaffPage() {
     setShowAdd(false);
     setEditingId(row.id);
     setFormName(row.name);
+    setFormEmail(row.email ?? "");
     setFormPin("");
-    setFormRole(row.role);
+    setFormRole(STAFF_ROLES.includes(row.role as any) ? row.role : "BARISTA");
     setFormActive(row.isActive);
   }
 
@@ -59,6 +60,7 @@ export default function StaffPage() {
     setEditingId(null);
     setShowAdd(false);
     setFormName("");
+    setFormEmail("");
     setFormPin("");
   }
 
@@ -66,6 +68,7 @@ export default function StaffPage() {
     e.preventDefault();
     setError("");
     const name = formName.trim();
+    const email = formEmail.trim() || undefined;
     const pin = formPin.replace(/\D/g, "");
     if (!name) {
       setError("Name is required");
@@ -77,7 +80,7 @@ export default function StaffPage() {
     }
     setSaving(true);
     try {
-      await api.createStaff({ name, passcode: pin, role: formRole, isActive: formActive });
+      await api.createStaff({ name, email, passcode: pin, role: formRole, isActive: formActive });
       load();
       cancelForm();
     } catch (err: unknown) {
@@ -93,6 +96,7 @@ export default function StaffPage() {
     if (!editingId) return;
     setError("");
     const name = formName.trim();
+    const email = formEmail.trim() || null;
     const pin = formPin.replace(/\D/g, "");
     if (!name) {
       setError("Name is required");
@@ -104,8 +108,9 @@ export default function StaffPage() {
     }
     setSaving(true);
     try {
-      const body: { name: string; passcode?: string; role: string; isActive: boolean } = {
+      const body: { name: string; email?: string | null; passcode?: string; role: string; isActive: boolean } = {
         name,
+        email,
         role: formRole,
         isActive: formActive,
       };
@@ -167,7 +172,12 @@ export default function StaffPage() {
                   >
                     <div>
                       <span className="font-medium text-white">{row.name}</span>
-                      <span className="ml-2 text-xs text-white/50">{row.role}</span>
+                      {row.email && (
+                        <span className="ml-2 text-xs text-white/50">{row.email}</span>
+                      )}
+                      <span className="ml-2 text-xs text-white/50">
+                        {STAFF_ROLE_LABELS[row.role] ?? row.role}
+                      </span>
                       {!row.isActive && (
                         <span className="ml-2 text-xs text-amber-400">(inactive)</span>
                       )}
@@ -207,6 +217,17 @@ export default function StaffPage() {
                   />
                 </div>
                 <div>
+                  <label className="mb-1 block text-sm text-white/80">Email (optional)</label>
+                  <input
+                    type="email"
+                    value={formEmail}
+                    onChange={(e) => setFormEmail(e.target.value)}
+                    placeholder="e.g. andrea@cafe.com"
+                    className={inputStyle}
+                    style={inputBg}
+                  />
+                </div>
+                <div>
                   <label className="mb-1 block text-sm text-white/80">
                     PIN {editingId && "(leave blank to keep current)"}
                   </label>
@@ -231,9 +252,9 @@ export default function StaffPage() {
                     className={inputStyle}
                     style={inputBg}
                   >
-                    {ROLES.map((r) => (
+                    {STAFF_ROLES.map((r) => (
                       <option key={r} value={r}>
-                        {r}
+                        {STAFF_ROLE_LABELS[r]}
                       </option>
                     ))}
                   </select>

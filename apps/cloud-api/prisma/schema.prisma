@@ -532,13 +532,14 @@ model StoreSetting {
   updatedAt  DateTime @updatedAt
 }
 
-// Staff (POS cashiers/managers): source of truth for names and PINs; syncs to POS
+// Staff (POS cashiers/managers): source of truth for names, PINs, email, roles; syncs to POS
 model Staff {
   id        String   @id @default(cuid())
   storeId   String   @default("store_1")
   name      String
+  email     String?  // Optional; for future staff web login
   passcode  String   // PIN for POS login; stored plaintext for offline verification on POS
-  role      String   @default("CASHIER") // CASHIER | MANAGER | ADMIN | etc.
+  role      String   @default("BARISTA") // HEAD_BARISTA | HEAD_CHEF | BARISTA | LEAD_BARISTA | MANAGER | KITCHEN_STAFF | ADMIN
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

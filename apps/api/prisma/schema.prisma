@@ -54,9 +54,10 @@ model Staff {
   storeId   String   @default("store_1")
   cloudId   String?  @unique  // Cloud Admin staff id; set when synced from cloud
   name      String
+  email     String?  // Optional; synced from cloud for future web login
   passcode  String   @default("1000")
   key       String?  @unique
-  role      String   @default("CASHIER")
+  role      String   @default("BARISTA") // HEAD_BARISTA | HEAD_CHEF | BARISTA | LEAD_BARISTA | MANAGER | KITCHEN_STAFF | ADMIN
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

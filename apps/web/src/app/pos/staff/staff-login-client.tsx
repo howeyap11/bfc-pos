@@ -18,6 +18,19 @@ type ActiveStaff = {
 
 const STORAGE_KEY = "bfc_active_staff";
 
+const ROLE_LABELS: Record<string, string> = {
+  HEAD_BARISTA: "Head Barista",
+  HEAD_CHEF: "Head Chef",
+  BARISTA: "Barista",
+  LEAD_BARISTA: "Lead Barista",
+  MANAGER: "Manager",
+  KITCHEN_STAFF: "Kitchen Staff",
+  ADMIN: "Admin",
+};
+function roleLabel(role: string): string {
+  return ROLE_LABELS[role] ?? role;
+}
+
 export default function StaffLoginClient() {
   const router = useRouter();
   const [staffList, setStaffList] = useState<Staff[]>([]);
@@ -211,7 +224,7 @@ export default function StaffLoginClient() {
         >
           <div>
             <div style={{ fontSize: 18, fontWeight: "bold" }}>{activeStaff.name}</div>
-            <div style={{ fontSize: 14, opacity: 0.9 }}>Currently Active ({activeStaff.role})</div>
+            <div style={{ fontSize: 14, opacity: 0.9 }}>Currently Active ({roleLabel(activeStaff.role)})</div>
           </div>
           <button
             onClick={handleLogout}
@@ -249,7 +262,7 @@ export default function StaffLoginClient() {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div>
                   <div style={{ fontSize: 16, fontWeight: "600", marginBottom: 4 }}>{staff.name}</div>
-                  <div style={{ fontSize: 12, color: "#aaa" }}>{staff.role}</div>
+                  <div style={{ fontSize: 12, color: "#aaa" }}>{roleLabel(staff.role)}</div>
                 </div>
 
                 {!isActive && (
@@ -343,15 +356,10 @@ export default function StaffLoginClient() {
           </div>
           
           <div style={{ padding: 16, background: "#1a2a1a", border: "1px solid #22c55e", borderRadius: 8, color: "#86efac" }}>
-            <h4 style={{ marginTop: 0, color: "#22c55e" }}>💡 Using Default Staff</h4>
-            <p style={{ fontSize: 13, marginBottom: 8 }}>
-              If the API is unavailable, you can still test with default credentials:
+            <h4 style={{ marginTop: 0, color: "#22c55e" }}>💡 Staff login</h4>
+            <p style={{ fontSize: 13, marginBottom: 0 }}>
+              Staff and PINs are managed in Cloud Admin and synced to this POS. Select your name and enter your PIN to log in.
             </p>
-            <ul style={{ fontSize: 13, textAlign: "left" }}>
-              <li>Andrea (ADMIN) - Passcode: 1000</li>
-              <li>John (CASHIER) - Passcode: 1001</li>
-              <li>Maria (CASHIER) - Passcode: 1002</li>
-            </ul>
           </div>
         </div>
       )}

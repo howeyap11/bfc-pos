@@ -223,6 +223,7 @@ type SyncResponse = {
   staff?: Array<{
     id: string;
     name: string;
+    email?: string | null;
     passcode: string;
     role: string;
     isActive: boolean;
@@ -966,20 +967,22 @@ export async function syncCatalogFromCloud(
         });
       }
 
-      // Sync staff from Cloud Admin (source of truth for names and PINs)
+      // Sync staff from Cloud Admin (source of truth for names, PINs, email, roles)
       if (data.staff && Array.isArray(data.staff) && prisma.staff) {
+        const validRoles = ["HEAD_BARISTA", "HEAD_CHEF", "BARISTA", "LEAD_BARISTA", "MANAGER", "KITCHEN_STAFF", "ADMIN"];
         for (const s of data.staff) {
           const cloudId = s.id;
           const name = String(s.name ?? "").trim();
+          const email = s.email != null && String(s.email).trim() !== "" ? String(s.email).trim() : null;
           const passcode = String(s.passcode ?? "").trim();
-          const role = String(s.role ?? "CASHIER").trim() || "CASHIER";
+          const role = validRoles.includes(String(s.role ?? "").trim()) ? String(s.role).trim() : "BARISTA";
           const isActive = !!s.isActive;
           if (!name || !passcode) continue;
           const existingByCloudId = await tx.staff.findUnique({ where: { cloudId } });
           if (existingByCloudId) {
             await tx.staff.update({
               where: { id: existingByCloudId.id },
-              data: { name, passcode, role, isActive, updatedAt: new Date() },
+              data: { name, email, passcode, role, isActive, updatedAt: new Date() },
             });
             continue;
           }
@@ -989,7 +992,7 @@ export async function syncCatalogFromCloud(
           if (existingByName) {
             await tx.staff.update({
               where: { id: existingByName.id },
-              data: { cloudId, passcode, role, isActive, updatedAt: new Date() },
+              data: { cloudId, email, passcode, role, isActive, updatedAt: new Date() },
             });
             continue;
           }
@@ -999,6 +1002,7 @@ export async function syncCatalogFromCloud(
               storeId,
               cloudId,
               name,
+              email,
               passcode,
               role,
               isActive,

@@ -20,6 +20,7 @@ const staffRoutes: FastifyPluginAsync = async (app) => {
       select: {
         id: true,
         name: true,
+        email: true,
         role: true,
         passcode: true,
         key: true,

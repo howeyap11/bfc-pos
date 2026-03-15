@@ -149,49 +149,30 @@ async function seedStoreConfig() {
 
 async function seedStaff() {
   console.log("Seeding staff...");
-  
-  // Sample staff members with stable auth keys
+  // Do not overwrite staff that were synced from Cloud Admin (cloudId set).
+  // Seed only creates missing local dev fallbacks; synced staff is the source of truth.
   const staffMembers = [
-    { 
-      name: "Andrea", 
-      passcode: "1000", 
-      role: "ADMIN",
-      key: "staff_9ev8p6ej388lku308p3vc" // Stable key for dev
-    },
-    { 
-      name: "John", 
-      passcode: "1001", 
-      role: "CASHIER",
-      key: "staff_idglcga7ccsb73maez1km" // Stable key for dev
-    },
-    { 
-      name: "Maria", 
-      passcode: "1002", 
-      role: "CASHIER",
-      key: "staff_fqv6bxdtcmjuqu3kfgncm" // Stable key for dev
-    },
-    {
-      name: "Manager",
-      passcode: "1234",
-      role: "MANAGER",
-      key: "staff_1234_admin_pos",
-    },
+    { name: "Andrea", passcode: "1000", role: "ADMIN", key: "staff_9ev8p6ej388lku308p3vc" },
+    { name: "John", passcode: "1001", role: "BARISTA", key: "staff_idglcga7ccsb73maez1km" },
+    { name: "Maria", passcode: "1002", role: "BARISTA", key: "staff_fqv6bxdtcmjuqu3kfgncm" },
+    { name: "Manager", passcode: "1234", role: "MANAGER", key: "staff_1234_admin_pos" },
   ];
-  
+
   for (const staff of staffMembers) {
+    const existing = await prisma.staff.findUnique({
+      where: { storeId_name: { storeId: STORE_ID, name: staff.name } },
+      select: { id: true, cloudId: true },
+    });
+    if (existing?.cloudId) {
+      continue; // Synced from cloud; do not overwrite
+    }
     await prisma.staff.upsert({
       where: { storeId_name: { storeId: STORE_ID, name: staff.name } },
-      update: { 
-        passcode: staff.passcode, 
-        role: staff.role, 
-        key: staff.key, // Update key on upsert
-        isActive: true 
-      },
+      update: { passcode: staff.passcode, role: staff.role, key: staff.key, isActive: true },
       create: { storeId: STORE_ID, ...staff },
     });
   }
-  
-  console.log("✅ Staff seeded with auth keys");
+  console.log("✅ Staff seeded (skipped rows with cloudId)");
 }
 
 async function seedTables() {

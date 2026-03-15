@@ -109,7 +109,7 @@ export async function syncRoutes(app: FastifyInstance) {
         app.prisma.staff.findMany({
           where: { storeId: "store_1" },
           orderBy: { name: "asc" },
-          select: { id: true, name: true, passcode: true, role: true, isActive: true, updatedAt: true },
+          select: { id: true, name: true, email: true, passcode: true, role: true, isActive: true, updatedAt: true },
         }),
       ]);
 
@@ -242,6 +242,7 @@ export async function syncRoutes(app: FastifyInstance) {
         staff: staffList.map((s) => ({
           id: s.id,
           name: s.name,
+          email: s.email ?? null,
           passcode: s.passcode,
           role: s.role,
           isActive: s.isActive,

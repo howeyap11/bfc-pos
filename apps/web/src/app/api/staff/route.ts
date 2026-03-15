@@ -2,55 +2,55 @@
 import { NextResponse } from "next/server";
 import { getBackendUrl } from "@/lib/api-helpers";
 
-// Default fallback staff list for development (includes passcode and key for local validation)
-const DEFAULT_STAFF = [
-  { id: "default_1", name: "Andrea", role: "ADMIN", passcode: "1000", key: "staff_9ev8p6ej388lku308p3vc", isActive: true },
-  { id: "default_2", name: "John", role: "CASHIER", passcode: "1001", key: "staff_idglcga7ccsb73maez1km", isActive: true },
-  { id: "default_3", name: "Maria", role: "CASHIER", passcode: "1002", key: "staff_fqv6bxdtcmjuqu3kfgncm", isActive: true },
-];
-
+// Staff list comes from POS backend (synced from Cloud Admin). No seeded fallback so
+// register login never uses stale/hardcoded PINs when backend is unavailable.
 export async function GET() {
   try {
     const backend = getBackendUrl();
     console.log("[Staff API] Fetching from:", `${backend}/staff`);
-    
+
     const res = await fetch(`${backend}/staff`, {
       method: "GET",
       headers: { "content-type": "application/json" },
       cache: "no-store",
     });
 
-    // Read as text first to handle non-JSON responses
     const text = await res.text();
     console.log("[Staff API] Response status:", res.status);
     console.log("[Staff API] Response preview:", text.slice(0, 120));
 
     if (!res.ok) {
       console.error("[Staff API] Backend error:", res.status, text.slice(0, 200));
-      
-      // Return default staff list if backend is unavailable
-      console.warn("[Staff API] Using default staff list");
-      return NextResponse.json(DEFAULT_STAFF);
+      return NextResponse.json(
+        { error: "Backend unavailable", staff: [] },
+        { status: 503 }
+      );
     }
 
-    // Try to parse JSON
     try {
       const data = JSON.parse(text);
+      if (!Array.isArray(data)) {
+        console.error("[Staff API] Backend did not return an array");
+        return NextResponse.json(
+          { error: "Invalid staff response", staff: [] },
+          { status: 502 }
+        );
+      }
       console.log("[Staff API] Success:", data.length, "staff members");
       return NextResponse.json(data);
     } catch (parseError) {
       console.error("[Staff API] JSON parse error:", parseError);
       console.error("[Staff API] Response was:", text.slice(0, 200));
-      
-      // Return default staff list on parse error
-      console.warn("[Staff API] Using default staff list due to parse error");
-      return NextResponse.json(DEFAULT_STAFF);
+      return NextResponse.json(
+        { error: "Invalid response from backend", staff: [] },
+        { status: 502 }
+      );
     }
   } catch (error: any) {
     console.error("[Staff API] Fetch error:", error.message || error);
-    
-    // Return default staff list on network error
-    console.warn("[Staff API] Using default staff list due to network error");
-    return NextResponse.json(DEFAULT_STAFF);
+    return NextResponse.json(
+      { error: "Cannot reach POS backend", staff: [] },
+      { status: 503 }
+    );
   }
 }

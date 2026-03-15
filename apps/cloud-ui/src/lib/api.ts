@@ -420,10 +420,30 @@ export type DeviceCommandRow = {
 export type CloudStaffRow = {
   id: string;
   name: string;
+  email?: string | null;
   role: string;
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
+};
+
+export const STAFF_ROLES = [
+  "HEAD_BARISTA",
+  "HEAD_CHEF",
+  "BARISTA",
+  "LEAD_BARISTA",
+  "MANAGER",
+  "KITCHEN_STAFF",
+  "ADMIN",
+] as const;
+export const STAFF_ROLE_LABELS: Record<string, string> = {
+  HEAD_BARISTA: "Head Barista",
+  HEAD_CHEF: "Head Chef",
+  BARISTA: "Barista",
+  LEAD_BARISTA: "Lead Barista",
+  MANAGER: "Manager",
+  KITCHEN_STAFF: "Kitchen Staff",
+  ADMIN: "Admin",
 };
 
 export type DeviceInfo = {
@@ -971,13 +991,13 @@ export const api = {
   getStaff(): Promise<{ staff: CloudStaffRow[] }> {
     return apiFetch("/admin/staff");
   },
-  createStaff(body: { name: string; passcode: string; role?: string; isActive?: boolean }): Promise<CloudStaffRow> {
+  createStaff(body: { name: string; email?: string; passcode: string; role?: string; isActive?: boolean }): Promise<CloudStaffRow> {
     return apiFetch("/admin/staff", { method: "POST", body: JSON.stringify(body) });
   },
   getStaffById(id: string): Promise<CloudStaffRow> {
     return apiFetch(`/admin/staff/${id}`);
   },
-  patchStaff(id: string, body: { name?: string; passcode?: string; role?: string; isActive?: boolean }): Promise<CloudStaffRow> {
+  patchStaff(id: string, body: { name?: string; email?: string | null; passcode?: string; role?: string; isActive?: boolean }): Promise<CloudStaffRow> {
     return apiFetch(`/admin/staff/${id}`, { method: "PATCH", body: JSON.stringify(body) });
   },
 
