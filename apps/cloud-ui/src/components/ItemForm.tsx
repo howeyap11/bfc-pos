@@ -295,7 +295,6 @@ export default function ItemForm({
           setSupportsShots(item.supportsShots ?? false);
           setDefaultShots(item.defaultShots ?? 1);
           setShotsPerSizeEnabled(item.shotsPerSizeEnabled ?? false);
-          const sizePrices = (item.sizePrices ?? []) as MenuItemSizePrice[];
           if (sizePrices.length > 0) {
             const byMode: DrinkSizesByModePayload["sizeShotsByMode"] = {};
             for (const modeKey of DRINK_MODES) {
