@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { COLORS } from "@/lib/theme";
 import { apiFetch, InvalidStaffKeyError } from "@/lib/apiFetch";
 import { useOnScreenKeyboard, OnScreenKeyboard } from "@/lib/useOnScreenKeyboard";
-import { buildTxLineInputs } from "@/lib/buildTransactionPayload";
+import { buildTxLineInputs, buildCreateTransactionBody } from "@/lib/buildTransactionPayload";
 import {
   CUSTOMER_DISPLAY_STORAGE_KEY,
   type CustomerDisplaySnapshot,
@@ -2719,17 +2719,13 @@ export default function PosRegisterClient() {
     setError(null);
 
     try {
-      // Use centralized builder to prevent money bugs
-      const items = buildTxLineInputs(cart);
+      const serviceType = cart[0]?.transactionTypeCode === "FOODPANDA" || cart[0]?.transactionTypeCode === "DELIVERY" ? "FOODPANDA" : cart[0]?.transactionTypeCode === "TO_GO" || cart[0]?.transactionTypeCode === "TAKE_OUT" ? "TO_GO" : "DINE_IN";
+      const body = buildCreateTransactionBody({ cart, discountCents: 0, serviceType, ...(qrOrderId && { orderId: qrOrderId }) });
 
       const data = await fetchJson("/api/pos/transactions", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          items,
-          discountCents: 0,
-          ...(qrOrderId && { orderId: qrOrderId }) // Link to QR order if present
-        }),
+        body: JSON.stringify(body),
       });
 
       setCurrentTransaction(data);
@@ -2946,17 +2942,12 @@ export default function PosRegisterClient() {
       let transactionId = currentTransaction?.id;
       if (!transactionId) {
         console.log("[SplitPayment] Creating sale first");
-        // Use centralized builder to prevent money bugs
-        const items = buildTxLineInputs(cart);
-
+        const serviceType = cart[0]?.transactionTypeCode === "FOODPANDA" || cart[0]?.transactionTypeCode === "DELIVERY" ? "FOODPANDA" : cart[0]?.transactionTypeCode === "TO_GO" || cart[0]?.transactionTypeCode === "TAKE_OUT" ? "TO_GO" : "DINE_IN";
+        const body = buildCreateTransactionBody({ cart, discountCents: 0, serviceType, ...(qrOrderId && { orderId: qrOrderId }) });
         const data = await fetchJson("/api/pos/transactions", {
           method: "POST",
           headers: buildHeaders(),
-          body: JSON.stringify({ 
-            items, 
-            discountCents: 0,
-            ...(qrOrderId && { orderId: qrOrderId }) // Link to QR order if present
-          }),
+          body: JSON.stringify(body),
         });
 
         transactionId = data.id;
@@ -3058,13 +3049,8 @@ export default function PosRegisterClient() {
 
       console.log("[PAY] Creating transaction...", { itemCount: cartSnapshot.length });
 
-      // Use centralized builder to prevent money bugs
-      const items = buildTxLineInputs(cartSnapshot);
-
-      const txBody = {
-        items,
-        discountCents: 0,
-      };
+      const serviceType = cartSnapshot[0]?.transactionTypeCode === "FOODPANDA" || cartSnapshot[0]?.transactionTypeCode === "DELIVERY" ? "FOODPANDA" : cartSnapshot[0]?.transactionTypeCode === "TO_GO" || cartSnapshot[0]?.transactionTypeCode === "TAKE_OUT" ? "TO_GO" : "DINE_IN";
+      const txBody = buildCreateTransactionBody({ cart: cartSnapshot, discountCents: 0, serviceType });
 
       console.log("[PAY] TX BODY", { 
         itemCount: items.length,

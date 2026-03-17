@@ -1,3 +1,5 @@
--- AlterTable
-ALTER TABLE "MenuItemSubstitute" ADD COLUMN "priceCents" INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE "MenuItemSubstitute" ADD COLUMN "recipeQtyMl" DECIMAL(20,10);
+-- No-op.
+-- This migration originally altered "MenuItemSubstitute" before that table
+-- existed in migration history, which breaks shadow DB replay.
+-- The table is introduced later in 20260324000000_add_modifiers_addons_substitutes.
+-- Keeping this migration as a no-op preserves migration ordering.

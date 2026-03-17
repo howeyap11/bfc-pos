@@ -233,20 +233,27 @@ function isStandardDrinkOptions(opts: ParsedOpt[]): boolean {
   return !hasMilk && !hasShotsUpcharge && !hasAddOnOrNamed;
 }
 
-/** Sticker-print drink name: "Sub-category: Item" when subCategoryName set, else optional stickerName, else line name. */
-function getStickerDrinkName(line: { name: string; stickerName?: string | null; subCategoryName?: string | null }): string {
-  const itemLabel = (line.stickerName && line.stickerName.trim()) ? line.stickerName.trim() : line.name;
-  const sub = line.subCategoryName != null && line.subCategoryName.trim() !== "" ? line.subCategoryName.trim() : null;
-  return sub ? `${sub}: ${itemLabel}` : itemLabel;
+/** Item label only (stickerName or line name). Used for single-line title or as second line when sub-category exists. */
+function getStickerItemName(line: { name: string; stickerName?: string | null }): string {
+  return (line.stickerName && line.stickerName.trim()) ? line.stickerName.trim() : line.name;
 }
 
-/** Sticker line order: 1 drink name (with optional sub-category), 2 temp+size (with optional customer name left), 3 shots, 4 milk, 5 sweetness (once), 6 add-ons (grouped, wrapped), 7 ice, 8 special instructions (quoted). Transaction type at bottom-right. Uses specialInstructions only for prep; note is audit-only. customerName prints left of temp/size. */
-function getStickerLineLabel(line: { name: string; optionsJson?: string | null; note?: string | null; stickerName?: string | null; subCategoryName?: string | null; specialInstructions?: string | null; customerName?: string | null }): string[] {
-  const opts = parseOptionsJson(line.optionsJson);
-  const lines: string[] = [];
+/** One row can be a single string or left/right pair (customer name left, temp/size right) for independent positioning. */
+export type StickerLineRow = string | { left: string; right: string };
 
-  const primaryName = getStickerDrinkName(line);
-  lines.push(primaryName);
+/** Sticker line order: 1 title (sub-category + item when sub exists, else single item), 2 row = customer name (left) + temp/size (right) as separate anchors, 3+ shots, milk, etc. */
+function getStickerLineLabel(line: { name: string; optionsJson?: string | null; note?: string | null; stickerName?: string | null; subCategoryName?: string | null; specialInstructions?: string | null; customerName?: string | null }): { lines: StickerLineRow[]; titleLineCount: 1 | 2 } {
+  const opts = parseOptionsJson(line.optionsJson);
+  const lines: StickerLineRow[] = [];
+  const itemName = getStickerItemName(line);
+  const sub = line.subCategoryName != null && line.subCategoryName.trim() !== "" ? line.subCategoryName.trim() : null;
+  if (sub) {
+    lines.push(sub);
+    lines.push(itemName);
+  } else {
+    lines.push(itemName);
+  }
+  const titleLineCount = sub ? 2 : 1;
 
   const sizeOpt = opts.find((o) => o && (o as ParsedOpt).type === "size") as { baseType?: string; sizeLabel?: string } | undefined;
   const tempSizeStr = sizeOpt?.baseType && sizeOpt?.sizeLabel
@@ -254,7 +261,7 @@ function getStickerLineLabel(line: { name: string; optionsJson?: string | null; 
     : "";
   const customerNameStr = line.customerName != null && line.customerName.trim() !== "" ? line.customerName.trim() : "";
   if (customerNameStr && tempSizeStr) {
-    lines.push(`${customerNameStr} · ${tempSizeStr}`);
+    lines.push({ left: customerNameStr, right: tempSizeStr });
   } else if (tempSizeStr) {
     lines.push(tempSizeStr);
   } else if (customerNameStr) {
@@ -362,7 +369,11 @@ function getStickerLineLabel(line: { name: string; optionsJson?: string | null; 
     }
   }
 
-  return lines.filter(Boolean);
+  const filtered = lines.filter(
+    (row): row is StickerLineRow =>
+      typeof row === "string" ? row.trim() !== "" : (row.left.trim() !== "" || row.right.trim() !== "")
+  );
+  return { lines: filtered, titleLineCount };
 }
 
 export type TransactionForPrint = {
@@ -424,8 +435,10 @@ const DEFAULT_STICKER_HEIGHT_MM = 60;
 /** Dots per mm (~203 dpi). */
 const TSPL_DOTS_PER_MM = 8;
 
-/** TSPL rotation 90: X along label length (feed), Y across. On this printer larger X = top of label. We use x = heightDots - offset; to move content UP we need larger x, so SMALLER offset. TSPL_SHIFT_UP_DOTS is subtracted from offsets so the block shifts up. */
+/** TSPL rotation 90: X along label length (feed), Y across. On this printer larger X = top of label. Y is across; larger Y = right. */
 const TSPL_MAIN_Y = 22;
+/** Y offset for right-aligned content (e.g. temp/size) on the customer-name row so it does not depend on left text length. */
+const TSPL_RIGHT_Y_OFFSET = 115;
 
 // whole block anchor
 const TSPL_BLOCK_BASE_X = 570;
@@ -435,6 +448,8 @@ const TSPL_DRINK_NAME_OFFSET = 0;
 const TSPL_TEMP_SIZE_OFFSET = 75;
 const TSPL_MODIFIERS_START_OFFSET = 140;
 const TSPL_MODIFIER_STEP = 38;
+/** Extra offset when title is two lines (sub-category + item); shifts temp/size and modifiers down by one row. */
+const TSPL_TITLE_TWO_LINE_OFFSET = 38;
 /** Transaction type: bottom-right, inside printable area with margin (dots from edges). */
 const TSPL_TRANSACTION_TYPE_MARGIN_DOTS = 120;
 
@@ -452,33 +467,61 @@ function escapeTsplString(s: string): string {
 const TSPL_ROTATION_90 = 90;
 
 function buildOneLabelTspl(
-  labelText: string,
+  lines: StickerLineRow[],
   transactionTypeLabel?: string,
   widthMm?: number,
-  heightMm?: number
+  heightMm?: number,
+  titleLineCount?: 1 | 2
 ): string {
-  const lines = labelText.split("\n").filter(Boolean);
   const out: string[] = ["CLS"];
   const mainY = TSPL_MAIN_Y;
+  const twoTitle = titleLineCount === 2;
+  const nameTempRowIndex = twoTitle ? 2 : 1;
+  const modifierStartIndex = twoTitle ? 3 : 2;
+  const tempSizeOffset = twoTitle ? TSPL_TEMP_SIZE_OFFSET + TSPL_TITLE_TWO_LINE_OFFSET : TSPL_TEMP_SIZE_OFFSET;
+  const modifiersStartOffset = twoTitle ? TSPL_MODIFIERS_START_OFFSET + TSPL_TITLE_TWO_LINE_OFFSET : TSPL_MODIFIERS_START_OFFSET;
+
   for (let i = 0; i < lines.length; i++) {
-    const content = escapeTsplString(lines[i].trim());
-    const isDrinkName = i === 0;
-    const isTempSize = i === 1 && lines.length >= 2;
-    let x: number;
-    if (isDrinkName) {
-      x = TSPL_BLOCK_BASE_X - TSPL_DRINK_NAME_OFFSET;
-    } else if (isTempSize) {
-      x = TSPL_BLOCK_BASE_X - TSPL_TEMP_SIZE_OFFSET;
-    } else {
-      const modifierIndex = i - 2;
-      x = TSPL_BLOCK_BASE_X - (TSPL_MODIFIERS_START_OFFSET + modifierIndex * TSPL_MODIFIER_STEP);
+    const row = lines[i];
+    const isSubCategory = twoTitle && i === 0;
+    const isDrinkName = twoTitle ? i === 1 : i === 0;
+    const isNameTempRow = i === nameTempRowIndex;
+
+    if (typeof row === "object" && isNameTempRow) {
+      const x = TSPL_BLOCK_BASE_X - tempSizeOffset;
+      if (row.left.trim()) {
+        const leftContent = escapeTsplString(row.left.trim());
+        out.push(`TEXT ${x},${mainY},"3",${TSPL_ROTATION_90},1,2,"${leftContent}"`);
+      }
+      if (row.right.trim()) {
+        const rightContent = escapeTsplString(row.right.trim());
+        out.push(`TEXT ${x},${mainY + TSPL_RIGHT_Y_OFFSET},"3",${TSPL_ROTATION_90},1,2,"${rightContent}"`);
+      }
+      continue;
     }
-    if (isDrinkName) {
-      out.push(`TEXT ${x},${mainY},"3",${TSPL_ROTATION_90},2,2,"${content}"`);
-    } else if (isTempSize) {
-      out.push(`TEXT ${x},${mainY},"3",${TSPL_ROTATION_90},1,2,"${content}"`);
+
+    const content = typeof row === "string" ? row.trim() : "";
+    if (!content) continue;
+    const escaped = escapeTsplString(content);
+    let x: number;
+    if (isSubCategory) {
+      x = TSPL_BLOCK_BASE_X - TSPL_DRINK_NAME_OFFSET;
+    } else if (isDrinkName) {
+      x = TSPL_BLOCK_BASE_X - TSPL_TEMP_SIZE_OFFSET;
+    } else if (isNameTempRow) {
+      x = TSPL_BLOCK_BASE_X - tempSizeOffset;
     } else {
-      out.push(`TEXT ${x},${mainY},"3",${TSPL_ROTATION_90},1,1,"${content}"`);
+      const modifierIndex = i - modifierStartIndex;
+      x = TSPL_BLOCK_BASE_X - (modifiersStartOffset + modifierIndex * TSPL_MODIFIER_STEP);
+    }
+    if (isSubCategory) {
+      out.push(`TEXT ${x},${mainY},"3",${TSPL_ROTATION_90},1,1,"${escaped}"`);
+    } else if (isDrinkName) {
+      out.push(`TEXT ${x},${mainY},"3",${TSPL_ROTATION_90},1,2,"${escaped}"`);
+    } else if (isNameTempRow) {
+      out.push(`TEXT ${x},${mainY},"3",${TSPL_ROTATION_90},1,2,"${escaped}"`);
+    } else {
+      out.push(`TEXT ${x},${mainY},"3",${TSPL_ROTATION_90},1,1,"${escaped}"`);
     }
   }
   if (transactionTypeLabel && widthMm != null && heightMm != null && widthMm > 0 && heightMm > 0) {
@@ -492,7 +535,8 @@ function buildOneLabelTspl(
 }
 
 function formatTransactionTypeLabel(serviceType: string | null | undefined): string {
-  const s = String(serviceType ?? "").trim().toUpperCase();
+  const raw = serviceType == null ? "" : String(serviceType).trim();
+  const s = raw.toUpperCase();
 
   if (!s) return "FOR HERE";
   if (s === "DINE_IN" || s === "FOR_HERE") return "FOR HERE";
@@ -501,7 +545,8 @@ function formatTransactionTypeLabel(serviceType: string | null | undefined): str
   if (s === "FOODPANDA") return "FOODPANDA";
   if (s === "GRABFOOD") return "GRABFOOD";
 
-  return s;
+  // Unknown non-empty: print raw value for debugging (do not silently default to FOR HERE)
+  return raw || "FOR HERE";
 }
 
 /** Build TSPL string for sticker lines (caller must filter by shouldPrintSticker with stickerPrintCategoryIds). */
@@ -513,11 +558,12 @@ export function buildStickerTspl(
   if (tx.lineItems.length === 0) return "";
 
   const transactionTypeLabel = formatTransactionTypeLabel(tx.serviceType ?? undefined);
+  console.log("[STICKER_VERIFY] raw serviceType:", tx.serviceType);
+  console.log("[STICKER_VERIFY] computed transactionTypeLabel:", transactionTypeLabel);
   const blocks: string[] = [tsplHeader(widthMm, heightMm)];
   for (const line of tx.lineItems) {
-    const lineLabels = getStickerLineLabel(line);
-    const labelText = lineLabels.filter(Boolean).join("\n");
-    blocks.push(buildOneLabelTspl(labelText, transactionTypeLabel, widthMm, heightMm));
+    const { lines: lineLabels, titleLineCount } = getStickerLineLabel(line);
+    blocks.push(buildOneLabelTspl(lineLabels, transactionTypeLabel, widthMm, heightMm, titleLineCount));
   }
   blocks.push("FORM 2,0\n"); // small feed so last label is not clipped
   return blocks.join("\n");
@@ -529,8 +575,8 @@ export function buildTestStickerTspl(
   heightMm = DEFAULT_STICKER_HEIGHT_MM
 ): string {
   const header = tsplHeader(widthMm, heightMm);
-  const testLabel = "BFC POS TEST\nSticker OK";
-  return header + buildOneLabelTspl(testLabel, "FOR HERE", widthMm, heightMm) + "\nFORM 2,0\n";
+  const testLines: StickerLineRow[] = ["BFC POS TEST", "Sticker OK"];
+  return header + buildOneLabelTspl(testLines, "FOR HERE", widthMm, heightMm) + "\nFORM 2,0\n";
 }
 
 export async function printReceiptToDevice(tx: TransactionForPrint): Promise<void> {
@@ -559,7 +605,7 @@ export async function printStickersToDevice(
 
   // Verification: log actual input and generated TSPL for first sticker (run one real print and inspect logs)
   const firstLine = stickerLines[0];
-  const lineLabels = getStickerLineLabel(firstLine);
+  const { lines: firstLineLabels, titleLineCount: firstTitleLineCount } = getStickerLineLabel(firstLine);
   const transactionTypeLabel = formatTransactionTypeLabel(tx.serviceType ?? undefined);
   const widthDots = Math.round(config.stickerWidthMm * TSPL_DOTS_PER_MM);
   const heightDots = Math.round(config.stickerHeightMm * TSPL_DOTS_PER_MM);
@@ -567,6 +613,7 @@ export async function printStickersToDevice(
     firstLine: {
       name: firstLine.name,
       stickerName: firstLine.stickerName,
+      subCategoryName: firstLine.subCategoryName,
       optionsJson: firstLine.optionsJson,
       note: firstLine.note,
       specialInstructions: firstLine.specialInstructions,
@@ -577,7 +624,7 @@ export async function printStickersToDevice(
     },
     serviceType: tx.serviceType,
     transactionTypeLabel,
-    getStickerLineLabelResult: lineLabels,
+    getStickerLineLabelResult: { lines: firstLineLabels, titleLineCount: firstTitleLineCount },
     boundsDots: { widthDots, heightDots },
   };
   const idxCls = tspl.indexOf("CLS");

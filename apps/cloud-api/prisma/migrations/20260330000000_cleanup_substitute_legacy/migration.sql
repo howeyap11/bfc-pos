@@ -28,8 +28,8 @@ ALTER TABLE "SubstituteRecipeConsumption" ADD CONSTRAINT "SubstituteRecipeConsum
 DROP TABLE IF EXISTS "SubstituteRecipeLine";
 
 -- 3) MenuItemSubstitute: remove per-item price/recipe (use global matrix only)
-ALTER TABLE "MenuItemSubstitute" DROP COLUMN "priceCents";
-ALTER TABLE "MenuItemSubstitute" DROP COLUMN "recipeQtyMl";
+ALTER TABLE "MenuItemSubstitute" DROP COLUMN IF EXISTS "priceCents";
+ALTER TABLE "MenuItemSubstitute" DROP COLUMN IF EXISTS "recipeQtyMl";
 
 -- 4) Substitute: remove legacy fallback price (use SubstitutePrice only)
 ALTER TABLE "Substitute" DROP COLUMN "priceCents";
