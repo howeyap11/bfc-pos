@@ -1,3 +1,19 @@
+-- CloudIngredient (create table; was missing from migration history - previously created outside migrations)
+CREATE TABLE "CloudIngredient" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "cloudId" TEXT NOT NULL,
+    "storeId" TEXT NOT NULL DEFAULT 'store_1',
+    "name" TEXT NOT NULL,
+    "unitCode" TEXT NOT NULL,
+    "isActive" INTEGER NOT NULL DEFAULT 1,
+    "version" INTEGER NOT NULL,
+    "deletedAt" DATETIME,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL
+);
+CREATE UNIQUE INDEX "CloudIngredient_cloudId_key" ON "CloudIngredient"("cloudId");
+CREATE INDEX "CloudIngredient_storeId_idx" ON "CloudIngredient"("storeId");
+
 -- Add imageUrl to CloudIngredient
 ALTER TABLE "CloudIngredient" ADD COLUMN "imageUrl" TEXT;
 

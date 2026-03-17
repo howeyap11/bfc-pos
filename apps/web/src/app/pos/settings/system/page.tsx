@@ -1,5 +1,5 @@
-import SystemClient from "./system-client";
+import { redirect } from "next/navigation";
 
 export default function SystemPage() {
-  return <SystemClient />;
+  redirect("/pos/settings");
 }

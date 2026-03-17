@@ -149,30 +149,8 @@ async function seedStoreConfig() {
 
 async function seedStaff() {
   console.log("Seeding staff...");
-  // Do not overwrite staff that were synced from Cloud Admin (cloudId set).
-  // Seed only creates missing local dev fallbacks; synced staff is the source of truth.
-  const staffMembers = [
-    { name: "Andrea", passcode: "1000", role: "ADMIN", key: "staff_9ev8p6ej388lku308p3vc" },
-    { name: "John", passcode: "1001", role: "BARISTA", key: "staff_idglcga7ccsb73maez1km" },
-    { name: "Maria", passcode: "1002", role: "BARISTA", key: "staff_fqv6bxdtcmjuqu3kfgncm" },
-    { name: "Manager", passcode: "1234", role: "MANAGER", key: "staff_1234_admin_pos" },
-  ];
-
-  for (const staff of staffMembers) {
-    const existing = await prisma.staff.findUnique({
-      where: { storeId_name: { storeId: STORE_ID, name: staff.name } },
-      select: { id: true, cloudId: true },
-    });
-    if (existing?.cloudId) {
-      continue; // Synced from cloud; do not overwrite
-    }
-    await prisma.staff.upsert({
-      where: { storeId_name: { storeId: STORE_ID, name: staff.name } },
-      update: { passcode: staff.passcode, role: staff.role, key: staff.key, isActive: true },
-      create: { storeId: STORE_ID, ...staff },
-    });
-  }
-  console.log("✅ Staff seeded (skipped rows with cloudId)");
+  // Staff is sourced from cloud sync only. Do not seed local/demo staff.
+  console.log("✅ Staff skipped (cloud sync only)");
 }
 
 async function seedTables() {
@@ -282,7 +260,7 @@ async function seedItems() {
     { name: "Temperature", type: OptionGroupType.SINGLE, minSelect: 1, maxSelect: 1, isRequired: true, sort: 1 },
     { name: "Size", type: OptionGroupType.SINGLE, minSelect: 1, maxSelect: 1, isRequired: true, sort: 2 },
     { name: "Sugar Level", type: OptionGroupType.SINGLE, minSelect: 1, maxSelect: 1, isRequired: true, sort: 3 },
-    { name: "Milk", type: OptionGroupType.SINGLE, minSelect: 1, maxSelect: 1, isRequired: true, sort: 4 },
+    // Milk/substitutes come from cloud sync only; do not seed local milk option group
   ];
 
   for (const g of baseGroups) {
@@ -296,7 +274,6 @@ async function seedItems() {
   const gTemp = await prisma.optionGroup.findUniqueOrThrow({ where: { name: "Temperature" } });
   const gSize = await prisma.optionGroup.findUniqueOrThrow({ where: { name: "Size" } });
   const gSugar = await prisma.optionGroup.findUniqueOrThrow({ where: { name: "Sugar Level" } });
-  const gMilk = await prisma.optionGroup.findUniqueOrThrow({ where: { name: "Milk" } });
 
   const gAddEspresso = await upsertGroup("Add-ons – Espresso Series", {
     type: OptionGroupType.MULTI, minSelect: 0, maxSelect: 10, isRequired: false, sort: 50,
@@ -330,10 +307,7 @@ async function seedItems() {
   await upsertOption(gSugar.id, "Standard", 0, true, 5);
   await upsertOption(gSugar.id, "Extra Sweet", 0, false, 6);
 
-  await upsertOption(gMilk.id, "Full-cream milk", 0, true, 1);
-  await upsertOption(gMilk.id, "Oat milk", php(30), false, 2);
-  await upsertOption(gMilk.id, "Soy milk", php(20), false, 3);
-  await upsertOption(gMilk.id, "Non-fat milk", 0, false, 4);
+  // Milk substitutes come from cloud sync only; do not seed local milk options
 
   await upsertOption(gAddEspresso.id, "Extra shot", php(20), false, 1);
   await upsertOption(gAddEspresso.id, "Sea salt foam", php(25), false, 2);
@@ -511,8 +485,7 @@ async function seedItems() {
     await linkItemGroup(drink.id, gSize.id);
     await linkItemGroup(drink.id, gSugar.id);
   }
-  await linkItemGroup(latte.id, gMilk.id);
-  await linkItemGroup(matchaLatte.id, gMilk.id);
+  // Milk/substitutes come from cloud; do not link items to local milk group
 
   await linkItemGroup(americano.id, gAddEspresso.id);
   await linkItemGroup(latte.id, gAddMilky.id);

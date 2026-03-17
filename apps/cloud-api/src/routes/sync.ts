@@ -221,6 +221,7 @@ export async function syncRoutes(app: FastifyInstance) {
           sizeOptionId: p.sizeOptionId,
           sizeCode: p.sizeCode,
           priceCents: p.priceCents,
+          includedShots: (p as { includedShots?: number | null }).includedShots ?? null,
         })),
         transactionTypes: transactionTypes.map((t) => ({
           id: t.id,

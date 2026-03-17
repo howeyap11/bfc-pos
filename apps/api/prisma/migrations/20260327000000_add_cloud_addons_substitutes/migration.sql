@@ -41,12 +41,14 @@ CREATE INDEX "CloudMenuItemAddOn_storeId_idx" ON "CloudMenuItemAddOn"("storeId")
 CREATE INDEX "CloudMenuItemAddOn_menuItemCloudId_idx" ON "CloudMenuItemAddOn"("menuItemCloudId");
 CREATE INDEX "CloudMenuItemAddOn_addOnCloudId_idx" ON "CloudMenuItemAddOn"("addOnCloudId");
 
--- CloudMenuItemSubstitute
+-- CloudMenuItemSubstitute (includes priceCents/recipeQtyMl from 20260310000000 for correct ordering)
 CREATE TABLE "CloudMenuItemSubstitute" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "storeId" TEXT NOT NULL DEFAULT 'store_1',
     "menuItemCloudId" TEXT NOT NULL,
     "substituteCloudId" TEXT NOT NULL,
+    "priceCents" INTEGER NOT NULL DEFAULT 0,
+    "recipeQtyMl" INTEGER,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" DATETIME NOT NULL
 );

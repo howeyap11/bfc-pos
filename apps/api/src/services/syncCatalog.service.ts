@@ -40,6 +40,7 @@ type CloudMenuItemSizePrice = {
   sizeOptionId: string;
   sizeCode: string;
   priceCents: number;
+  includedShots?: number | null;
 };
 
 type CloudCategory = {
@@ -425,8 +426,14 @@ export async function syncCatalogFromCloud(
         itemsUpserted++;
       }
 
-      // Sync per-item drink size configs (mode + optionId). Replace all configs for each item.
-      await tx.cloudMenuItemDrinkSizeConfig.deleteMany({ where: { storeId } });
+      // Sync per-item drink size configs (mode + optionId). Only replace configs for items in this batch.
+      // On incremental sync data.items contains only changed items; deleting all would wipe configs for unchanged items.
+      const itemIdsInBatch = data.items.map((i) => i.id);
+      if (itemIdsInBatch.length > 0) {
+        await tx.cloudMenuItemDrinkSizeConfig.deleteMany({
+          where: { storeId, menuItemCloudId: { in: itemIdsInBatch } },
+        });
+      }
       for (const i of data.items) {
         const configs = i.drinkSizeConfigs ?? [];
         const enabled = configs.filter((c) => c.isEnabled !== false);
@@ -856,6 +863,7 @@ export async function syncCatalogFromCloud(
             sizeOptionCloudId: p.sizeOptionId,
             sizeCode: p.sizeCode,
             priceCents: p.priceCents,
+            includedShots: p.includedShots ?? null,
           },
           update: {
             menuItemCloudId: p.menuItemId,
@@ -863,6 +871,7 @@ export async function syncCatalogFromCloud(
             sizeOptionCloudId: p.sizeOptionId,
             sizeCode: p.sizeCode,
             priceCents: p.priceCents,
+            includedShots: p.includedShots ?? null,
           },
         });
       }

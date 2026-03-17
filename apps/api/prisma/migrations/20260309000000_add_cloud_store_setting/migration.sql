@@ -2,7 +2,7 @@
 CREATE TABLE "CloudStoreSetting" (
     "id" TEXT NOT NULL,
     "adminPinHash" TEXT,
-    "updatedAt" TIMESTAMP(3) NOT NULL,
+    "updatedAt" DATETIME NOT NULL,
 
     CONSTRAINT "CloudStoreSetting_pkey" PRIMARY KEY ("id")
 );

@@ -30,11 +30,15 @@ import { registerRoutes } from "./routes/register";
 import { posTransactionsRoutes } from "./routes/posTransactions";
 import { drawerRoutes } from "./routes/drawer";
 import { adminSyncRoutes } from "./routes/admin/adminSync";
+import { deviceCommandsRoutes } from "./routes/deviceCommands.js";
 import { storeConfigRoutes } from "./routes/storeConfig";
+import { systemPrintersRoutes } from "./routes/systemPrinters";
 import { ensureItemForCloudId } from "./services/catalogCache.service";
 import { syncCatalogFromCloud } from "./services/syncCatalog.service.js";
 import { startSyncScheduler, runTransactionSyncFlush } from "./services/syncScheduler.js";
 import { startDeviceCommandPolling } from "./services/deviceCommandPolling.service.js";
+import { getCommandState } from "./services/commandState.service.js";
+import { getSyncStatus } from "./services/syncScheduler.js";
 const app = Fastify({ logger: true });
 // Plugins
 await app.register(cors, { origin: true });
@@ -54,13 +58,21 @@ await app.register(registerRoutes);
 await app.register(posTransactionsRoutes);
 await app.register(drawerRoutes);
 await app.register(adminSyncRoutes);
+await app.register(deviceCommandsRoutes);
 await app.register(storeConfigRoutes);
+await app.register(systemPrintersRoutes);
 // Public routes (MUST be before listen)
 app.get("/health", async () => ({ ok: true }));
-app.get("/device/status", async () => ({
-    version: process.env.POS_VERSION ?? "1.0.0",
-    deviceConfigured: !!process.env.DEVICE_KEY,
-}));
+app.get("/device/status", async () => {
+    const { state: commandState, errorMessage, lastUpdateAt } = getCommandState();
+    return {
+        version: process.env.POS_VERSION ?? "1.0.0",
+        deviceConfigured: !!process.env.DEVICE_KEY,
+        commandState,
+        ...(errorMessage && { errorMessage }),
+        ...(lastUpdateAt && { lastUpdateAt: lastUpdateAt.toISOString() }),
+    };
+});
 app.get("/ready", async (req, reply) => {
     try {
         await app.prisma.$queryRaw `SELECT 1`;
@@ -70,6 +82,39 @@ app.get("/ready", async (req, reply) => {
         app.log.warn({ err }, "ready check failed");
         return reply.code(503).send({ ok: false });
     }
+});
+/** Runtime status for watchdog and frontend recovery. */
+app.get("/system/status", async (req, reply) => {
+    const { state: commandState, errorMessage } = getCommandState();
+    const sync = getSyncStatus();
+    let db = "unavailable";
+    try {
+        await app.prisma.$queryRaw `SELECT 1`;
+        db = "ok";
+    }
+    catch {
+        db = "unavailable";
+    }
+    let runtimeStatus = "healthy";
+    if (commandState === "restarting")
+        runtimeStatus = "restarting";
+    else if (commandState === "updating")
+        runtimeStatus = "updating";
+    else if (commandState === "syncing")
+        runtimeStatus = "healthy"; // syncing is transient, POS usable
+    else if (db === "unavailable")
+        runtimeStatus = "degraded";
+    else if (sync.status === "degraded")
+        runtimeStatus = "degraded";
+    else if (commandState === "failed" && errorMessage)
+        runtimeStatus = "degraded";
+    return {
+        runtimeStatus,
+        db,
+        sync: { status: sync.status, lastError: sync.lastError },
+        commandState,
+        ...(errorMessage && { errorMessage }),
+    };
 });
 app.get("/tables", async () => {
     return app.prisma.table.findMany({
@@ -297,7 +342,7 @@ app.get("/items/:id", async (req) => {
                 where: { menuItemCloudId: cloud.cloudId, storeId },
             }),
             app.prisma.cloudAddOn.findMany({ where: { storeId }, orderBy: { sortOrder: "asc" } }),
-            app.prisma.cloudSubstitute.findMany({ where: { storeId }, include: { prices: true, recipeConsumption: true }, orderBy: { sortOrder: "asc" } }),
+            app.prisma.cloudSubstitute.findMany({ where: { storeId }, include: { prices: true }, orderBy: { sortOrder: "asc" } }),
         ]);
         const addOnIds = new Set(addOnLinks.map((l) => l.addOnCloudId));
         const substituteIds = new Set(substituteLinks.map((l) => l.substituteCloudId));
@@ -309,13 +354,6 @@ app.get("/items/:id", async (req) => {
                 name: sub.name,
                 priceCents: sub.priceCents,
                 prices: (sub.prices ?? []).map((p) => ({ sizeCloudId: p.sizeCloudId, mode: p.mode, priceCents: p.priceCents })),
-                recipeConsumption: (sub.recipeConsumption ?? []).map((r) => ({
-                    sizeCloudId: r.sizeCloudId,
-                    mode: r.mode,
-                    ingredientCloudId: r.ingredientCloudId,
-                    qtyPerItem: r.qtyPerItem,
-                    unitCode: r.unitCode,
-                })),
             };
         });
         const defaultSubId = cloud.defaultSubstituteCloudId ?? null;
@@ -493,6 +531,12 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
 try {
     await app.listen({ host: "0.0.0.0", port });
     app.log.info({ port, dbPath, mode }, "API started");
+    const syncEnv = {
+        CLOUD_URL: (process.env.CLOUD_URL ?? "").trim() ? "present" : "missing",
+        CLOUD_KEY: (process.env.CLOUD_KEY ?? "").trim() ? "present" : "missing",
+        DEVICE_KEY: (process.env.DEVICE_KEY ?? "").trim() ? "present" : "missing",
+    };
+    app.log.info({ syncEnv }, "Sync env status (use DEVICE_KEY for device polling; CLOUD_KEY is not used)");
     startSyncScheduler(app);
     startDeviceCommandPolling(app);
     syncCatalogFromCloud(app.prisma, "default")

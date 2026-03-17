@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { COLORS } from "@/lib/theme";
 import { useOnScreenKeyboard, OnScreenKeyboard } from "@/lib/useOnScreenKeyboard";
+import { lineItemDisplayParts } from "@/lib/printHelpers";
 
 type Transaction = {
   id: string;
@@ -873,8 +874,8 @@ export default function TransactionsClient() {
                             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                               {tx.lineItems.map(line => {
                                 const refunded = isLineRefunded(line);
-                                const options = line.optionsJson ? JSON.parse(line.optionsJson) : [];
-                                
+                                const { primary, secondary } = lineItemDisplayParts(line);
+                                const mods = [primary, ...secondary].filter(Boolean).join(", ");
                                 return (
                                   <div 
                                     key={line.id}
@@ -887,9 +888,9 @@ export default function TransactionsClient() {
                                     <span style={{ fontWeight: "600" }}>
                                       {line.qty}× {line.name}
                                     </span>
-                                    {options.length > 0 && (
+                                    {mods && (
                                       <span style={{ color: refunded ? "#555" : "#888", fontSize: 11, marginLeft: 4 }}>
-                                        ({options.map((o: any) => o.name).join(", ")})
+                                        ({mods})
                                       </span>
                                     )}
                                     {line.note && (
@@ -1424,7 +1425,8 @@ export default function TransactionsClient() {
                 {refundingTransaction.lineItems.map(line => {
                   const refunded = isLineRefunded(line);
                   const isSelected = selectedLineIds.includes(line.id);
-                  const options = line.optionsJson ? JSON.parse(line.optionsJson) : [];
+                  const { primary, secondary } = lineItemDisplayParts(line);
+                  const mods = [primary, ...secondary].filter(Boolean).join(", ");
 
                   return (
                     <div
@@ -1457,9 +1459,9 @@ export default function TransactionsClient() {
                           <div style={{ fontSize: 14, color: "#fff", fontWeight: "600", marginBottom: 4 }}>
                             {line.qty}× {line.name}
                           </div>
-                          {options.length > 0 && (
+                          {mods && (
                             <div style={{ fontSize: 12, color: "#888" }}>
-                              {options.map((o: any) => o.name).join(", ")}
+                              {mods}
                             </div>
                           )}
                           {line.note && (

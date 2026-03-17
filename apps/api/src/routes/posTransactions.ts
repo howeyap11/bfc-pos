@@ -13,6 +13,7 @@ import { verifyAdminPin } from "../services/adminPin.service";
 import { enqueueOutbox } from "../services/outbox.service";
 import { ensureItemForCloudId } from "../services/catalogCache.service";
 import { uploadTransactionToCloud } from "../services/transactionSync.service";
+import { printReceiptToDevice, printStickersToDevice } from "../services/print.service";
 
 const STORE_ID = "store_1";
 
@@ -53,9 +54,9 @@ function calculateShotsUpcharge(
 }
 
 function calculateMilkUpcharge(milkChoice: MilkType | undefined, defaultMilk: MilkType | undefined): number {
-  const itemDefaultMilk = defaultMilk || "FULL_CREAM";
-  const selectedMilk = milkChoice || itemDefaultMilk;
-  return selectedMilk !== itemDefaultMilk ? 1000 : 0; // 1000 cents = ₱10
+  if (defaultMilk == null) return 0; // No default from cloud; no milk upcharge
+  const selectedMilk = milkChoice ?? defaultMilk;
+  return selectedMilk !== defaultMilk ? 1000 : 0; // 1000 cents = ₱10
 }
 
 export async function posTransactionsRoutes(app: FastifyInstance) {
@@ -118,15 +119,19 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
   app.post("/pos/transactions", async (req, reply) => {
     const body = req.body as {
       tablePublicKey?: string;
-      items: Array<{ 
-        itemId: string; 
-        qty: number; 
-        optionIds: string[]; 
+      items: Array<{
+        itemId: string;
+        qty: number;
+        optionIds: string[];
         note?: string;
+        specialInstructions?: string; // Prep only, for sticker (quoted below ice); note remains for audit/discount
+        customerName?: string; // Per-item name for sticker (left of temp/size)
         baseType?: "HOT" | "ICED" | "CONCENTRATED";
         sizeLabel?: string;
         shotsQty?: number;
-        milkChoice?: MilkType;
+        milkChoice?: string; // Substitute name for display or legacy MilkType
+        selectedSubstituteCloudId?: string; // For milk upcharge from cloud substitute price
+        defaultMilk?: MilkType;
         surchargeCents?: number; // Per-line surcharge (e.g., FOODPANDA)
         discountPct?: number; // Per-line discount percentage
         discountAmount?: number; // Per-line discount amount in cents
@@ -214,9 +219,25 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
 
     const cloudItems = await app.prisma.cloudMenuItem.findMany({
       where: { cloudId: { in: cloudIds }, storeId: STORE_ID },
-      select: { cloudId: true, isDrink: true, serveVessel: true, defaultShots: true },
+      select: { cloudId: true, isDrink: true, serveVessel: true, defaultShots: true, defaultSubstituteCloudId: true },
     });
     const cloudItemMap = new Map(cloudItems.map((c) => [c.cloudId, c]));
+
+    const substituteIds = new Set<string>();
+    body.items.forEach((it) => {
+      if (it.selectedSubstituteCloudId) substituteIds.add(it.selectedSubstituteCloudId);
+    });
+    cloudItems.forEach((c) => {
+      if (c.defaultSubstituteCloudId) substituteIds.add(c.defaultSubstituteCloudId);
+    });
+    const substitutePrices =
+      substituteIds.size > 0
+        ? await app.prisma.cloudSubstitute.findMany({
+            where: { cloudId: { in: [...substituteIds] }, storeId: STORE_ID },
+            select: { cloudId: true, priceCents: true },
+          })
+        : [];
+    const substitutePriceMap = new Map(substitutePrices.map((s) => [s.cloudId, s.priceCents]));
 
     const dbOptions = await app.prisma.option.findMany({
       where: { id: { in: optionIds } },
@@ -240,6 +261,18 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       ])
     );
 
+    // Resolve add-on IDs (from CloudAddOn) so they get name/group in optionsJson for cart and sticker
+    const foundOptionIds = new Set([...optionMap.keys(), ...cloudOptionMap.keys()]);
+    const addOnIds = optionIds.filter((id) => !foundOptionIds.has(id));
+    const cloudAddOns =
+      addOnIds.length > 0
+        ? await app.prisma.cloudAddOn.findMany({
+            where: { cloudId: { in: addOnIds }, storeId: STORE_ID },
+            select: { cloudId: true, name: true, priceCents: true },
+          })
+        : [];
+    const addOnMap = new Map(cloudAddOns.map((a) => [a.cloudId, { name: a.name, priceDelta: a.priceCents }]));
+
     const discountCents = Math.max(0, Math.trunc(Number(body.discountCents ?? 0)));
 
     // Active shot pricing rule (for cloud items when Item.shotsPricingMode is null)
@@ -251,17 +284,22 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       ? { shotsPerBundle: shotRuleRow.shotsPerBundle, priceCentsPerBundle: shotRuleRow.priceCentsPerBundle }
       : null;
 
-    // Load per-size pricing for sized items (baseType + size selection)
+    // Load per-size pricing for sized items (baseType + size selection); also used for included-shots lookup
     const sizedItems = body.items.filter((it) => it.baseType && it.sizeLabel);
     const sizePriceMap = new Map<string, number>();
+    const includedShotsMap = new Map<string, number>();
     if (sizedItems.length > 0) {
       const sizedCloudIds = [...new Set(sizedItems.map((i) => i.itemId))];
       const sizePrices = await app.prisma.cloudMenuItemSizePrice.findMany({
         where: { storeId: STORE_ID, menuItemCloudId: { in: sizedCloudIds } },
+        select: { menuItemCloudId: true, baseType: true, sizeCode: true, priceCents: true, includedShots: true },
       });
       for (const p of sizePrices) {
         const key = `${p.menuItemCloudId}|${p.baseType}|${p.sizeCode}`;
         sizePriceMap.set(key, p.priceCents);
+        if (p.includedShots != null) {
+          includedShotsMap.set(key, p.includedShots);
+        }
       }
     }
 
@@ -293,19 +331,37 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       let modifiersCents = sum(deltas);
 
       // Add espresso shots upcharge (server-side recalculation for money safety)
+      // Resolve included shots: per size+temp from CloudMenuItemSizePrice, else item defaultShots
       const shotsQty = it.shotsQty ?? 0;
       const cloudItem = cloudItemMap.get(it.itemId);
-      const defaultShots = cloudItem?.defaultShots ?? null;
+      let includedShots: number | null = cloudItem?.defaultShots ?? null;
+      if (it.baseType && it.sizeLabel) {
+        const sizeKey = `${it.itemId}|${it.baseType}|${it.sizeLabel}`;
+        const fromSizePrice = includedShotsMap.get(sizeKey);
+        if (typeof fromSizePrice === "number") {
+          includedShots = fromSizePrice;
+        }
+      }
       const shotsUpchargeCents = calculateShotsUpcharge(
         shotsQty,
         dbItem.shotsPricingMode,
-        defaultShots,
+        includedShots,
         shotRule
       );
       modifiersCents += shotsUpchargeCents;
 
-      // Add milk upcharge (₱10 for non-default milk)
-      const milkUpchargeCents = calculateMilkUpcharge(it.milkChoice, dbItem.defaultMilk);
+      // Milk upcharge: from cloud substitute prices when selectedSubstituteCloudId present, else legacy MilkType
+      const effectiveDefaultMilk = it.defaultMilk ?? dbItem.defaultMilk;
+      let milkUpchargeCents = 0;
+      if (it.selectedSubstituteCloudId) {
+        const cloudItem = cloudItemMap.get(it.itemId);
+        const defaultSubId = cloudItem?.defaultSubstituteCloudId ?? null;
+        const selectedPrice = substitutePriceMap.get(it.selectedSubstituteCloudId) ?? 0;
+        const defaultPrice = defaultSubId ? substitutePriceMap.get(defaultSubId) ?? 0 : 0;
+        milkUpchargeCents = Math.max(0, selectedPrice - defaultPrice);
+      } else {
+        milkUpchargeCents = calculateMilkUpcharge(it.milkChoice as MilkType | undefined, effectiveDefaultMilk);
+      }
       modifiersCents += milkUpchargeCents;
 
       // Add per-line surcharge (e.g., FOODPANDA)
@@ -326,15 +382,17 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       const lineSubtotal = (unitPrice + modifiersCents) * qty + (lineSurchargeCents * qty);
       const lineTotal = Math.max(0, lineSubtotal - lineDiscountCents);
 
-      // Build options JSON including shots and milk for audit trail
+      // Build options JSON including shots, milk, and add-ons for audit trail and sticker
       const optionsData: any[] = optIds.map((oid) => {
         const o = optionMap.get(oid);
         const co = cloudOptionMap.get(oid);
+        const addOn = addOnMap.get(oid);
         if (o) return { id: oid, name: o.name, group: o.group?.name, priceDelta: o.priceDelta };
         if (co) return { id: oid, name: co.name, group: co.groupName, priceDelta: co.priceDelta };
+        if (addOn) return { id: oid, name: addOn.name, group: "Add-ons", priceDelta: addOn.priceDelta };
         return { id: oid, missing: true };
       });
-      
+
       if (shotsQty > 0) {
         optionsData.push({ 
           type: "shots", 
@@ -347,11 +405,11 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         optionsData.push({ type: "size", baseType: it.baseType, sizeLabel: it.sizeLabel });
       }
       
-      if (it.milkChoice && it.milkChoice !== dbItem.defaultMilk) {
-        optionsData.push({ 
-          type: "milk", 
-          choice: it.milkChoice, 
-          upchargeCents: milkUpchargeCents 
+      if (it.milkChoice && (it.selectedSubstituteCloudId != null || (effectiveDefaultMilk != null && it.milkChoice !== effectiveDefaultMilk))) {
+        optionsData.push({
+          type: "milk",
+          choice: it.milkChoice,
+          upchargeCents: milkUpchargeCents,
         });
       }
 
@@ -382,6 +440,8 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         modifiersCents,
         lineTotal,
         note: it.note?.trim() || null,
+        specialInstructions: it.specialInstructions?.trim() || null,
+        customerName: it.customerName?.trim() || null,
         optionsJson,
         isDrink: cloudItem?.isDrink ?? null,
         serveVessel: cloudItem?.serveVessel ?? null,
@@ -762,16 +822,17 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     return updatedTransaction;
   });
 
-  // Receipt view
+  // Receipt view (enrich lineItems with categoryCloudId for sticker decision on client)
   app.get("/pos/transactions/:id/receipt", async (req, reply) => {
     const { id } = req.params as { id: string };
 
     const transaction = await app.prisma.transaction.findUnique({
       where: { id },
-      include: { 
+      include: {
         lineItems: {
           include: {
             refundItems: true,
+            item: { select: { cloudId: true } },
           },
         },
         payments: true,
@@ -788,6 +849,130 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       return { error: "TRANSACTION_NOT_FOUND" };
     }
 
-    return transaction;
+    const cloudIds = [
+      ...new Set(
+        transaction.lineItems.map((li) => li.item?.cloudId).filter((c): c is string => !!c)
+      ),
+    ];
+    const categoryByCloudId = new Map<string, string | null>();
+    if (cloudIds.length > 0) {
+      const cloudItems = await app.prisma.cloudMenuItem.findMany({
+        where: { cloudId: { in: cloudIds } },
+        select: { cloudId: true, categoryCloudId: true },
+      });
+      for (const row of cloudItems) {
+        categoryByCloudId.set(row.cloudId, row.categoryCloudId);
+      }
+    }
+    const lineItemsWithCategory = transaction.lineItems.map((li) => ({
+      ...li,
+      categoryCloudId: li.item?.cloudId ? categoryByCloudId.get(li.item.cloudId) ?? null : null,
+    }));
+    return { ...transaction, lineItems: lineItemsWithCategory };
+  });
+
+  // Direct print receipt (local printer, no browser)
+  app.post("/pos/transactions/:id/print-receipt", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const transaction = await app.prisma.transaction.findUnique({
+      where: { id },
+      include: { lineItems: true, payments: true },
+    });
+    if (!transaction) {
+      reply.code(404);
+      return { error: "TRANSACTION_NOT_FOUND" };
+    }
+    try {
+      await printReceiptToDevice(transaction);
+      return { ok: true };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err ?? "Receipt print failed");
+      app.log.error({ err, transactionId: id }, "Print receipt failed");
+      reply.code(500);
+      return { error: "PRINT_FAILED", message };
+    }
+  });
+
+  // Direct print stickers (local printer, no browser); uses store stickerPrintCategoryIds and line categoryCloudId
+  app.post("/pos/transactions/:id/print-stickers", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const transaction = await app.prisma.transaction.findUnique({
+      where: { id },
+      include: {
+        lineItems: { include: { item: { select: { cloudId: true } } } },
+        payments: true,
+      },
+    });
+    if (!transaction) {
+      reply.code(404);
+      return { error: "TRANSACTION_NOT_FOUND" };
+    }
+    const storeConfig = await app.prisma.storeConfig.findUnique({
+      where: { storeId: STORE_ID },
+    });
+    const stickerPrintCategoryIds = storeConfig?.stickerPrintCategoryIds
+      ? (JSON.parse(storeConfig.stickerPrintCategoryIds) as string[])
+      : [];
+    const cloudIds = [
+      ...new Set(
+        transaction.lineItems.map((li) => li.item?.cloudId).filter((c): c is string => !!c)
+      ),
+    ];
+    const categoryByCloudId = new Map<string, string | null>();
+    if (cloudIds.length > 0) {
+      const cloudItems = await app.prisma.cloudMenuItem.findMany({
+        where: { cloudId: { in: cloudIds } },
+        select: { cloudId: true, categoryCloudId: true },
+      });
+      for (const row of cloudItems) {
+        categoryByCloudId.set(row.cloudId, row.categoryCloudId);
+      }
+    }
+    const enrichedLineItems = transaction.lineItems.map((li) => ({
+      name: li.name,
+      qty: li.qty,
+      unitPrice: li.unitPrice,
+      lineTotal: li.lineTotal,
+      note: li.note,
+      specialInstructions: li.specialInstructions ?? null,
+      customerName: li.customerName ?? null,
+      optionsJson: li.optionsJson,
+      categoryCloudId: li.item?.cloudId ? categoryByCloudId.get(li.item.cloudId) ?? null : null,
+      stickerName: undefined as string | null | undefined,
+    }));
+    const txForPrint = {
+      ...transaction,
+      lineItems: enrichedLineItems,
+    };
+    // #region agent log
+    fetch("http://127.0.0.1:7330/ingest/e360f4f2-ab8d-4cc6-b94b-f45235f7b95a", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "162728" },
+      body: JSON.stringify({
+        sessionId: "162728",
+        location: "posTransactions.ts:print-stickers",
+        message: "txForPrint serviceType and first line note",
+        data: {
+          serviceType: txForPrint.serviceType,
+          firstLineNote: enrichedLineItems[0]?.note,
+          firstLineName: enrichedLineItems[0]?.name,
+          hypothesisId: "H2-H4",
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
+    try {
+      const result = await printStickersToDevice(txForPrint, { stickerPrintCategoryIds });
+      if (result.printed === 0) {
+        reply.code(400);
+        return { error: "NO_STICKER_ITEMS", message: "No sticker items in this transaction" };
+      }
+      return { ok: true, printed: result.printed };
+    } catch (err: any) {
+      app.log.error({ err, transactionId: id }, "Print stickers failed");
+      reply.code(500);
+      return { error: "PRINT_FAILED", message: err?.message ?? "Sticker print failed" };
+    }
   });
 }

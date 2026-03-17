@@ -8,6 +8,7 @@ const DEFAULT_CONFIG = {
   enabledPaymentMethods: ["CASH", "CARD", "GCASH", "FOODPANDA"],
   splitPaymentEnabled: true,
   paymentMethodOrder: null,
+  stickerPrintCategoryIds: [] as string[],
 };
 
 export async function GET(req: NextRequest) {

@@ -6,6 +6,19 @@ import { COLORS } from "@/lib/theme";
 import { apiFetch, InvalidStaffKeyError } from "@/lib/apiFetch";
 import { useOnScreenKeyboard, OnScreenKeyboard } from "@/lib/useOnScreenKeyboard";
 import { buildTxLineInputs } from "@/lib/buildTransactionPayload";
+import {
+  CUSTOMER_DISPLAY_STORAGE_KEY,
+  type CustomerDisplaySnapshot,
+  type ItemPreview,
+  type CartSnapshotItem,
+} from "@/lib/customerDisplaySnapshot";
+import { extractSizeTemp } from "@/lib/lineItemDisplay";
+import { lineItemDisplayParts } from "@/lib/printHelpers";
+import {
+  resolveIncludedShots,
+  resolveIncludedShotsBySizeName,
+  resolveChargeableExtraShots,
+} from "@/lib/shotHelpers";
 
 /**
  * POS Register Client Component
@@ -45,9 +58,12 @@ type Item = {
   isEspressoDrink?: boolean;
   shotsPricingMode?: ShotsPricingMode | null;
   shotPricingRule?: { shotsPerBundle: number; priceCentsPerBundle: number } | null;
+  defaultShots?: number;
   defaultShots12oz?: number;
   defaultShots16oz?: number;
   shotsDefaultSource?: ShotsDefaultSource;
+  /** Backend-derived: key = `${baseType}|${sizeOptionCloudId}` -> included shots */
+  includedShotsBySizeAndTemp?: Record<string, number>;
   // Legacy field (deprecated)
   defaultEspressoShots?: number;
 };
@@ -68,10 +84,12 @@ type ItemDetail = {
   supportsShots?: boolean;
   isEspressoDrink?: boolean;
   shotsPricingMode?: ShotsPricingMode | null;
+  defaultShots?: number;
   defaultShots12oz?: number;
   defaultShots16oz?: number;
   shotPricingRule?: { shotsPerBundle: number; priceCentsPerBundle: number } | null;
   shotsDefaultSource?: ShotsDefaultSource;
+  includedShotsBySizeAndTemp?: Record<string, number>;
   // Legacy field (deprecated)
   defaultEspressoShots?: number;
   hasSizes?: boolean;
@@ -117,7 +135,8 @@ type CartItem = {
     priceDelta: number;
   }>;
   // New fields for enhanced options
-  milkChoice?: MilkType; // Selected milk type
+  milkChoice?: string; // Selected milk substitute name (e.g. "Coconut Milk") for display and optionsJson
+  selectedSubstituteCloudId?: string; // Cloud id of selected substitute for backend pricing
   defaultMilk?: MilkType; // Item's default milk (for comparison)
   shotsQty?: number; // Espresso shots quantity
   defaultShotsForSize?: number; // Default shots for selected size (for comparison)
@@ -133,7 +152,9 @@ type CartItem = {
   discountPct: number;
   discountAmount: number;
   discountTag?: "SNR" | "PWD" | null; // Audit identifier for discount type
-  note?: string;
+  note?: string; // Discount note — audit only, not printed on sticker
+  specialInstructions?: string; // Special instructions — printed on sticker for bar prep
+  customerName?: string; // Per-item name for cup/sticker (left of temp/size)
 };
 
 // POS Payment Methods (for direct register sales only)
@@ -169,6 +190,7 @@ type Transaction = {
     modifiersCents: number;
     lineTotal: number;
     note?: string | null;
+    customerName?: string | null;
     optionsJson?: string | null;
   }>;
   payments: Array<{
@@ -449,6 +471,8 @@ function CartItemEditorModal({
   const [discountAmount, setDiscountAmount] = useState(item.discountAmount);
   const [discountTag, setDiscountTag] = useState<"SNR" | "PWD" | null>(item.discountTag || null);
   const [note, setNote] = useState(item.note || "");
+  const [specialInstructions, setSpecialInstructions] = useState(item.specialInstructions || "");
+  const [customerName, setCustomerName] = useState(item.customerName || "");
 
   // Calculate line subtotal (before discount): base + options + shots upcharge
   const unitPrice =
@@ -499,6 +523,8 @@ function CartItemEditorModal({
       discountAmount,
       discountTag,
       note: note.trim() || undefined,
+      specialInstructions: specialInstructions.trim() || undefined,
+      customerName: customerName.trim() || undefined,
     });
     onClose();
   };
@@ -512,9 +538,10 @@ function CartItemEditorModal({
   const importantModifiers: string[] = [];
   const regularModifiers: string[] = [];
 
-  // Add milk choice
+  // Add milk choice (cloud substitute name or legacy code)
   if (item.milkChoice) {
-    const milkLabel = item.milkChoice === "FULL_CREAM" ? "Full Cream" : item.milkChoice === "OAT" ? "Oat Milk" : item.milkChoice === "ALMOND" ? "Almond Milk" : "Soy Milk";
+    const milkLabel =
+      item.milkChoice === "FULL_CREAM" ? "Full Cream" : item.milkChoice === "OAT" ? "Oat Milk" : item.milkChoice === "ALMOND" ? "Almond Milk" : item.milkChoice === "SOY" ? "Soy Milk" : item.milkChoice;
     importantModifiers.push(milkLabel);
   }
 
@@ -813,11 +840,80 @@ function CartItemEditorModal({
             </button>
           </div>
 
-          {/* Note */}
+          {/* Customer name — printed on sticker beside temp/size */}
           <div style={{ marginBottom: 20 }}>
             <label style={{ display: "block", marginBottom: 6, fontSize: 12, fontWeight: "600", color: "#aaa", textTransform: "uppercase" }}>
-              Note
+              Customer name
             </label>
+            <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>Printed on sticker (left of temp/size).</div>
+            <input
+              type="text"
+              inputMode="none"
+              readOnly
+              value={customerName}
+              onClick={() => {
+                keyboard.openKeyboard({
+                  mode: "text",
+                  value: customerName,
+                  title: "Customer name",
+                  onChange: setCustomerName,
+                  onDone: setCustomerName,
+                });
+              }}
+              placeholder="e.g. John, Table 3"
+              style={{
+                width: "100%",
+                padding: 12,
+                fontSize: 14,
+                background: "#2a2a2a",
+                color: "#fff",
+                border: "1px solid #3a3a3a",
+                borderRadius: 6,
+                cursor: "pointer",
+              }}
+            />
+          </div>
+
+          {/* Special instructions — printed on sticker for bar prep */}
+          <div style={{ marginBottom: 20 }}>
+            <label style={{ display: "block", marginBottom: 6, fontSize: 12, fontWeight: "600", color: "#aaa", textTransform: "uppercase" }}>
+              Special instructions
+            </label>
+            <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>Printed on sticker for bar prep.</div>
+            <input
+              type="text"
+              inputMode="none"
+              readOnly
+              value={specialInstructions}
+              onClick={() => {
+                keyboard.openKeyboard({
+                  mode: "text",
+                  value: specialInstructions,
+                  title: "Special instructions",
+                  onChange: setSpecialInstructions,
+                  onDone: setSpecialInstructions,
+                });
+              }}
+              placeholder="e.g. no whip, less ice, light syrup"
+              style={{
+                width: "100%",
+                padding: 12,
+                fontSize: 14,
+                background: "#2a2a2a",
+                color: "#fff",
+                border: "1px solid #3a3a3a",
+                borderRadius: 6,
+                cursor: "pointer",
+              }}
+            />
+          </div>
+
+          {/* Discount note — audit only, not printed on sticker */}
+          <div style={{ marginBottom: 20 }}>
+            <label style={{ display: "block", marginBottom: 6, fontSize: 12, fontWeight: "600", color: "#aaa", textTransform: "uppercase" }}>
+              Discount note
+            </label>
+            <div style={{ fontSize: 11, color: "#888", marginBottom: 4 }}>For audit only (e.g. PWD ID). Not printed on sticker.</div>
             <input
               type="text"
               inputMode="none"
@@ -827,12 +923,12 @@ function CartItemEditorModal({
                 keyboard.openKeyboard({
                   mode: "text",
                   value: note,
-                  title: "Item Note",
+                  title: "Discount note",
                   onChange: setNote,
                   onDone: setNote,
                 });
               }}
-              placeholder="Tap to add note"
+              placeholder="e.g. PWD ID, senior details"
               style={{
                 width: "100%",
                 padding: 12,
@@ -1237,71 +1333,99 @@ function SplitPaymentModal({
 
 /**
  * Shared formatter for line item modifiers (UTAK style)
- * Used by both cart items and success screen items
+ * Used by both cart items and success screen items.
+ * Uses extractSizeTemp so temp/size come from either baseType/sizeLabel or optionsJson.
  */
-function formatLineItemModifiers(item: CartItem) {
+function formatLineItemModifiers(item: CartItem & { optionsJson?: string | null }) {
   const primaryParts: string[] = []; // Bold/prominent (size, temp)
   const secondaryParts: string[] = []; // Regular text (milk sub, shots, extras)
-  
-  // Extract size and temperature from selectedOptions
-  let sizeText = "";
-  let tempText = "";
+
+  const sizeTemp = extractSizeTemp(item);
+  let sizeText = sizeTemp.size;
+  let tempText = sizeTemp.temp;
+
+  // Fallback: extract from selectedOptions when temp/size not from direct or optionsJson
   const otherOptions: string[] = [];
-  
-  item.selectedOptions?.forEach((opt) => {
-    const optName = opt.name.toUpperCase();
-    const groupName = opt.groupName?.toUpperCase() || "";
-    
-    // Temperature
-    if (groupName.includes("TEMPERATURE") || optName.includes("ICED") || optName.includes("HOT")) {
-      tempText = opt.name;
-    }
-    // Size
-    else if (groupName.includes("SIZE") || optName.includes("OZ") || optName.includes("SMALL") || optName.includes("MEDIUM") || optName.includes("LARGE")) {
-      sizeText = opt.name;
-    }
-    // Other modifiers
-    else {
-      otherOptions.push(opt.name);
-    }
-  });
-  
-  // 1) Primary: Size + Temperature (always bold)
-  if (sizeText) primaryParts.push(sizeText);
-  if (tempText) primaryParts.push(tempText);
-  
-  // 2) Milk: Only show if substituted from default
-  if (item.milkChoice && item.defaultMilk && item.milkChoice !== item.defaultMilk) {
-    const milkLabel = item.milkChoice === "FULL_CREAM" ? "full cream" : 
-                      item.milkChoice === "OAT" ? "oatmilk" : 
-                      item.milkChoice === "ALMOND" ? "almond" : "soy";
-    secondaryParts.push(`sub ${milkLabel}`);
+  const isTempGroup = (g: string) =>
+    g.includes("TEMPERATURE") || g.includes("TEMP") || g === "BASE" || g === "HOT" || g === "ICED" || g === "CONCENTRATED";
+  const isSizeName = (name: string) => /\d*OZ/i.test(name) || /SMALL|MEDIUM|LARGE/.test((name ?? "").toUpperCase());
+  const isSizeGroup = (g: string) => g.includes("SIZE");
+  const isSweetnessGroup = (g: string) => /SUGAR|SWEET/.test(g);
+  const isAddOnGroup = (g: string) => /ADD|SYRUP|SAUCE|EXTRA|OPTION|TOPPING|DRIZZLE|CREAM|DESSERT/.test(g);
+  const isIceGroup = (g: string) => /ICE/.test(g);
+  const isIceName = (name: string) => /ICE/.test((name ?? "").toUpperCase()) && !/^ICED$/i.test(name ?? "") || /LESS|NO ICE|LIGHT ICE|EXTRA ICE|REGULAR ICE/.test((name ?? "").toUpperCase());
+
+  const sweetnessParts: string[] = [];
+  const addOnParts: string[] = [];
+  const iceParts: string[] = [];
+  const otherParts: string[] = [];
+
+  if (!sizeText || !tempText) {
+    item.selectedOptions?.forEach((opt) => {
+      const optName = (opt.name ?? "").toUpperCase();
+      const groupName = (opt.groupName ?? "").trim().toUpperCase();
+      if (groupName === "HOT" || groupName === "ICED" || groupName === "CONCENTRATED") {
+        if (!tempText) tempText = groupName === "HOT" ? "Hot" : groupName === "ICED" ? "Iced" : "Concentrated";
+        if (!sizeText && isSizeName(opt.name ?? "")) sizeText = opt.name;
+      } else if (!tempText && (groupName.includes("TEMPERATURE") || groupName.includes("TEMP") || groupName === "BASE" || optName.includes("ICED") || optName.includes("HOT"))) {
+        tempText = opt.name || "";
+      } else if (!sizeText && (isSizeGroup(groupName) || isSizeName(opt.name ?? ""))) {
+        sizeText = opt.name;
+      } else if (!isTempGroup(groupName) && !isSizeGroup(groupName) && !optName.includes("ICED") && !optName.includes("HOT") && !isSizeName(opt.name ?? "")) {
+        const name = opt.name;
+        if (!name) return;
+        if (isSweetnessGroup(groupName)) sweetnessParts.push(name);
+        else if (isIceGroup(groupName) || isIceName(name)) iceParts.push(name);
+        else if (isAddOnGroup(groupName) || /SYRUP|SAUCE|ICE CREAM|WHIPPED|CREAM|DRIZZLE/.test(optName)) addOnParts.push(name);
+        else otherParts.push(name);
+      }
+    });
+  } else {
+    item.selectedOptions?.forEach((opt) => {
+      const groupName = (opt.groupName ?? "").toUpperCase();
+      const optName = (opt.name ?? "").toUpperCase();
+      if (isTempGroup(groupName) || isSizeGroup(groupName) || optName.includes("OZ")) return;
+      const name = opt.name;
+      if (!name) return;
+      if (isSweetnessGroup(groupName)) sweetnessParts.push(name);
+      else if (isIceGroup(groupName) || isIceName(name)) iceParts.push(name);
+      else if (isAddOnGroup(groupName) || /SYRUP|SAUCE|ICE CREAM|WHIPPED|CREAM|DRIZZLE/.test(optName)) addOnParts.push(name);
+      else otherParts.push(name);
+    });
   }
-  
-  // 3) Shots: Always show if item supports shots
-  // Bold only if different from default
+
+  // 1) Primary: Temperature + Size (e.g. "Iced 16oz")
+  if (tempText) primaryParts.push(tempText);
+  if (sizeText) primaryParts.push(sizeText);
+
+  // 2) Milk: show selected substitute when present
+  if (item.milkChoice) {
+    const milkLabel = item.milkChoice === "FULL_CREAM" ? "Full cream" : item.milkChoice === "OAT" ? "Oat milk" : item.milkChoice === "ALMOND" ? "Almond milk" : item.milkChoice === "SOY" ? "Soy milk" : String(item.milkChoice);
+    secondaryParts.push(milkLabel);
+  }
+
+  // 3) Shots: always show when item supports shots
   if (item.shotsQty !== undefined && item.shotsQty >= 0) {
     const shotsText = `${item.shotsQty} shot${item.shotsQty !== 1 ? "s" : ""}`;
     const isDefault = item.defaultShotsForSize !== undefined && item.shotsQty === item.defaultShotsForSize;
-    
-    if (isDefault) {
-      secondaryParts.push(shotsText);
-    } else {
-      // Non-default shots - add to secondary but will be styled bold
-      secondaryParts.push(`**${shotsText}**`); // Marker for bold styling
-    }
+    secondaryParts.push(isDefault ? shotsText : `**${shotsText}**`);
   }
-  
-  // 4) Other modifiers (syrups, extras)
-  otherOptions.forEach(opt => secondaryParts.push(opt));
-  
+
+  // 4) Sweetness (including "Standard" when explicitly selected), then add-ons, then ice, then any other
+  sweetnessParts.forEach((s) => secondaryParts.push(s));
+  addOnParts.forEach((s) => secondaryParts.push(s));
+  iceParts.forEach((s) => secondaryParts.push(s));
+  otherParts.forEach((s) => secondaryParts.push(s));
+
   // 5) Transaction type (cloud-synced; fallback to legacy fulfillment for display)
   const txCode = item.transactionTypeCode ?? item.fulfillment ?? "FOR_HERE";
   const transactionTypeLabel = item.transactionTypeLabel ?? (item.fulfillment === "FOR_HERE" ? "For Here" : item.fulfillment === "TAKE_OUT" ? "Take Out" : "Foodpanda");
   const transactionTypeColor = txCode === "FOR_HERE" ? "#10b981" : txCode === "TO_GO" || txCode === "TAKE_OUT" ? "#f59e0b" : "#ec4899";
 
+  const primaryTextOut = primaryParts.join(" ");
+
   return {
-    primaryText: primaryParts.join(" "), // e.g., "16oz ICED"
+    primaryText: primaryTextOut, // e.g., "16oz ICED"
     secondaryParts, // e.g., ["sub oatmilk", "2 shots", "Vanilla Syrup"]
     fulfillmentLabel: transactionTypeLabel,
     fulfillmentColor: transactionTypeColor,
@@ -1376,9 +1500,19 @@ function CartLineItem({
             </span>
           </div>
 
-          {/* Modifiers - UTAK Style: Size+Temp bold, rest comma-separated */}
+          {/* Modifiers - UTAK Style: Size+Temp bold, rest comma-separated. Highlight cup customizations on cart only. */}
           {(primaryText || secondaryParts.length > 0) && (
-            <div style={{ fontSize: 11, lineHeight: "1.4", marginLeft: 26 }}>
+            <div
+              style={{
+                fontSize: 11,
+                lineHeight: "1.4",
+                marginLeft: 26,
+                padding: "6px 8px",
+                borderRadius: 4,
+                borderLeft: "3px solid " + COLORS.primary,
+                background: "rgba(74, 222, 128, 0.08)",
+              }}
+            >
               {primaryText && (
                 <span style={{ color: "#fff", fontWeight: "600" }}>{primaryText}</span>
               )}
@@ -1405,10 +1539,24 @@ function CartLineItem({
             </div>
           )}
 
-          {/* Note */}
+          {/* Customer name (sticker) */}
+          {item.customerName && (
+            <div style={{ fontSize: 11, color: "#a5b4fc", marginLeft: 26, marginTop: 4 }}>
+              Cup: {item.customerName}
+            </div>
+          )}
+
+          {/* Special instructions (sticker) */}
+          {item.specialInstructions && (
+            <div style={{ fontSize: 11, color: "#94a3b8", marginLeft: 26, marginTop: 4, fontStyle: "italic" }}>
+              Prep: {item.specialInstructions}
+            </div>
+          )}
+
+          {/* Discount note (audit) */}
           {item.note && (
             <div style={{ fontSize: 11, color: "#fbbf24", marginLeft: 26, marginTop: 4, fontStyle: "italic" }}>
-              Note: {item.note}
+              Discount note: {item.note}
             </div>
           )}
 
@@ -1476,10 +1624,13 @@ export default function PosRegisterClient() {
   const [selectedOptions, setSelectedOptions] = useState<Record<string, string[]>>({});
   const [configQty, setConfigQty] = useState(1);
   const [configMilk, setConfigMilk] = useState<MilkType>("FULL_CREAM");
+  /** Selected milk substitute by cloud id; only one can be selected. Avoids name→FULL_CREAM collapse (e.g. Coconut Milk). */
+  const [selectedSubstituteId, setSelectedSubstituteId] = useState<string | null>(null);
   const [configShotsQty, setConfigShotsQty] = useState<number>(0);
   const [shotsTouchedByUser, setShotsTouchedByUser] = useState<boolean>(false); // Track manual shot changes
   const [configTransactionType, setConfigTransactionType] = useState<TransactionType | null>(null);
   const [configNote, setConfigNote] = useState<string>("");
+  const [configCustomerName, setConfigCustomerName] = useState<string>("");
   const [configBaseType, setConfigBaseType] = useState<"HOT" | "ICED" | "CONCENTRATED" | null>(null);
   const [configSizeOption, setConfigSizeOption] = useState<{ id: string; name: string } | null>(null);
 
@@ -1517,6 +1668,12 @@ export default function PosRegisterClient() {
   const [staffList, setStaffList] = useState<Array<{ id: string; name: string; role: string; passcode: string; key: string }>>([]);
   const [showStaffModal, setShowStaffModal] = useState(false);
   const [staffBusy, setStaffBusy] = useState<string | null>(null);
+
+  // Customer display: last-added item for second-screen preview
+  const [lastAddedForDisplay, setLastAddedForDisplay] = useState<{
+    preview: ItemPreview;
+    at: number;
+  } | null>(null);
 
   const DEFAULT_TRANSACTION_TYPES: TransactionType[] = [
     { id: "_FOR_HERE", code: "FOR_HERE", label: "For Here", priceDeltaCents: 0 },
@@ -1829,6 +1986,8 @@ export default function PosRegisterClient() {
             discountAmount: 0,
             discountTag: null,
             note: item.note || "",
+            specialInstructions: item.specialInstructions || "",
+            customerName: item.customerName || "",
           };
         });
         
@@ -2016,48 +2175,33 @@ export default function PosRegisterClient() {
       });
       setSelectedOptions(defaults);
       setConfigQty(1);
-      // Default milk: from cloud defaultSubstituteCloudId when substitutes exist, else defaultMilk
-      if (item.substitutes && item.substitutes.length > 0 && item.defaultSubstituteCloudId) {
-        const defaultSub = item.substitutes.find((s) => s.id === item.defaultSubstituteCloudId);
-        const milkFromName = defaultSub?.name.toUpperCase().includes("OAT") ? "OAT" : defaultSub?.name.toUpperCase().includes("ALMOND") ? "ALMOND" : defaultSub?.name.toUpperCase().includes("SOY") ? "SOY" : "FULL_CREAM";
-        setConfigMilk(milkFromName);
+      // Selection by substitute id so one choice is selected (no ghost Full Cream when choosing e.g. Coconut)
+      if (item.substitutes && item.substitutes.length > 0) {
+        const defaultId = item.defaultSubstituteCloudId ?? item.substitutes[0]?.id ?? null;
+        setSelectedSubstituteId(defaultId);
       } else {
-        setConfigMilk((item as { defaultMilk?: MilkType }).defaultMilk || "FULL_CREAM");
+        setSelectedSubstituteId(null);
       }
       
-      // Determine initial shots based on selected size
-      // Default size is 16oz (set above in defaults)
+      // Initial shots from backend: included shots for selected size (and temp when available)
       const sizeGroupId = Object.keys(defaults).find((gid) => {
         const group = item.itemOptionGroups?.find((ig) => ig.group.id === gid);
         return group?.group.name.toLowerCase().includes("size");
       });
-      
-      let initialShots = 0;
-      if (sizeGroupId && defaults[sizeGroupId]?.[0]) {
-        const selectedSizeId = defaults[sizeGroupId][0];
-        const sizeGroup = item.itemOptionGroups?.find((ig) => ig.group.id === sizeGroupId);
-        const sizeOption = sizeGroup?.group.options.find((o) => o.id === selectedSizeId);
-        const sizeName = sizeOption?.name.toLowerCase() || "";
-        
-        // Map size to default shots
-        if (sizeName.includes("12") || sizeName.includes("12oz")) {
-          initialShots = item.defaultShots12oz ?? 0;
-        } else if (sizeName.includes("16") || sizeName.includes("16oz")) {
-          initialShots = item.defaultShots16oz ?? 0;
-        } else {
-          // Fallback: use 16oz default or legacy field
-          initialShots = item.defaultShots16oz ?? item.defaultEspressoShots ?? 0;
-        }
-      } else {
-        // No size group or no selection: use 16oz default or legacy
-        initialShots = item.defaultShots16oz ?? item.defaultEspressoShots ?? 0;
-      }
-      
+      const selectedSizeId = sizeGroupId ? defaults[sizeGroupId]?.[0] : undefined;
+      const sizeGroup = sizeGroupId ? item.itemOptionGroups?.find((ig) => ig.group.id === sizeGroupId) : undefined;
+      const sizeOption = selectedSizeId ? sizeGroup?.group.options.find((o) => o.id === selectedSizeId) : undefined;
+      const initialShots = resolveIncludedShotsBySizeName({
+        item,
+        selectedSizeId,
+        sizeName: sizeOption?.name,
+      });
       setConfigShotsQty(initialShots);
       setShotsTouchedByUser(false); // Reset touch tracking
       const txTypes = transactionTypes.length > 0 ? transactionTypes : DEFAULT_TRANSACTION_TYPES;
       setConfigTransactionType(txTypes[0] ?? null);
       setConfigNote("");
+      setConfigCustomerName("");
       
       // Switch to CUSTOMIZE view
       setRegisterView("CUSTOMIZE");
@@ -2076,12 +2220,13 @@ export default function PosRegisterClient() {
     setConfigBaseType(null);
     setConfigSizeOption(null);
     setConfigQty(1);
-    setConfigMilk("FULL_CREAM");
+    setSelectedSubstituteId(null);
     setConfigShotsQty(0);
     setShotsTouchedByUser(false); // Reset touch tracking
     const txTypes = transactionTypes.length > 0 ? transactionTypes : DEFAULT_TRANSACTION_TYPES;
     setConfigTransactionType(txTypes[0] ?? null);
     setConfigNote("");
+    setConfigCustomerName("");
     
     // Switch back to BROWSE view
     setRegisterView("BROWSE");
@@ -2111,20 +2256,18 @@ export default function PosRegisterClient() {
       if (!shotsTouchedByUser && configuringItem) {
         const group = configuringItem.itemOptionGroups?.find((ig) => ig.group.id === groupId);
         if (group && group.group.name.toLowerCase().includes("size")) {
-          // Size changed, update shots based on new size
           const sizeOption = group.group.options.find((o) => o.id === optionId);
-          const sizeName = sizeOption?.name.toLowerCase() || "";
-          
-          let newShots = 0;
-          if (sizeName.includes("12") || sizeName.includes("12oz")) {
-            newShots = configuringItem.defaultShots12oz ?? 0;
-          } else if (sizeName.includes("16") || sizeName.includes("16oz")) {
-            newShots = configuringItem.defaultShots16oz ?? 0;
-          } else {
-            // Fallback to 16oz default
-            newShots = configuringItem.defaultShots16oz ?? configuringItem.defaultEspressoShots ?? 0;
-          }
-          
+          const newShots = configBaseType
+            ? resolveIncludedShots({
+                item: configuringItem,
+                selectedSizeId: optionId,
+                selectedTemp: configBaseType,
+              })
+            : resolveIncludedShotsBySizeName({
+                item: configuringItem,
+                selectedSizeId: optionId,
+                sizeName: sizeOption?.name,
+              });
           setConfigShotsQty(newShots);
         }
       }
@@ -2187,11 +2330,61 @@ export default function PosRegisterClient() {
   function addToCart() {
     if (!configuringItem) return;
 
-    // hasSizes flow: require mode + size, use sizesByMode prices
+    // hasSizes flow: require mode + size, use sizesByMode prices. Include all option groups and add-ons so cart/sticker show sweetness, ice, add-ons.
     if (configuringItem.hasSizes && configuringItem.sizesByMode) {
       if (!configBaseType || !configSizeOption) return;
       const sizeEntry = configuringItem.sizesByMode[configBaseType]?.find((s) => s.id === configSizeOption.id);
       const unitPrice = sizeEntry?.priceCents ?? configuringItem.basePrice;
+      const selectedSubstituteForQuickAdd = configuringItem.substitutes?.length && selectedSubstituteId
+        ? configuringItem.substitutes.find((s) => s.id === selectedSubstituteId)
+        : null;
+
+      const sizeOptionForCart = { id: configSizeOption.id, name: configSizeOption.name, groupName: configBaseType, priceDelta: 0 };
+      const optsHasSizes: CartItem["selectedOptions"] = [sizeOptionForCart];
+      let optionTotalCentsHasSizes = 0;
+      const isTempOrSizeGroup = (gName: string) => {
+        const n = gName.toLowerCase();
+        return n.includes("temperature") || n.includes("temp") || n.includes("size") || n === "hot" || n === "iced" || n === "concentrated";
+      };
+      configuringItem.itemOptionGroups.forEach(({ group }) => {
+        if (isTempOrSizeGroup(group.name)) return;
+        const selected = selectedOptions[group.id] ?? [];
+        selected.forEach((optId) => {
+          const opt = group.options.find((o) => o.id === optId);
+          if (opt) {
+            optsHasSizes.push({ id: opt.id, name: opt.name, groupName: group.name, priceDelta: opt.priceDelta });
+            optionTotalCentsHasSizes += opt.priceDelta;
+          }
+        });
+      });
+      if (configuringItem.addOns && configuringItem.addOns.length > 0) {
+        const selectedAddonIds = selectedOptions["addons"] ?? [];
+        selectedAddonIds.forEach((addonId) => {
+          const addon = configuringItem.addOns!.find((a) => a.id === addonId);
+          if (addon) {
+            optsHasSizes.push({ id: addon.id, name: addon.name, groupName: "Add-ons", priceDelta: addon.priceCents });
+            optionTotalCentsHasSizes += addon.priceCents;
+          }
+        });
+      }
+      if (selectedSubstituteForQuickAdd) {
+        const defaultId = configuringItem.defaultSubstituteCloudId ?? configuringItem.substitutes?.[0]?.id;
+        const defaultSub = defaultId ? configuringItem.substitutes?.find((s) => s.id === defaultId) : configuringItem.substitutes?.[0];
+        optionTotalCentsHasSizes += (selectedSubstituteForQuickAdd?.priceCents ?? 0) - (defaultSub?.priceCents ?? 0);
+      }
+      const includedShotsHasSizes = resolveIncludedShots({
+        item: configuringItem,
+        selectedSizeId: configSizeOption.id,
+        selectedTemp: configBaseType,
+      });
+      const shotsUpchargeHasSizes = calculateShotsUpcharge(
+        configShotsQty,
+        configuringItem.shotsPricingMode,
+        includedShotsHasSizes,
+        configuringItem.shotPricingRule
+      );
+      optionTotalCentsHasSizes += shotsUpchargeHasSizes;
+
       const newItem: CartItem = {
         tempId: `${Date.now()}-${Math.random()}`,
         itemId: configuringItem.id,
@@ -2200,37 +2393,34 @@ export default function PosRegisterClient() {
         qty: configQty,
         baseType: configBaseType,
         sizeLabel: configSizeOption.name,
-        selectedOptions: [{ id: configSizeOption.id, name: configSizeOption.name, groupName: configBaseType, priceDelta: 0 }],
-        milkChoice: configMilk,
-        defaultMilk: configuringItem.defaultMilk,
+        selectedOptions: optsHasSizes,
+        milkChoice: selectedSubstituteForQuickAdd?.name,
+        selectedSubstituteCloudId: selectedSubstituteForQuickAdd?.id,
+        defaultMilk: configuringItem.substitutes && configuringItem.substitutes.length > 0 ? configuringItem.defaultMilk : undefined,
         shotsQty: configShotsQty,
-        defaultShotsForSize: configSizeOption.name.includes("12") ? (configuringItem.defaultShots12oz ?? 0) : (configuringItem.defaultShots16oz ?? 0),
-        shotsUpchargeCents: (() => {
-          const def = configSizeOption.name.includes("12") ? (configuringItem.defaultShots12oz ?? 0) : (configuringItem.defaultShots16oz ?? 0);
-          return calculateShotsUpcharge(configShotsQty, configuringItem.shotsPricingMode, def, configuringItem.shotPricingRule);
-        })(),
+        defaultShotsForSize: includedShotsHasSizes,
+        shotsUpchargeCents: shotsUpchargeHasSizes,
         transactionTypeCode: configTransactionType?.code ?? "FOR_HERE",
         transactionTypeLabel: configTransactionType?.label ?? "For Here",
-        optionTotalCents: (() => {
-          let t = 0;
-          if (configuringItem.substitutes?.length) {
-            const defaultId = configuringItem.defaultSubstituteCloudId ?? configuringItem.substitutes[0]?.id;
-            const selectedSub = configuringItem.substitutes.find((s) => s.name.toUpperCase().includes(configMilk === "OAT" ? "OAT" : configMilk === "ALMOND" ? "ALMOND" : configMilk === "SOY" ? "SOY" : "CREAM"));
-            const defaultSub = defaultId ? configuringItem.substitutes.find((s) => s.id === defaultId) : configuringItem.substitutes[0];
-            t += (selectedSub?.priceCents ?? 0) - (defaultSub?.priceCents ?? 0);
-          } else if (configMilk !== (configuringItem.defaultMilk || "FULL_CREAM")) {
-            t = 1000;
-          }
-          return t;
-        })(),
+        optionTotalCents: optionTotalCentsHasSizes,
         surchargeCents: configTransactionType?.priceDeltaCents ?? 0,
         discountPct: 0,
         discountAmount: 0,
         discountTag: null,
-        note: configNote.trim() || undefined,
+        note: undefined,
+        specialInstructions: configNote.trim() || undefined,
+        customerName: configCustomerName.trim() || undefined,
       };
+
       setCart((prev) => [...prev, newItem]);
+      setLastAddedForDisplay({
+        preview: cartItemToItemPreview(newItem, configuringItem.imageUrl),
+        at: Date.now(),
+      });
       closeItemConfig();
+      // If success panel is open, switch back to cart so the new item is visible
+      setLastCompletedTransaction(null);
+      setCartPanelMode("CART");
       return;
     }
 
@@ -2269,34 +2459,54 @@ export default function PosRegisterClient() {
       });
     }
 
-    // Add milk price delta (cloud substitute priceCents when available, else ₱10 for non-default)
+    // Add milk price delta only when item has cloud substitutes; use selected substitute by id
     let milkPriceDelta = 0;
-    if (configuringItem.substitutes && configuringItem.substitutes.length > 0) {
+    if (configuringItem.substitutes && configuringItem.substitutes.length > 0 && selectedSubstituteId) {
+      const selectedSub = configuringItem.substitutes.find((s) => s.id === selectedSubstituteId);
       const defaultId = configuringItem.defaultSubstituteCloudId ?? configuringItem.substitutes[0]?.id;
-      const selectedSub = configuringItem.substitutes.find((s) => s.name.toUpperCase().includes(configMilk === "OAT" ? "OAT" : configMilk === "ALMOND" ? "ALMOND" : configMilk === "SOY" ? "SOY" : "CREAM"));
       const defaultSub = defaultId ? configuringItem.substitutes.find((s) => s.id === defaultId) : configuringItem.substitutes[0];
       milkPriceDelta = selectedSub ? selectedSub.priceCents - (defaultSub?.priceCents ?? 0) : 0;
-    } else {
-      const itemDefaultMilk = configuringItem.defaultMilk || "FULL_CREAM";
-      milkPriceDelta = configMilk !== itemDefaultMilk ? 1000 : 0;
     }
     optionTotalCents += milkPriceDelta;
 
-    // Determine default shots for the selected size (for shot pricing)
-    const selectedSize = opts.find(o => 
-      o.groupName.toUpperCase().includes("SIZE") || 
+    // Derive baseType/sizeLabel from selectedOptions (for display and for included-shots lookup)
+    let derivedBaseType: "HOT" | "ICED" | "CONCENTRATED" | undefined;
+    let derivedSizeLabel: string | undefined;
+    const selectedSize = opts.find(o =>
+      o.groupName.toUpperCase().includes("SIZE") ||
       o.name.toUpperCase().includes("OZ")
     );
-    const is12oz = selectedSize?.name.includes("12");
-    const defaultShotsForSize = is12oz 
-      ? (configuringItem.defaultShots12oz ?? 0)
-      : (configuringItem.defaultShots16oz ?? 0);
+    for (const o of opts) {
+      const g = (o.groupName ?? "").trim().toUpperCase();
+      const n = o.name ?? "";
+      if (g === "HOT" || g === "ICED" || g === "CONCENTRATED") {
+        derivedBaseType = g as "HOT" | "ICED" | "CONCENTRATED";
+      } else if (g.includes("TEMPERATURE") || g.includes("TEMP") || g === "BASE") {
+        if (/ICED/i.test(n)) derivedBaseType = "ICED";
+        else if (/HOT/i.test(n)) derivedBaseType = "HOT";
+        else if (/CONCENTRATED/i.test(n)) derivedBaseType = "CONCENTRATED";
+      }
+      if (g.includes("SIZE") || /\d*OZ/i.test(n) || /SMALL|MEDIUM|LARGE/i.test(n)) {
+        derivedSizeLabel = n;
+      }
+    }
 
-    // Calculate espresso shots upcharge (cloud shotPricingRule or legacy shotsPricingMode)
+    // Included shots from backend (size+temp when available), then shot upcharge
+    const includedShotsNoSizes = derivedBaseType && selectedSize?.id
+      ? resolveIncludedShots({
+          item: configuringItem,
+          selectedSizeId: selectedSize.id,
+          selectedTemp: derivedBaseType,
+        })
+      : resolveIncludedShotsBySizeName({
+          item: configuringItem,
+          selectedSizeId: selectedSize?.id,
+          sizeName: selectedSize?.name,
+        });
     const shotsUpchargeCents = calculateShotsUpcharge(
       configShotsQty,
       configuringItem.shotsPricingMode,
-      defaultShotsForSize,
+      includedShotsNoSizes,
       configuringItem.shotPricingRule
     );
     optionTotalCents += shotsUpchargeCents;
@@ -2304,17 +2514,23 @@ export default function PosRegisterClient() {
     // Per-line surcharge from selected transaction type (cloud-synced priceDeltaCents)
     const surchargeCents = configTransactionType?.priceDeltaCents ?? 0;
 
+    const selectedSubstitute = configuringItem.substitutes?.length && selectedSubstituteId
+      ? configuringItem.substitutes.find((s) => s.id === selectedSubstituteId)
+      : null;
     const newItem: CartItem = {
       tempId: `${Date.now()}-${Math.random()}`,
       itemId: configuringItem.id,
       itemName: configuringItem.name,
       basePrice: configuringItem.basePrice,
       qty: configQty,
+      ...(derivedBaseType && { baseType: derivedBaseType }),
+      ...(derivedSizeLabel && { sizeLabel: derivedSizeLabel }),
       selectedOptions: opts,
-      milkChoice: configMilk,
-      defaultMilk: configuringItem.defaultMilk,
+      milkChoice: selectedSubstitute?.name,
+      selectedSubstituteCloudId: selectedSubstitute?.id,
+      defaultMilk: configuringItem.substitutes && configuringItem.substitutes.length > 0 ? configuringItem.defaultMilk : undefined,
       shotsQty: configShotsQty,
-      defaultShotsForSize,
+      defaultShotsForSize: includedShotsNoSizes,
       shotsUpchargeCents, // Snapshot the calculated upcharge
       transactionTypeCode: configTransactionType?.code ?? "FOR_HERE",
       transactionTypeLabel: configTransactionType?.label ?? "For Here",
@@ -2323,11 +2539,20 @@ export default function PosRegisterClient() {
       discountPct: 0,
       discountAmount: 0,
       discountTag: null,
-      note: configNote.trim() || undefined,
+      note: undefined,
+      specialInstructions: configNote.trim() || undefined,
+      customerName: configCustomerName.trim() || undefined,
     };
 
     setCart((prev) => [...prev, newItem]);
+    setLastAddedForDisplay({
+      preview: cartItemToItemPreview(newItem, configuringItem.imageUrl),
+      at: Date.now(),
+    });
     closeItemConfig();
+    // If success panel is open, switch back to cart so the new item is visible
+    setLastCompletedTransaction(null);
+    setCartPanelMode("CART");
   }
 
   function updateCartItem(updatedItem: CartItem) {
@@ -2372,6 +2597,114 @@ export default function PosRegisterClient() {
     const surcharge = calculateSurcharge();
     return Math.max(0, subtotal + surcharge);
   }
+
+  function cartItemToItemPreview(item: CartItem, imageUrl?: string | null): ItemPreview {
+    const milkLabel =
+      !item.milkChoice
+        ? null
+        : item.milkChoice === "OAT"
+          ? "Oat milk"
+          : item.milkChoice === "ALMOND"
+            ? "Almond"
+            : item.milkChoice === "SOY"
+              ? "Soy"
+              : item.milkChoice === "FULL_CREAM"
+                ? "Full cream"
+                : String(item.milkChoice); // Cloud substitute name e.g. "Coconut Milk"
+    return {
+      itemName: item.itemName,
+      imageUrl: imageUrl ?? null,
+      baseType: item.baseType ?? null,
+      sizeLabel: item.sizeLabel ?? null,
+      optionNames: item.selectedOptions?.map((o) => o.name) ?? [],
+      milkLabel: milkLabel ?? null,
+      shotsQty: item.shotsQty ?? 0,
+      qty: item.qty,
+      note: item.note ?? null,
+      transactionTypeLabel: item.transactionTypeLabel ?? null,
+    };
+  }
+
+  // Customer display: write snapshot to localStorage for second-screen sync
+  useEffect(() => {
+    const mode: CustomerDisplaySnapshot["mode"] =
+      cartPanelMode === "SUCCESS"
+        ? "preparing"
+        : registerView === "CUSTOMIZE" && configuringItem
+          ? "active-item"
+          : cart.length > 0
+            ? "cart-review"
+            : "idle";
+
+    let activeItemPreview: ItemPreview | null = null;
+    if (registerView === "CUSTOMIZE" && configuringItem) {
+      const optionNames: string[] = [];
+      configuringItem.itemOptionGroups?.forEach(({ group }) => {
+        const selected = selectedOptions[group.id] ?? [];
+        selected.forEach((optId) => {
+          const opt = group.options.find((o) => o.id === optId);
+          if (opt) optionNames.push(opt.name);
+        });
+      });
+      configuringItem.addOns?.forEach((addon) => {
+        const selected = selectedOptions["addons"] ?? [];
+        if (selected.includes(addon.id)) optionNames.push(addon.name);
+      });
+      const milkLabel =
+        configuringItem.substitutes && configuringItem.substitutes.length > 0 && selectedSubstituteId
+          ? (configuringItem.substitutes.find((s) => s.id === selectedSubstituteId)?.name ?? null)
+          : null;
+      activeItemPreview = {
+        itemName: configuringItem.name,
+        imageUrl: configuringItem.imageUrl ?? null,
+        baseType: configBaseType ?? null,
+        sizeLabel: configSizeOption?.name ?? null,
+        optionNames,
+        milkLabel,
+        shotsQty: configShotsQty ?? 0,
+        qty: configQty,
+        note: configNote.trim() || null,
+        transactionTypeLabel: configTransactionType?.label ?? null,
+      };
+    }
+
+    const cartItems: CartSnapshotItem[] = cart.map((item) => ({
+      itemName: item.itemName,
+      qty: item.qty,
+      lineTotalCents: calculateLineTotal(item),
+    }));
+
+    const snapshot: CustomerDisplaySnapshot = {
+      mode,
+      activeItemPreview,
+      latestAddedItemPreview:
+        mode === "idle" ? null : lastAddedForDisplay?.preview ?? null,
+      cartItems,
+      totalCents: calculateTotal(),
+      lastAddedAt: mode === "idle" ? null : lastAddedForDisplay?.at ?? null,
+      ts: Date.now(),
+    };
+    try {
+      localStorage.setItem(CUSTOMER_DISPLAY_STORAGE_KEY, JSON.stringify(snapshot));
+    } catch {
+      // ignore
+    }
+  }, [
+    registerView,
+    configuringItem,
+    configQty,
+    configMilk,
+    configShotsQty,
+    configBaseType,
+    configSizeOption,
+    selectedOptions,
+    configTransactionType,
+    configNote,
+    configCustomerName,
+    cart,
+    cartPanelMode,
+    lastAddedForDisplay,
+  ]);
 
   async function handleCheckout() {
     // Guard: Require staff for payment
@@ -3214,6 +3547,11 @@ export default function PosRegisterClient() {
                           <div style={{ fontSize: 13, color: "#4ade80", fontWeight: "600" }}>
                             {formatPesos(item.basePrice)}
                           </div>
+                          {(item as { hasSizes?: boolean }).hasSizes && (
+                            <div style={{ fontSize: 11, color: COLORS.textSecondary, marginTop: 4 }}>
+                              Sizes
+                            </div>
+                          )}
                         </button>
                       ))}
                     </div>
@@ -3318,7 +3656,12 @@ export default function PosRegisterClient() {
                                   setConfigBaseType(mode);
                                   setConfigSizeOption({ id: s.id, name: s.name });
                                   if (!shotsTouchedByUser && configuringItem) {
-                                    setConfigShotsQty(s.name.includes("12") ? (configuringItem.defaultShots12oz ?? 0) : (configuringItem.defaultShots16oz ?? 0));
+                                    const newIncluded = resolveIncludedShots({
+                                      item: configuringItem,
+                                      selectedSizeId: s.id,
+                                      selectedTemp: mode,
+                                    });
+                                    setConfigShotsQty(newIncluded);
                                   }
                                 }}
                                 style={{
@@ -3639,9 +3982,10 @@ export default function PosRegisterClient() {
                         const sizeGroup = configuringItem.itemOptionGroups?.find((ig) => ig.group.name.toLowerCase().includes("size"));
                         const sizeOptId = sizeGroup ? selectedOptions[sizeGroup.group.id]?.[0] : null;
                         const sizeOpt = sizeGroup?.group.options.find((o) => o.id === sizeOptId);
-                        const is12oz = sizeOpt?.name?.includes("12") ?? false;
-                        const defaultShotsForSize = is12oz ? (configuringItem.defaultShots12oz ?? 0) : (configuringItem.defaultShots16oz ?? 0);
-                        const upcharge = calculateShotsUpcharge(configShotsQty, configuringItem.shotsPricingMode, defaultShotsForSize, configuringItem.shotPricingRule);
+                        const includedShotsPanel = (configuringItem.hasSizes && configBaseType && configSizeOption)
+                          ? resolveIncludedShots({ item: configuringItem, selectedSizeId: configSizeOption.id, selectedTemp: configBaseType })
+                          : resolveIncludedShotsBySizeName({ item: configuringItem, selectedSizeId: sizeOptId ?? undefined, sizeName: sizeOpt?.name });
+                        const upcharge = calculateShotsUpcharge(configShotsQty, configuringItem.shotsPricingMode, includedShotsPanel, configuringItem.shotPricingRule);
                         if (configShotsQty === 0) return null;
                         if (upcharge === 0) return <span style={{ color: "#4ade80" }}>(FREE)</span>;
                         return `(+${formatPesos(upcharge)})`;
@@ -3651,28 +3995,24 @@ export default function PosRegisterClient() {
                 </div>
               )}
 
-              {/* Milk Substitute Section (cloud-synced when substitutes exist) */}
+              {/* Milk Substitute Section: cloud-synced only; show only when substitutes exist */}
+              {configuringItem.substitutes && configuringItem.substitutes.length > 0 && (
               <div style={{ marginBottom: 20 }}>
                 <h3 style={{ fontSize: 16, marginBottom: 10, color: "#ddd", fontWeight: "600" }}>
                   Milk Substitute
                 </h3>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {(configuringItem.substitutes && configuringItem.substitutes.length > 0
-                    ? configuringItem.substitutes
-                    : ([{ id: "FULL_CREAM", name: "Full Cream", priceCents: 0 }, { id: "OAT", name: "Oat Milk", priceCents: 1000 }, { id: "ALMOND", name: "Almond Milk", priceCents: 1000 }, { id: "SOY", name: "Soy Milk", priceCents: 1000 }] as const)
-                  ).map((s) => {
+                  {configuringItem.substitutes.map((s) => {
                     const id = s.id;
                     const name = s.name;
                     const priceCents = s.priceCents;
-                    const nameUpper = name.toUpperCase();
-                    const milkType: MilkType = nameUpper.includes("OAT") ? "OAT" : nameUpper.includes("ALMOND") ? "ALMOND" : nameUpper.includes("SOY") ? "SOY" : "FULL_CREAM";
-                    const defaultId = configuringItem.defaultSubstituteCloudId ?? (configuringItem.substitutes?.[0]?.id ?? "FULL_CREAM");
-                    const isDefault = id === defaultId;
-                    const isSelected = configMilk === milkType;
+                    const defaultId = configuringItem.defaultSubstituteCloudId ?? configuringItem.substitutes[0]?.id;
+                    const isDefault = defaultId != null && id === defaultId;
+                    const isSelected = selectedSubstituteId === id;
                     return (
                       <button
                         key={id}
-                        onClick={() => setConfigMilk(milkType)}
+                        onClick={() => setSelectedSubstituteId(id)}
                         style={{
                           padding: "10px 16px",
                           border: `2px solid ${isSelected ? COLORS.primary : "#444"}`,
@@ -3694,6 +4034,7 @@ export default function PosRegisterClient() {
                   })}
                 </div>
               </div>
+              )}
 
               {/* Add-ons (cloud-synced) */}
               {configuringItem.addOns && configuringItem.addOns.length > 0 && (
@@ -3815,11 +4156,46 @@ export default function PosRegisterClient() {
                 </div>
               </div>
 
-              {/* Note Field */}
+              {/* Customer name — printed on sticker beside temp/size */}
               <div style={{ marginBottom: 24 }}>
                 <label style={{ display: "block", marginBottom: 10, fontWeight: "600", color: "#ddd", fontSize: 16 }}>
-                  Special Instructions
+                  Customer name
                 </label>
+                <div style={{ fontSize: 12, color: "#888", marginBottom: 6 }}>Printed on sticker (left of temp/size).</div>
+                <input
+                  type="text"
+                  readOnly
+                  value={configCustomerName}
+                  onClick={() => {
+                    keyboard.openKeyboard({
+                      mode: "text",
+                      value: configCustomerName,
+                      title: "Customer name",
+                      onChange: setConfigCustomerName,
+                      onDone: setConfigCustomerName,
+                    });
+                  }}
+                  placeholder="e.g. John, Table 3"
+                  style={{
+                    width: "100%",
+                    padding: 12,
+                    fontSize: 14,
+                    background: "#2a2a2a",
+                    color: "#fff",
+                    border: "1px solid #444",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
+                />
+              </div>
+
+              {/* Special instructions — printed on sticker */}
+              <div style={{ marginBottom: 24 }}>
+                <label style={{ display: "block", marginBottom: 10, fontWeight: "600", color: "#ddd", fontSize: 16 }}>
+                  Special instructions
+                </label>
+                <div style={{ fontSize: 12, color: "#888", marginBottom: 6 }}>Printed on sticker for bar prep.</div>
                 <textarea
                   value={configNote}
                   readOnly
@@ -3827,12 +4203,12 @@ export default function PosRegisterClient() {
                     keyboard.openKeyboard({
                       mode: "text",
                       value: configNote,
-                      title: "Special Instructions",
+                      title: "Special instructions",
                       onChange: setConfigNote,
                       onDone: setConfigNote,
                     });
                   }}
-                  placeholder="Tap to enter instructions"
+                  placeholder="e.g. no whip, less ice"
                   style={{
                     width: "100%",
                     padding: 12,
@@ -3867,16 +4243,26 @@ export default function PosRegisterClient() {
                   }, 0);
                 }
 
-                const itemDefaultMilk = configuringItem.defaultMilk || "FULL_CREAM";
-                const milkDelta = configMilk !== itemDefaultMilk ? 1000 : 0;
+                const milkDelta =
+                  configuringItem.substitutes && configuringItem.substitutes.length > 0 && selectedSubstituteId
+                    ? (() => {
+                        const selectedSub = configuringItem.substitutes.find((s) => s.id === selectedSubstituteId);
+                        const defaultId = configuringItem.defaultSubstituteCloudId ?? configuringItem.substitutes[0]?.id;
+                        const defaultSub = defaultId ? configuringItem.substitutes.find((s) => s.id === defaultId) : configuringItem.substitutes[0];
+                        return (selectedSub?.priceCents ?? 0) - (defaultSub?.priceCents ?? 0);
+                      })()
+                    : 0;
 
-                const sizeGroup = configuringItem.itemOptionGroups?.find((ig) => ig.group.name.toLowerCase().includes("size"));
-                const sizeOptId = sizeGroup ? selectedOptions[sizeGroup.group.id]?.[0] : null;
-                const sizeOpt = sizeGroup?.group.options.find((o) => o.id === sizeOptId);
-                const is12oz = configSizeOption?.name?.includes("12") ?? sizeOpt?.name?.includes("12") ?? false;
-                const defaultShotsForSize = is12oz ? (configuringItem.defaultShots12oz ?? 0) : (configuringItem.defaultShots16oz ?? 0);
+                const includedShotsBreakdown = (configuringItem.hasSizes && configBaseType && configSizeOption)
+                  ? resolveIncludedShots({ item: configuringItem, selectedSizeId: configSizeOption.id, selectedTemp: configBaseType })
+                  : (() => {
+                      const sizeGroup = configuringItem.itemOptionGroups?.find((ig) => ig.group.name.toLowerCase().includes("size"));
+                      const sizeOptId = sizeGroup ? selectedOptions[sizeGroup.group.id]?.[0] : null;
+                      const sizeOpt = sizeGroup?.group.options.find((o) => o.id === sizeOptId);
+                      return resolveIncludedShotsBySizeName({ item: configuringItem, selectedSizeId: sizeOptId ?? undefined, sizeName: sizeOpt?.name ?? configSizeOption?.name });
+                    })();
 
-                const shotsDelta = calculateShotsUpcharge(configShotsQty, configuringItem.shotsPricingMode, defaultShotsForSize, configuringItem.shotPricingRule);
+                const shotsDelta = calculateShotsUpcharge(configShotsQty, configuringItem.shotsPricingMode, includedShotsBreakdown, configuringItem.shotPricingRule);
                 
                 const surcharge = configTransactionType?.priceDeltaCents ?? 0;
                 
@@ -3906,21 +4292,24 @@ export default function PosRegisterClient() {
                           <span style={{ color: "#fff" }}>+{formatPesos(optionsTotal)}</span>
                         </div>
                       )}
-                      {milkDelta > 0 && (
-                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, color: "#aaa" }}>
-                          <span>Milk Upgrade ({configMilk === "OAT" ? "Oat" : configMilk === "ALMOND" ? "Almond" : "Soy"}):</span>
-                          <span style={{ color: "#fff" }}>+{formatPesos(milkDelta)}</span>
-                        </div>
-                      )}
+                      {milkDelta > 0 && (() => {
+                        const selSub = configuringItem.substitutes?.find((s) => s.id === selectedSubstituteId);
+                        return (
+                          <div key="milk" style={{ display: "flex", justifyContent: "space-between", fontSize: 14, color: "#aaa" }}>
+                            <span>Milk Upgrade ({selSub?.name ?? "Milk"}):</span>
+                            <span style={{ color: "#fff" }}>+{formatPesos(milkDelta)}</span>
+                          </div>
+                        );
+                      })()}
                       {configShotsQty > 0 && (
                         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, color: "#aaa" }}>
                           <span>
                             Espresso Shots ({configShotsQty})
-                            {configuringItem.shotPricingRule && configShotsQty <= defaultShotsForSize && (
+                            {configuringItem.shotPricingRule && configShotsQty <= includedShotsBreakdown && (
                               <span style={{ color: "#4ade80", fontSize: 12, marginLeft: 4 }}>(FREE)</span>
                             )}
-                            {configuringItem.shotPricingRule && configShotsQty > defaultShotsForSize && (
-                              <span style={{ fontSize: 12, marginLeft: 4 }}>({defaultShotsForSize} free, {configShotsQty - defaultShotsForSize} charged)</span>
+                            {configuringItem.shotPricingRule && configShotsQty > includedShotsBreakdown && (
+                              <span style={{ fontSize: 12, marginLeft: 4 }}>({includedShotsBreakdown} free, {resolveChargeableExtraShots({ selectedShots: configShotsQty, includedShots: includedShotsBreakdown })} charged)</span>
                             )}
                             {!configuringItem.shotPricingRule && configuringItem.shotsPricingMode === "ESPRESSO_FREE2_PAIR40" && configShotsQty <= 2 && (
                               <span style={{ color: "#4ade80", fontSize: 12, marginLeft: 4 }}>(FREE)</span>
@@ -4152,6 +4541,7 @@ export default function PosRegisterClient() {
                 onNewTransaction={startNewTransaction}
                 formatPesos={formatPesos}
                 router={router}
+                activeStaff={activeStaff}
               />
             );
           }
@@ -4611,28 +5001,28 @@ export default function PosRegisterClient() {
             </div>
 
             <h3 style={{ color: "#ddd" }}>Items:</h3>
-            {currentTransaction.lineItems.map((line) => (
-              <div
-                key={line.id}
-                style={{ padding: 10, marginBottom: 8, border: "1px solid #444", borderRadius: 4, background: "#1a1a1a" }}
-              >
-                <div>
-                  <strong style={{ color: "#fff" }}>
-                    {line.qty}× {line.name}
-                  </strong>
-                </div>
-                {line.optionsJson && (
-                  <div style={{ fontSize: 13, color: "#aaa" }}>
-                    {JSON.parse(line.optionsJson).map((opt: any, i: number) => (
-                      <div key={i}>• {opt.name}</div>
-                    ))}
+            {currentTransaction.lineItems.map((line) => {
+              const { primary, secondary } = lineItemDisplayParts(line);
+              const mods = [primary, ...secondary].filter(Boolean).join(" · ");
+              return (
+                <div
+                  key={line.id}
+                  style={{ padding: 10, marginBottom: 8, border: "1px solid #444", borderRadius: 4, background: "#1a1a1a" }}
+                >
+                  <div>
+                    <strong style={{ color: "#fff" }}>
+                      {line.qty}× {line.name}
+                    </strong>
+                    {mods && (
+                      <div style={{ fontSize: 13, color: "#aaa" }}>{mods}</div>
+                    )}
                   </div>
-                )}
-                <div style={{ textAlign: "right", color: "#4ade80", fontWeight: "600" }}>
-                  {formatPesos(line.lineTotal)}
+                  <div style={{ textAlign: "right", color: "#4ade80", fontWeight: "600" }}>
+                    {formatPesos(line.lineTotal)}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
 
             <h3 style={{ color: "#ddd", marginTop: 16 }}>Payments:</h3>
             {currentTransaction.payments.map((pmt) => (
@@ -4694,6 +5084,7 @@ function TransactionSuccessPanel({
   onNewTransaction,
   formatPesos,
   router,
+  activeStaff,
 }: {
   transaction: {
     id: string;
@@ -4707,6 +5098,7 @@ function TransactionSuccessPanel({
   onNewTransaction: () => void;
   formatPesos: (cents: number) => string;
   router: ReturnType<typeof useRouter>;
+  activeStaff: { id: string; name: string; role: string; staffKey: string } | null;
 }) {
   console.log("[SUCCESS PANEL RENDER]", { transaction });
 
@@ -4787,7 +5179,21 @@ function TransactionSuccessPanel({
       {/* Print Buttons - UTAK Style (ABOVE items) */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
         <button
-          onClick={() => alert("Print Receipt - Not implemented yet")}
+          onClick={async () => {
+            const headers: Record<string, string> = {};
+            if (activeStaff?.staffKey?.trim()) headers["x-staff-key"] = activeStaff.staffKey.trim();
+            try {
+              const res = await fetch(`/api/pos/transactions/${transaction.id}/print-receipt`, {
+                method: "POST",
+                headers,
+              });
+              const data = await res.json();
+              if (!res.ok) throw new Error(data.message || data.error || "Print failed");
+              alert("Receipt sent to printer.");
+            } catch (e: any) {
+              alert(e?.message ?? "Print receipt failed");
+            }
+          }}
           style={{
             padding: "12px",
             fontSize: 13,
@@ -4802,7 +5208,21 @@ function TransactionSuccessPanel({
           🧾 Receipt
         </button>
         <button
-          onClick={() => alert("Print Sticker - Not implemented yet")}
+          onClick={async () => {
+            const headers: Record<string, string> = {};
+            if (activeStaff?.staffKey?.trim()) headers["x-staff-key"] = activeStaff.staffKey.trim();
+            try {
+              const res = await fetch(`/api/pos/transactions/${transaction.id}/print-stickers`, {
+                method: "POST",
+                headers,
+              });
+              const data = await res.json();
+              if (!res.ok) throw new Error(data.message || data.error || "Print failed");
+              alert("Stickers sent to printer.");
+            } catch (e: any) {
+              alert(e?.message ?? "Print sticker failed");
+            }
+          }}
           style={{
             padding: "12px",
             fontSize: 13,
@@ -4907,10 +5327,22 @@ function TransactionSuccessPanel({
                     </div>
                   )}
 
-                  {/* Note */}
+                  {/* Customer name (sticker) */}
+                  {item.customerName && (
+                    <div style={{ fontSize: 11, color: "#a5b4fc", marginLeft: 26, marginTop: 4 }}>
+                      Cup: {item.customerName}
+                    </div>
+                  )}
+                  {/* Special instructions (sticker) */}
+                  {item.specialInstructions && (
+                    <div style={{ fontSize: 11, color: "#94a3b8", marginLeft: 26, marginTop: 4, fontStyle: "italic" }}>
+                      Prep: {item.specialInstructions}
+                    </div>
+                  )}
+                  {/* Discount note (audit) */}
                   {item.note && (
                     <div style={{ fontSize: 11, color: "#fbbf24", marginLeft: 26, marginTop: 4, fontStyle: "italic" }}>
-                      Note: {item.note}
+                      Discount note: {item.note}
                     </div>
                   )}
                 </div>

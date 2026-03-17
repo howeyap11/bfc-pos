@@ -44,6 +44,25 @@ export default function PosLayout({ children }: { children: React.ReactNode }) {
     }
   }
 
+  const CUSTOMER_DISPLAY_WINDOW_NAME = "bfc_customer_display";
+  function openCustomerDisplay() {
+    const w = window.open(
+      "/pos/customer-display",
+      CUSTOMER_DISPLAY_WINDOW_NAME,
+      "width=900,height=1000"
+    );
+    if (w) w.focus();
+  }
+
+  const isCustomerDisplay = pathname === "/pos/customer-display";
+
+  if (isCustomerDisplay) {
+    return (
+      <PosErrorBoundary>
+        <HealthGate>{children}</HealthGate>
+      </PosErrorBoundary>
+    );
+  }
 
   return (
     <PosErrorBoundary>
@@ -80,6 +99,23 @@ export default function PosLayout({ children }: { children: React.ReactNode }) {
             ☰
           </button>
           <h1 style={{ margin: 0, fontSize: 20, fontWeight: "bold" }}>BFC POS</h1>
+          <button
+            type="button"
+            onClick={openCustomerDisplay}
+            style={{
+              marginLeft: 16,
+              padding: "6px 12px",
+              fontSize: 13,
+              fontWeight: 600,
+              background: "rgba(255,255,255,0.12)",
+              color: "#fff",
+              border: "1px solid rgba(255,255,255,0.25)",
+              borderRadius: 6,
+              cursor: "pointer",
+            }}
+          >
+            Customer Display
+          </button>
         </div>
         
         {/* Active Staff Display */}

@@ -19,7 +19,8 @@ export type CartItem = {
     groupName: string;
     priceDelta: number;
   }>;
-  milkChoice?: MilkType;
+  milkChoice?: string; // Substitute name for display (e.g. "Coconut Milk") or legacy MilkType
+  selectedSubstituteCloudId?: string; // Cloud id of selected substitute for backend pricing
   defaultMilk?: MilkType;
   shotsQty?: number;
   defaultShotsForSize?: number;
@@ -33,16 +34,22 @@ export type CartItem = {
   discountPct: number;
   discountAmount: number;
   discountTag?: "SNR" | "PWD" | null;
-  note?: string;
+  note?: string; // Discount note — audit only, not printed on sticker
+  specialInstructions?: string; // Special instructions — printed on sticker for bar prep
+  customerName?: string; // Per-item name for cup/sticker (left of temp/size)
 };
 
 export type TxLineInput = {
   itemId: string;
   qty: number;
   optionIds: string[];
-  note?: string;
+  note?: string; // Discount note — audit only
+  specialInstructions?: string; // Special instructions — sticker prep
+  customerName?: string; // Per-item name for sticker (left of temp/size)
   shotsQty?: number;
-  milkChoice?: MilkType;
+  milkChoice?: string; // Substitute name or legacy code for optionsJson display
+  selectedSubstituteCloudId?: string; // For backend milk upcharge lookup
+  defaultMilk?: MilkType;
   baseType?: "HOT" | "ICED" | "CONCENTRATED";
   sizeLabel?: string;
   surchargeCents?: number;
@@ -63,8 +70,12 @@ export function buildTxLineInputs(cart: CartItem[]): TxLineInput[] {
       qty: Math.max(1, Math.trunc(item.qty || 1)),
       optionIds: item.selectedOptions.map((o) => o.id),
       note: item.note?.trim() || undefined,
+      specialInstructions: item.specialInstructions != null && item.specialInstructions.trim() !== "" ? item.specialInstructions.trim() : undefined,
+      customerName: item.customerName != null && item.customerName.trim() !== "" ? item.customerName.trim() : undefined,
       shotsQty: item.shotsQty ?? 0,
       milkChoice: item.milkChoice,
+      selectedSubstituteCloudId: item.selectedSubstituteCloudId,
+      defaultMilk: item.defaultMilk,
       baseType: item.baseType,
       sizeLabel: item.sizeLabel,
       surchargeCents: item.surchargeCents ?? 0,

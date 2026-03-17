@@ -39,14 +39,15 @@ model Store {
 }
 
 model StoreConfig {
-  id                    String   @id @default(cuid())
-  storeId               String   @unique @default("store_1")
-  enabledPaymentMethods String   @default("[\"CASH\",\"CARD\",\"GCASH\",\"FOODPANDA\"]")
-  splitPaymentEnabled   Boolean  @default(true)
-  paymentMethodOrder    String?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  store                 Store    @relation(fields: [storeId], references: [id])
+  id                      String   @id @default(cuid())
+  storeId                 String   @unique @default("store_1")
+  enabledPaymentMethods   String   @default("[\"CASH\",\"CARD\",\"GCASH\",\"FOODPANDA\"]")
+  splitPaymentEnabled     Boolean  @default(true)
+  paymentMethodOrder      String?
+  stickerPrintCategoryIds String?  // JSON array of category cloud ids; when set, only lines in these categories print stickers
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+  store                   Store    @relation(fields: [storeId], references: [id])
 }
 
 model Staff {
@@ -364,21 +365,23 @@ model Transaction {
 }
 
 model TransactionLineItem {
-  id             String                  @id @default(cuid())
-  transactionId  String
-  itemId         String?
-  name           String
-  qty            Int                     @default(1)
-  unitPrice      Int                     @default(0)
-  modifiersCents Int                     @default(0)
-  lineTotal      Int                     @default(0)
-  note           String?
-  isDrink        Boolean?
-  serveVessel    String?
-  optionsJson    String?
-  item           Item?                   @relation(fields: [itemId], references: [id])
-  transaction    Transaction             @relation(fields: [transactionId], references: [id], onDelete: Cascade)
-  refundItems    TransactionRefundItem[]
+  id                   String                  @id @default(cuid())
+  transactionId        String
+  itemId               String?
+  name                 String
+  qty                  Int                     @default(1)
+  unitPrice            Int                     @default(0)
+  modifiersCents       Int                     @default(0)
+  lineTotal            Int                     @default(0)
+  note                 String?                 // General / discount audit note (e.g. PWD ref)
+  specialInstructions  String?                 // Item prep only, for sticker (quoted below ice)
+  customerName         String?                 // Per-item name for cup/sticker (left of temp/size)
+  isDrink              Boolean?
+  serveVessel         String?
+  optionsJson          String?
+  item                 Item?                   @relation(fields: [itemId], references: [id])
+  transaction          Transaction             @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  refundItems          TransactionRefundItem[]
 
   @@index([transactionId])
   @@index([itemId])
@@ -709,6 +712,7 @@ model CloudMenuItemSizePrice {
   sizeOptionCloudId String
   sizeCode          String
   priceCents        Int
+  includedShots     Int?          // Free shots for this size+temp; null = use CloudMenuItem.defaultShots
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
   menuItem          CloudMenuItem @relation(fields: [menuItemCloudId], references: [cloudId], onDelete: Cascade)

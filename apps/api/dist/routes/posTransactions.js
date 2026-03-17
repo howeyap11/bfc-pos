@@ -3,6 +3,7 @@ import { verifyAdminPin } from "../services/adminPin.service";
 import { enqueueOutbox } from "../services/outbox.service";
 import { ensureItemForCloudId } from "../services/catalogCache.service";
 import { uploadTransactionToCloud } from "../services/transactionSync.service";
+import { printReceiptToDevice, printStickersToDevice } from "../services/print.service";
 const STORE_ID = "store_1";
 function sum(nums) {
     return nums.reduce((a, b) => a + b, 0);
@@ -58,6 +59,16 @@ export async function posTransactionsRoutes(app) {
                 lineItems: {
                     include: {
                         refundItems: true,
+                        item: {
+                            select: {
+                                category: {
+                                    select: {
+                                        id: true,
+                                        name: true,
+                                    },
+                                },
+                            },
+                        },
                     },
                 },
                 payments: true,
@@ -389,14 +400,15 @@ export async function posTransactionsRoutes(app) {
         });
         const totalPaid = sum(allPayments.map((p) => p.amountCents));
         if (totalPaid >= transaction.totalCents && transaction.status === "OPEN") {
+            const staff = req.staff;
             await app.prisma.transaction.update({
                 where: { id: transaction.id },
-                data: { status: "PAID" },
+                data: { status: "PAID", createdBy: staff?.name ?? undefined },
             });
             // Sync to cloud (best effort, non-blocking)
             const paymentsList = allPayments.map((p) => ({ method: p.method, amountCents: p.amountCents }));
             const lineItemsList = transaction.lineItems.map((l) => ({ name: l.name, qty: l.qty, lineTotal: l.lineTotal }));
-            const uploadResult = await uploadTransactionToCloud(app.prisma, { ...transaction, status: "PAID" }, paymentsList, lineItemsList);
+            const uploadResult = await uploadTransactionToCloud(app.prisma, { ...transaction, status: "PAID", createdBy: staff?.name ?? transaction.createdBy ?? null }, paymentsList, lineItemsList);
             if (!uploadResult.ok) {
                 console.log("[TransactionSync] Transaction queued for cloud sync (retry)", { transactionId: transaction.id });
                 await enqueueOutbox(app.prisma, {
@@ -406,7 +418,6 @@ export async function posTransactionsRoutes(app) {
                 });
             }
             // Inventory auto-deduction (best effort): do not block sale on failure
-            const staff = req.staff;
             const lineItems = transaction.lineItems
                 .filter((l) => l.itemId)
                 .map((l) => {
@@ -656,5 +667,51 @@ export async function posTransactionsRoutes(app) {
             return { error: "TRANSACTION_NOT_FOUND" };
         }
         return transaction;
+    });
+    // Direct print receipt (local printer, no browser)
+    app.post("/pos/transactions/:id/print-receipt", async (req, reply) => {
+        const { id } = req.params;
+        const transaction = await app.prisma.transaction.findUnique({
+            where: { id },
+            include: { lineItems: true, payments: true },
+        });
+        if (!transaction) {
+            reply.code(404);
+            return { error: "TRANSACTION_NOT_FOUND" };
+        }
+        try {
+            await printReceiptToDevice(transaction);
+            return { ok: true };
+        }
+        catch (err) {
+            app.log.error({ err, transactionId: id }, "Print receipt failed");
+            reply.code(500);
+            return { error: "PRINT_FAILED", message: err?.message ?? "Receipt print failed" };
+        }
+    });
+    // Direct print stickers (local printer, no browser)
+    app.post("/pos/transactions/:id/print-stickers", async (req, reply) => {
+        const { id } = req.params;
+        const transaction = await app.prisma.transaction.findUnique({
+            where: { id },
+            include: { lineItems: true, payments: true },
+        });
+        if (!transaction) {
+            reply.code(404);
+            return { error: "TRANSACTION_NOT_FOUND" };
+        }
+        try {
+            const result = await printStickersToDevice(transaction);
+            if (result.printed === 0) {
+                reply.code(400);
+                return { error: "NO_STICKER_ITEMS", message: "No sticker items in this transaction" };
+            }
+            return { ok: true, printed: result.printed };
+        }
+        catch (err) {
+            app.log.error({ err, transactionId: id }, "Print stickers failed");
+            reply.code(500);
+            return { error: "PRINT_FAILED", message: err?.message ?? "Sticker print failed" };
+        }
     });
 }

@@ -402,14 +402,15 @@ model MenuItemDrinkModeDefault {
 }
 
 model MenuItemSizePrice {
-  id           String    @id @default(cuid())
-  menuItemId   String
-  baseType     DrinkMode
-  sizeOptionId String
-  sizeCode     String
-  priceCents   Int
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id             String    @id @default(cuid())
+  menuItemId     String
+  baseType       DrinkMode
+  sizeOptionId   String
+  sizeCode       String
+  priceCents     Int
+  includedShots  Int?      // Free shots for this size+temp; null = use MenuItem.defaultShots
+  createdAt      DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   menuItem MenuItem   @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
   option   MenuOption @relation(fields: [sizeOptionId], references: [id], onDelete: Cascade)

@@ -5,7 +5,9 @@ packages:
 onlyBuiltDependencies:
   - '@prisma/client'
   - '@prisma/engines'
+  - '@woovi/node-printer'
   - esbuild
+  - printer
   - prisma
   - sharp
   - unrs-resolver

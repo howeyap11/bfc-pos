@@ -1,3 +1,20 @@
+-- CloudMenuItem (create table; it was missing from migration history - previously created outside migrations)
+CREATE TABLE "CloudMenuItem" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "cloudId" TEXT NOT NULL,
+    "storeId" TEXT NOT NULL DEFAULT 'store_1',
+    "name" TEXT NOT NULL,
+    "priceCents" INTEGER NOT NULL,
+    "isActive" INTEGER NOT NULL DEFAULT 1,
+    "imageUrl" TEXT,
+    "version" INTEGER NOT NULL,
+    "deletedAt" DATETIME,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL
+);
+CREATE UNIQUE INDEX "CloudMenuItem_cloudId_key" ON "CloudMenuItem"("cloudId");
+CREATE INDEX "CloudMenuItem_storeId_idx" ON "CloudMenuItem"("storeId");
+
 -- Add optional category fields to CloudMenuItem
 ALTER TABLE "CloudMenuItem" ADD COLUMN "categoryCloudId" TEXT;
 ALTER TABLE "CloudMenuItem" ADD COLUMN "subCategoryCloudId" TEXT;

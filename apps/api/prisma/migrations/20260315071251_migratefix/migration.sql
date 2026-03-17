@@ -1,0 +1,3 @@
+-- No-op for SQLite.
+-- The previous migration attempted to drop sqlite_autoindex_* indexes,
+-- which are tied to UNIQUE/PRIMARY KEY constraints and cannot be dropped.

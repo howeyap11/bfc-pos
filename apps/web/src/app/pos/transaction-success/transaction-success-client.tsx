@@ -1,17 +1,49 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { shouldPrintSticker, getStickerLineLabel } from "@/lib/sticker";
 import { useRouter, useSearchParams } from "next/navigation";
 import { COLORS } from "@/lib/theme";
+import type { ReceiptTransaction } from "@/lib/printHelpers";
+import { extractSizeTemp, formatSizeTempLine } from "@/lib/lineItemDisplay";
 
-type Transaction = {
-  id: string;
-  transactionNo: number;
+/** Format line item for display: size/temp from either shape, then milk, shots, etc. from optionsJson */
+function formatLineItemOptions(item: {
+  baseType?: string | null;
+  sizeLabel?: string | null;
+  optionsJson?: string | null;
+}): { primary: string; secondary: string[] } {
+  const primary = formatSizeTempLine(extractSizeTemp(item));
+  const secondary: string[] = [];
+  if (!item.optionsJson) return { primary, secondary };
+  try {
+    const opts = JSON.parse(item.optionsJson) as Array<{
+      type?: string;
+      choice?: string;
+      qty?: number;
+      name?: string;
+    }>;
+    for (const o of opts) {
+      if (o.type === "size") {
+        // already in primary via extractSizeTemp
+      } else if (o.type === "milk" && o.choice) {
+        const label =
+          o.choice === "OAT" ? "Oat milk" : o.choice === "SOY" ? "Soy milk" : o.choice === "ALMOND" ? "Almond milk" : "Full cream";
+        secondary.push(label);
+      } else if (o.type === "shots" && o.qty != null) {
+        secondary.push(`${o.qty} shot${o.qty !== 1 ? "s" : ""}`);
+      } else if (!o.type && o.name) {
+        secondary.push(o.name);
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return { primary, secondary };
+}
+
+type Transaction = ReceiptTransaction & {
   status: string;
   source: string;
-  totalCents: number;
-  createdAt: string;
   lineItems: Array<{
     id: string;
     name: string;
@@ -22,12 +54,6 @@ type Transaction = {
     isDrink?: boolean | null;
     serveVessel?: string | null;
     optionsJson?: string | null;
-  }>;
-  payments: Array<{
-    id: string;
-    method: string;
-    amountCents: number;
-    status: string;
   }>;
 };
 
@@ -54,7 +80,20 @@ export default function TransactionSuccessClient() {
 
   async function loadTransaction() {
     try {
-      const res = await fetch(`/api/pos/transactions/${transactionId}/receipt`, { cache: "no-store" });
+      let staffKey: string | null = null;
+      try {
+        const stored = typeof localStorage !== "undefined" ? localStorage.getItem("bfc_active_staff") : null;
+        if (stored) staffKey = (JSON.parse(stored) as { staffKey?: string }).staffKey ?? null;
+      } catch {
+        // ignore
+      }
+      const headers: Record<string, string> = {};
+      if (staffKey?.trim()) headers["x-staff-key"] = staffKey.trim();
+
+      const res = await fetch(`/api/pos/transactions/${transactionId}/receipt`, {
+        cache: "no-store",
+        headers,
+      });
       const data = await res.json();
 
       if (!res.ok) {
@@ -70,16 +109,42 @@ export default function TransactionSuccessClient() {
     }
   }
 
-  function handlePrint(type: "kitchen" | "order" | "sticker" | "receipt") {
-    if (type === "sticker") {
-      const stickerLines = (transaction?.lineItems ?? []).filter(shouldPrintSticker);
-      if (stickerLines.length === 0) {
-        setToastMessage("No sticker items in this order.");
+  async function handlePrint(type: "kitchen" | "order" | "sticker" | "receipt") {
+    if (!transaction) return;
+    let staffKey: string | null = null;
+    try {
+      const stored = typeof localStorage !== "undefined" ? localStorage.getItem("bfc_active_staff") : null;
+      if (stored) staffKey = (JSON.parse(stored) as { staffKey?: string }).staffKey ?? null;
+    } catch {
+      // ignore
+    }
+    const headers: Record<string, string> = {};
+    if (staffKey?.trim()) headers["x-staff-key"] = staffKey.trim();
+
+    if (type === "receipt") {
+      try {
+        const res = await fetch(`/api/pos/transactions/${transaction.id}/print-receipt`, { method: "POST", headers });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message || data.error || "Print failed");
+        setToastMessage("Receipt sent to printer.");
         setTimeout(() => setToastMessage(null), 3000);
-        return;
+      } catch (e: any) {
+        setToastMessage(e?.message ?? "Print receipt failed");
+        setTimeout(() => setToastMessage(null), 4000);
       }
-      console.log(`[Print] sticker for transaction ${transactionId}`, stickerLines.map((l) => getStickerLineLabel(l)));
-      alert(`Print sticker (${stickerLines.length} item(s)):\n\n${stickerLines.map((l) => getStickerLineLabel(l)).join("\n\n")}`);
+      return;
+    }
+    if (type === "sticker") {
+      try {
+        const res = await fetch(`/api/pos/transactions/${transaction.id}/print-stickers`, { method: "POST", headers });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message || data.error || "Print failed");
+        setToastMessage("Stickers sent to printer.");
+        setTimeout(() => setToastMessage(null), 3000);
+      } catch (e: any) {
+        setToastMessage(e?.message ?? "Print sticker failed");
+        setTimeout(() => setToastMessage(null), 4000);
+      }
       return;
     }
     console.log(`[Print] ${type} for transaction ${transactionId}`);
@@ -475,53 +540,64 @@ export default function TransactionSuccessClient() {
 
         {/* Line Items */}
         <div style={{ background: "#f9fafb", borderRadius: 8, padding: 16 }}>
-          {transaction.lineItems.map((item) => (
-            <div
-              key={item.id}
-              style={{
-                display: "flex",
-                alignItems: "flex-start",
-                gap: 12,
-                padding: "12px 0",
-                borderBottom: "1px solid #e5e7eb",
-              }}
-            >
-              {/* Checkmark Icon */}
+          {transaction.lineItems.map((item) => {
+            const { primary, secondary } = formatLineItemOptions(item);
+            const hasMods = primary || secondary.length > 0;
+            return (
               <div
+                key={item.id}
                 style={{
-                  width: 24,
-                  height: 24,
-                  background: "#22c55e",
-                  borderRadius: "50%",
                   display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  flexShrink: 0,
+                  alignItems: "flex-start",
+                  gap: 12,
+                  padding: "12px 0",
+                  borderBottom: "1px solid #e5e7eb",
                 }}
               >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3">
-                  <polyline points="20 6 9 17 4 12" />
-                </svg>
-              </div>
-
-              {/* Item Details */}
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: "500", fontSize: 14, marginBottom: 4 }}>
-                  {item.name} x{item.qty}
+                {/* Checkmark Icon */}
+                <div
+                  style={{
+                    width: 24,
+                    height: 24,
+                    background: "#22c55e",
+                    borderRadius: "50%",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
                 </div>
-                {item.note && (
-                  <div style={{ fontSize: 12, color: "#6b7280" }}>
-                    {item.note}
-                  </div>
-                )}
-              </div>
 
-              {/* Price */}
-              <div style={{ fontWeight: "600", fontSize: 14 }}>
-                {formatPesos(item.lineTotal)}
+                {/* Item Details */}
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: "500", fontSize: 14, marginBottom: 4 }}>
+                    {item.name} ×{item.qty}
+                  </div>
+                  {hasMods && (
+                    <div style={{ fontSize: 12, color: "#374151", marginBottom: 4 }}>
+                      {primary && <span style={{ fontWeight: "600" }}>{primary}</span>}
+                      {primary && secondary.length > 0 && " · "}
+                      {secondary.join(" · ")}
+                    </div>
+                  )}
+                  {item.note && (
+                    <div style={{ fontSize: 12, color: "#6b7280", fontStyle: "italic" }}>
+                      {item.note}
+                    </div>
+                  )}
+                </div>
+
+                {/* Price */}
+                <div style={{ fontWeight: "600", fontSize: 14 }}>
+                  {formatPesos(item.lineTotal)}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
 
           {/* Total Row */}
           <div

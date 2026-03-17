@@ -30,6 +30,8 @@
     "dotenv": "^17.3.1",
     "fastify": "^5.7.4",
     "fastify-plugin": "^5.1.0",
+    "@woovi/node-printer": "^1.0.1",
+    "node-thermal-printer": "^4.6.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {

@@ -19,17 +19,22 @@ const storeConfigRoutesImpl: FastifyPluginAsync = async (app) => {
           enabledPaymentMethods: ["CASH"],
           splitPaymentEnabled: true,
           paymentMethodOrder: null,
+          stickerPrintCategoryIds: [] as string[],
         };
       }
 
       const enabledPaymentMethods = JSON.parse(config.enabledPaymentMethods || "[]");
       const paymentMethodOrder = config.paymentMethodOrder ? JSON.parse(config.paymentMethodOrder) : null;
+      const stickerPrintCategoryIds = config.stickerPrintCategoryIds
+        ? (JSON.parse(config.stickerPrintCategoryIds) as string[])
+        : [];
 
       return {
         storeId: config.storeId,
         enabledPaymentMethods,
         splitPaymentEnabled: config.splitPaymentEnabled ?? true,
         paymentMethodOrder,
+        stickerPrintCategoryIds,
       };
     } catch (err) {
       app.log.error({ err }, "[StoreConfig] Error loading config");
@@ -48,6 +53,7 @@ const storeConfigRoutesImpl: FastifyPluginAsync = async (app) => {
         enabledPaymentMethods?: string[];
         splitPaymentEnabled?: boolean;
         paymentMethodOrder?: string[] | null;
+        stickerPrintCategoryIds?: string[] | null;
       };
 
       const updateData: any = {};
@@ -64,6 +70,12 @@ const storeConfigRoutesImpl: FastifyPluginAsync = async (app) => {
         updateData.paymentMethodOrder = body.paymentMethodOrder ? JSON.stringify(body.paymentMethodOrder) : null;
       }
 
+      if (body.stickerPrintCategoryIds !== undefined) {
+        updateData.stickerPrintCategoryIds = Array.isArray(body.stickerPrintCategoryIds)
+          ? JSON.stringify(body.stickerPrintCategoryIds)
+          : null;
+      }
+
       const config = await app.prisma.storeConfig.upsert({
         where: { storeId: STORE_ID },
         update: updateData,
@@ -72,15 +84,22 @@ const storeConfigRoutesImpl: FastifyPluginAsync = async (app) => {
           enabledPaymentMethods: JSON.stringify(body.enabledPaymentMethods || ["CASH"]),
           splitPaymentEnabled: body.splitPaymentEnabled ?? true,
           paymentMethodOrder: body.paymentMethodOrder ? JSON.stringify(body.paymentMethodOrder) : null,
+          stickerPrintCategoryIds: Array.isArray(body.stickerPrintCategoryIds)
+            ? JSON.stringify(body.stickerPrintCategoryIds)
+            : null,
         },
       });
 
-      // Parse and return
+      const stickerPrintCategoryIds = config.stickerPrintCategoryIds
+        ? (JSON.parse(config.stickerPrintCategoryIds) as string[])
+        : [];
+
       return {
         storeId: config.storeId,
         enabledPaymentMethods: JSON.parse(config.enabledPaymentMethods),
         splitPaymentEnabled: config.splitPaymentEnabled,
         paymentMethodOrder: config.paymentMethodOrder ? JSON.parse(config.paymentMethodOrder) : null,
+        stickerPrintCategoryIds,
       };
     }
   );

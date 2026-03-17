@@ -25,6 +25,11 @@ export default function SystemClient() {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [overlay, setOverlay] = useState<"updating" | "restarting" | null>(null);
+  const [receiptPrinter, setReceiptPrinter] = useState("");
+  const [stickerPrinter, setStickerPrinter] = useState("");
+  const [availablePrinters, setAvailablePrinters] = useState<string[]>([]);
+  const [printerSaving, setPrinterSaving] = useState(false);
+  const [printerTestLoading, setPrinterTestLoading] = useState<string | null>(null);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -36,13 +41,37 @@ export default function SystemClient() {
     }
   }, []);
 
+  const loadPrinters = useCallback(async () => {
+    try {
+      const staff = typeof window !== "undefined" ? localStorage.getItem("bfc_active_staff") : null;
+      const staffKey = staff ? (JSON.parse(staff) as { staffKey?: string }).staffKey : null;
+      const headers = staffKey ? { "x-staff-key": staffKey } : {};
+      const [configRes, availableRes] = await Promise.all([
+        fetch("/api/system/printers", { cache: "no-store", headers }),
+        fetch("/api/system/printers/available", { cache: "no-store", headers }),
+      ]);
+      const configData = await configRes.json();
+      const availableData = await availableRes.json();
+      if (configRes.ok) {
+        setReceiptPrinter(configData.receiptPrinter ?? "");
+        setStickerPrinter(configData.stickerPrinter ?? "");
+      }
+      if (availableRes.ok && Array.isArray(availableData.printers)) {
+        setAvailablePrinters(availableData.printers);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
   useEffect(() => {
     if (isAuthenticated) {
       loadStatus();
+      loadPrinters();
       const t = setInterval(loadStatus, 5000);
       return () => clearInterval(t);
     }
-  }, [isAuthenticated, loadStatus]);
+  }, [isAuthenticated, loadStatus, loadPrinters]);
 
   useEffect(() => {
     if (status?.commandState === "updating") setOverlay("updating");
@@ -104,6 +133,48 @@ export default function SystemClient() {
   }
 
   const busy = status?.commandState === "updating" || status?.commandState === "restarting" || status?.commandState === "syncing";
+
+  async function getStaffHeaders(): Promise<Record<string, string>> {
+    const staff = typeof window !== "undefined" ? localStorage.getItem("bfc_active_staff") : null;
+    const staffKey = staff ? (JSON.parse(staff) as { staffKey?: string }).staffKey : null;
+    return staffKey ? { "x-staff-key": staffKey } : {};
+  }
+
+  async function handleSavePrinters() {
+    setError(null);
+    setPrinterSaving(true);
+    try {
+      const headers = await getStaffHeaders();
+      const res = await fetch("/api/system/printers", {
+        method: "POST",
+        headers: { "content-type": "application/json", ...headers },
+        body: JSON.stringify({ receiptPrinter: receiptPrinter.trim(), stickerPrinter: stickerPrinter.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || data.error || "Failed to save");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to save");
+    } finally {
+      setPrinterSaving(false);
+    }
+  }
+
+  async function handleTestPrinter(type: "receipt" | "sticker") {
+    setError(null);
+    setPrinterTestLoading(type);
+    try {
+      const headers = await getStaffHeaders();
+      const path = type === "receipt" ? "/api/system/printers/test-receipt" : "/api/system/printers/test-sticker";
+      const res = await fetch(path, { method: "POST", headers });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || data.error || "Test print failed");
+      setError(null);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Test print failed");
+    } finally {
+      setPrinterTestLoading(null);
+    }
+  }
 
   if (!isAuthenticated) {
     return (
@@ -299,6 +370,98 @@ export default function SystemClient() {
           ) : (
             <p style={{ color: COLORS.textSecondary }}>Unable to load status</p>
           )}
+        </div>
+
+        <div
+          style={{
+            background: COLORS.bgPanel,
+            borderRadius: 8,
+            padding: 20,
+            marginBottom: 24,
+            border: `1px solid ${COLORS.borderLight}`,
+          }}
+        >
+          <h2 style={{ margin: "0 0 16px 0", fontSize: 16, fontWeight: 600, color: COLORS.textPrimary }}>
+            Hardware → Printers
+          </h2>
+          <p style={{ color: COLORS.textSecondary, marginBottom: 16, fontSize: 14 }}>
+            Select the Windows printers used for receipts and drink stickers (USB printers connected to this PC).
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div>
+              <label style={{ display: "block", marginBottom: 4, fontSize: 14, color: COLORS.textSecondary }}>
+                Receipt Printer
+              </label>
+              <select
+                value={receiptPrinter}
+                onChange={(e) => setReceiptPrinter(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: 10,
+                  fontSize: 14,
+                  border: `1px solid ${COLORS.borderLight}`,
+                  borderRadius: 6,
+                  background: COLORS.bgDark,
+                  color: COLORS.textPrimary,
+                }}
+              >
+                <option value="">— Select printer —</option>
+                {availablePrinters.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label style={{ display: "block", marginBottom: 4, fontSize: 14, color: COLORS.textSecondary }}>
+                Sticker Printer
+              </label>
+              <select
+                value={stickerPrinter}
+                onChange={(e) => setStickerPrinter(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: 10,
+                  fontSize: 14,
+                  border: `1px solid ${COLORS.borderLight}`,
+                  borderRadius: 6,
+                  background: COLORS.bgDark,
+                  color: COLORS.textPrimary,
+                }}
+              >
+                <option value="">— Select printer —</option>
+                {availablePrinters.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              <button
+                onClick={handleSavePrinters}
+                disabled={printerSaving}
+                style={btnStyle(printerSaving)}
+              >
+                {printerSaving ? "Saving…" : "Save"}
+              </button>
+              <button
+                onClick={() => handleTestPrinter("receipt")}
+                disabled={!!printerTestLoading || printerSaving}
+                style={btnStyle(printerTestLoading === "receipt")}
+              >
+                {printerTestLoading === "receipt" ? "Printing…" : "Test Receipt Printer"}
+              </button>
+              <button
+                onClick={() => handleTestPrinter("sticker")}
+                disabled={!!printerTestLoading || printerSaving}
+                style={btnStyle(printerTestLoading === "sticker")}
+              >
+                {printerTestLoading === "sticker" ? "Printing…" : "Test Sticker Printer"}
+              </button>
+            </div>
+          </div>
         </div>
 
         <div

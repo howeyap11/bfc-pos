@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { COLORS } from "@/lib/theme";
+import { extractSizeTemp, formatSizeTempLine } from "@/lib/lineItemDisplay";
+import { lineItemDisplayParts } from "@/lib/printHelpers";
 
 type Category = {
   id: string;
@@ -459,35 +461,35 @@ export default function PosCartClient() {
             <p style={{ color: "#999" }}>Cart is empty</p>
           ) : (
             <div>
-              {cart.map((item) => (
-                <div
-                  key={item.tempId}
-                  style={{ padding: 12, marginBottom: 8, border: "1px solid #eee", borderRadius: 4 }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                    <div>
-                      <strong>{item.itemName}</strong>
-                      {item.baseType != null && item.sizeLabel != null && (
-                        <div style={{ fontSize: 13, color: "#555", marginTop: 2 }}>
-                          {item.baseType.charAt(0) + item.baseType.slice(1).toLowerCase()} {item.sizeLabel}
-                        </div>
-                      )}
+              {cart.map((item) => {
+                const sizeTempLine = formatSizeTempLine(extractSizeTemp(item));
+                return (
+                  <div
+                    key={item.tempId}
+                    style={{ padding: 12, marginBottom: 8, border: "1px solid #eee", borderRadius: 4 }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                      <div>
+                        <strong>{item.itemName}</strong>
+                        {sizeTempLine && (
+                          <div style={{ fontSize: 13, color: "#555", marginTop: 2 }}>{sizeTempLine}</div>
+                        )}
+                      </div>
+                      <button onClick={() => removeFromCart(item.tempId)} style={{ color: "red" }}>
+                        ✕
+                      </button>
                     </div>
-                    <button onClick={() => removeFromCart(item.tempId)} style={{ color: "red" }}>
-                      ✕
-                    </button>
-                  </div>
 
-                  {item.selectedOptions.length > 0 && !(item.baseType != null && item.sizeLabel != null) && (
-                    <div style={{ fontSize: 13, color: "#666", marginBottom: 8 }}>
-                      {item.selectedOptions.map((opt, i) => (
-                        <div key={i}>
-                          • {opt.groupName}: {opt.name}
-                          {opt.priceDelta !== 0 && ` (+${formatPesos(opt.priceDelta)})`}
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                    {item.selectedOptions.length > 0 && !sizeTempLine && (
+                      <div style={{ fontSize: 13, color: "#666", marginBottom: 8 }}>
+                        {item.selectedOptions.map((opt, i) => (
+                          <div key={i}>
+                            • {opt.groupName}: {opt.name}
+                            {opt.priceDelta !== 0 && ` (+${formatPesos(opt.priceDelta)})`}
+                          </div>
+                        ))}
+                      </div>
+                    )}
 
                   {item.note && (
                     <div style={{ fontSize: 13, fontStyle: "italic", marginBottom: 8 }}>Note: {item.note}</div>
@@ -502,7 +504,8 @@ export default function PosCartClient() {
                     <strong>{formatPesos(calculateLineTotal(item))}</strong>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -775,28 +778,22 @@ export default function PosCartClient() {
                 </div>
 
                 <h3>Line Items:</h3>
-                {currentTransaction.lineItems.map((line) => (
-                  <div key={line.id} style={{ padding: 8, marginBottom: 8, border: "1px solid #eee" }}>
-                    <div>
-                      <strong>
-                        {line.qty}× {line.name}
-                      </strong>
-                    </div>
-                    {line.optionsJson && (
-                      <div style={{ fontSize: 13, color: "#666" }}>
-                        {(JSON.parse(line.optionsJson) as any[]).map((opt: any, i: number) => (
-                          <div key={i}>
-                            • {opt.type === "size" && opt.baseType && opt.sizeLabel
-                              ? `${(opt.baseType as string).charAt(0) + (opt.baseType as string).slice(1).toLowerCase()} ${opt.sizeLabel}`
-                              : `${opt.group ?? ""}: ${opt.name ?? ""}`}
-                          </div>
-                        ))}
+                {currentTransaction.lineItems.map((line) => {
+                  const { primary, secondary } = lineItemDisplayParts(line);
+                  const mods = [primary, ...secondary].filter(Boolean).join(" · ");
+                  return (
+                    <div key={line.id} style={{ padding: 8, marginBottom: 8, border: "1px solid #eee" }}>
+                      <div>
+                        <strong>
+                          {line.qty}× {line.name}
+                        </strong>
+                        {mods && <div style={{ fontSize: 13, color: "#666" }}>{mods}</div>}
                       </div>
-                    )}
-                    {line.note && <div style={{ fontSize: 13, fontStyle: "italic" }}>Note: {line.note}</div>}
-                    <div style={{ textAlign: "right" }}>{formatPesos(line.lineTotal)}</div>
-                  </div>
-                ))}
+                      {line.note && <div style={{ fontSize: 13, fontStyle: "italic" }}>Note: {line.note}</div>}
+                      <div style={{ textAlign: "right" }}>{formatPesos(line.lineTotal)}</div>
+                    </div>
+                  );
+                })}
 
                 <h3>Payments:</h3>
                 {currentTransaction.payments.map((pmt) => (

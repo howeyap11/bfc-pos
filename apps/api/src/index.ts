@@ -36,6 +36,7 @@ import { drawerRoutes } from "./routes/drawer";
 import { adminSyncRoutes } from "./routes/admin/adminSync";
 import { deviceCommandsRoutes } from "./routes/deviceCommands.js";
 import { storeConfigRoutes } from "./routes/storeConfig";
+import { systemPrintersRoutes } from "./routes/systemPrinters";
 import { ensureItemForCloudId } from "./services/catalogCache.service";
 import { syncCatalogFromCloud } from "./services/syncCatalog.service.js";
 import { startSyncScheduler, runTransactionSyncFlush } from "./services/syncScheduler.js";
@@ -66,6 +67,7 @@ await app.register(drawerRoutes);
 await app.register(adminSyncRoutes);
 await app.register(deviceCommandsRoutes);
 await app.register(storeConfigRoutes);
+await app.register(systemPrintersRoutes);
 
 // Public routes (MUST be before listen)
 app.get("/health", async () => ({ ok: true }));
@@ -161,6 +163,7 @@ app.get("/menu", async (req, reply) => {
         description: null,
         imageUrl: i.imageUrl,
         series: i.subCategoryCloudId ? subCategoryMap.get(i.subCategoryCloudId) ?? "Other" : "Other",
+        hasSizes: i.hasSizes ?? false,
         })),
     }));
     const uncategorized = (items ?? []).filter((i) => !i.categoryCloudId);
@@ -175,11 +178,12 @@ app.get("/menu", async (req, reply) => {
         description: null,
         imageUrl: i.imageUrl,
         series: i.subCategoryCloudId ? subCategoryMap.get(i.subCategoryCloudId) ?? "Other" : "Other",
+        hasSizes: i.hasSizes ?? false,
       })),
       });
     }
     if (result.length === 0 && (items ?? []).length > 0) {
-      return [{ id: "menu", name: "Menu", items: (items ?? []).map((i) => ({ id: i.cloudId, name: i.name, basePrice: i.priceCents, description: null, imageUrl: i.imageUrl ?? null, series: "Other" })) }];
+      return [{ id: "menu", name: "Menu", items: (items ?? []).map((i) => ({ id: i.cloudId, name: i.name, basePrice: i.priceCents, description: null, imageUrl: i.imageUrl ?? null, series: "Other", hasSizes: i.hasSizes ?? false })) }];
     }
     return result;
   } catch (err) {
@@ -336,6 +340,14 @@ app.get("/items/:id", async (req) => {
     const defaultShots = (cloud as { defaultShots?: number | null }).defaultShots ?? 0;
     const supportsShots = (cloud as { supportsShots?: boolean }).supportsShots ?? false;
 
+    // Included (free) shots per size+temp: from size prices, fallback to item defaultShots
+    const includedShotsBySizeAndTemp: Record<string, number> = {};
+    for (const p of sizePrices) {
+      const key = `${p.baseType}|${p.sizeOptionCloudId}`;
+      const value = p.includedShots != null ? p.includedShots : defaultShots;
+      includedShotsBySizeAndTemp[key] = value;
+    }
+
     // Active shot pricing rule (for cloud items: apply to shots above default)
     let shotPricingRule: { shotsPerBundle: number; priceCentsPerBundle: number } | undefined;
     if (supportsShots) {
@@ -385,6 +397,16 @@ app.get("/items/:id", async (req) => {
       };
     });
     const defaultSubId = (cloud as { defaultSubstituteCloudId?: string | null }).defaultSubstituteCloudId ?? null;
+    // Default milk only when cloud sends a default substitute; do not inject FULL_CREAM
+    const defaultMilk =
+      defaultSubId && itemSubstitutes.length > 0
+        ? (() => {
+            const sub = itemSubstitutes.find((s) => s.id === defaultSubId);
+            if (!sub) return undefined;
+            const n = sub.name.toUpperCase();
+            return n.includes("OAT") ? "OAT" : n.includes("ALMOND") ? "ALMOND" : n.includes("SOY") ? "SOY" : "FULL_CREAM";
+          })()
+        : undefined;
 
     return {
       id: cloud.cloudId,
@@ -395,13 +417,15 @@ app.get("/items/:id", async (req) => {
       isDrink: cloud.isDrink,
       serveVessel: cloud.serveVessel,
       defaultSizeOptionId: (cloud as { defaultSizeOptionCloudId?: string | null }).defaultSizeOptionCloudId ?? null,
-      defaultMilk: "FULL_CREAM",
+      defaultMilk,
       defaultSubstituteCloudId: defaultSubId,
       substitutes: itemSubstitutes.length > 0 ? itemSubstitutes : undefined,
       addOns: itemAddOns.length > 0 ? itemAddOns : undefined,
       supportsShots,
+      defaultShots,
       defaultShots12oz: defaultShots,
       defaultShots16oz: defaultShots,
+      includedShotsBySizeAndTemp: Object.keys(includedShotsBySizeAndTemp).length > 0 ? includedShotsBySizeAndTemp : undefined,
       shotPricingRule,
       itemOptionGroups,
       hasSizes: hasSizes || undefined,
