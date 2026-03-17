@@ -80,8 +80,9 @@ model MenuItem {
   defaultSizeId         String?
   defaultSizeOptionId   String?      // MenuOption.id from "Sizes" group
 
-  supportsShots Boolean  @default(false)
-  defaultShots  Int?
+  supportsShots       Boolean  @default(false)
+  defaultShots        Int?
+  shotsPerSizeEnabled Boolean  @default(false)  // When true, use per-size includedShots from sizePrices; when false, use defaultShots
 
   category    Category?     @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   subCategory SubCategory   @relation(fields: [subCategoryId], references: [id], onDelete: Restrict)

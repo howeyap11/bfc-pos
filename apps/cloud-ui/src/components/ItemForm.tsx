@@ -157,6 +157,8 @@ export default function ItemForm({
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [supportsShots, setSupportsShots] = useState(false);
   const [defaultShots, setDefaultShots] = useState(1);
+  const [shotsPerSizeEnabled, setShotsPerSizeEnabled] = useState(false);
+  const [sizeShotsByMode, setSizeShotsByMode] = useState<DrinkSizesByModePayload["sizeShotsByMode"]>({});
   const [modifierGroups, setModifierGroups] = useState<{ id: string; name: string; required?: boolean; defaultOption?: { id: string; name: string } | null; options?: { id: string; name: string }[] }[]>([]);
   const [selectedModifierGroupIds, setSelectedModifierGroupIds] = useState<string[]>([]);
   const [addOnGroups, setAddOnGroups] = useState<AddOnGroup[]>([]);
@@ -292,6 +294,22 @@ export default function ItemForm({
 
           setSupportsShots(item.supportsShots ?? false);
           setDefaultShots(item.defaultShots ?? 1);
+          setShotsPerSizeEnabled(item.shotsPerSizeEnabled ?? false);
+          const sizePrices = (item.sizePrices ?? []) as MenuItemSizePrice[];
+          if (sizePrices.length > 0) {
+            const byMode: DrinkSizesByModePayload["sizeShotsByMode"] = {};
+            for (const modeKey of DRINK_MODES) {
+              const entries = sizePrices.filter((p) => p.baseType === modeKey);
+              if (entries.length > 0) {
+                byMode[modeKey] = Object.fromEntries(
+                  entries.map((p) => [p.sizeOptionId, p.includedShots != null ? p.includedShots : 0])
+                );
+              }
+            }
+            setSizeShotsByMode(byMode);
+          } else {
+            setSizeShotsByMode({});
+          }
           const links = (item as { optionGroupLinks?: { groupId: string; group?: { isSizeGroup?: boolean } }[] }).optionGroupLinks ?? [];
           setSelectedModifierGroupIds(links.filter((l) => !l.group?.isSizeGroup).map((l) => l.groupId));
           const addOnGroupLinks = (item as { addOnGroupLinks?: { groupId: string }[] }).addOnGroupLinks ?? [];
@@ -598,7 +616,8 @@ export default function ItemForm({
           defaultSizeOptionId: null,
           hasSizes,
           supportsShots,
-          defaultShots: supportsShots ? defaultShots : null,
+          defaultShots: supportsShots && !shotsPerSizeEnabled ? defaultShots : null,
+          shotsPerSizeEnabled: supportsShots ? shotsPerSizeEnabled : false,
         });
         await api.putItemDrinkSizes(item.id, {
           drinkSizesByMode: hasSizes
@@ -606,6 +625,7 @@ export default function ItemForm({
             : DEFAULT_DRINK_SIZES_BY_MODE,
           hasSizes,
           sizePricesByMode: hasSizes ? sizePricesByMode : undefined,
+          sizeShotsByMode: hasSizes && shotsPerSizeEnabled ? sizeShotsByMode : undefined,
         });
         if (imageFile) await api.uploadItemImage(item.id, imageFile);
         await api.putItemOptionGroups(item.id, selectedModifierGroupIds);
@@ -622,7 +642,8 @@ export default function ItemForm({
           defaultSizeOptionId: null,
           hasSizes,
           supportsShots,
-          defaultShots: supportsShots ? defaultShots : null,
+          defaultShots: supportsShots && !shotsPerSizeEnabled ? defaultShots : null,
+          shotsPerSizeEnabled: supportsShots ? shotsPerSizeEnabled : false,
         });
         await api.putItemDrinkSizes(itemId, {
           drinkSizesByMode: hasSizes
@@ -630,6 +651,7 @@ export default function ItemForm({
             : DEFAULT_DRINK_SIZES_BY_MODE,
           hasSizes,
           sizePricesByMode: hasSizes ? sizePricesByMode : undefined,
+          sizeShotsByMode: hasSizes && shotsPerSizeEnabled ? sizeShotsByMode : undefined,
         });
         if (imageFile) await api.uploadItemImage(itemId, imageFile);
         await api.putItemOptionGroups(itemId, selectedModifierGroupIds);
@@ -924,7 +946,10 @@ export default function ItemForm({
             onChange={(e) => {
               const v = e.target.checked;
               setSupportsShots(v);
-              if (!v) setDefaultShots(1);
+              if (!v) {
+                setDefaultShots(1);
+                setShotsPerSizeEnabled(false);
+              }
             }}
             className="rounded border-gray-300"
           />
@@ -934,13 +959,85 @@ export default function ItemForm({
           Default shots are included free. Extra shots use Menu Settings → Shots pricing.
         </p>
         {supportsShots && (
-          <ShotsStepper
-            label="Default Shots (included free)"
-            value={defaultShots}
-            onChange={setDefaultShots}
-            min={0}
-            max={20}
-          />
+          <>
+            <label className="mb-2 mt-2 flex items-center gap-2 text-sm font-medium text-gray-700">
+              <input
+                type="checkbox"
+                checked={shotsPerSizeEnabled}
+                onChange={(e) => {
+                  const v = e.target.checked;
+                  if (v && hasSizes) {
+                    setSizeShotsByMode((prev) => {
+                      const next: DrinkSizesByModePayload["sizeShotsByMode"] = { ...prev };
+                      for (const m of DRINK_MODES) {
+                        const ids = drinkSizesByMode[m]?.enabledOptionIds ?? [];
+                        if (ids.length > 0) {
+                          next[m] = { ...next[m] };
+                          for (const optId of ids) {
+                            if (next[m]![optId] == null) next[m]![optId] = defaultShots;
+                          }
+                        }
+                      }
+                      return next;
+                    });
+                  }
+                  setShotsPerSizeEnabled(v);
+                }}
+                className="rounded border-gray-300"
+              />
+              Use shots per size
+            </label>
+            <p className="mb-2 text-xs text-gray-500">
+              When on, set included shots per size/temperature. When off, one default applies to all sizes.
+            </p>
+            {!shotsPerSizeEnabled && (
+              <ShotsStepper
+                label="Default Shots (included free)"
+                value={defaultShots}
+                onChange={setDefaultShots}
+                min={0}
+                max={20}
+              />
+            )}
+            {shotsPerSizeEnabled && hasSizes && (
+              <div className="mt-3 space-y-3 rounded border border-gray-200 bg-white p-3">
+                <p className="text-xs font-medium text-gray-600">Included shots per size</p>
+                {DRINK_MODES.map((modeKey) => {
+                  const enabledIds = drinkSizesByMode[modeKey]?.enabledOptionIds ?? [];
+                  if (enabledIds.length === 0) return null;
+                  const modeShots = sizeShotsByMode?.[modeKey] ?? {};
+                  return (
+                    <div key={modeKey}>
+                      <span className="text-xs text-gray-500">{MODE_LABELS[modeKey]}</span>
+                      <div className="mt-1 flex flex-wrap gap-4">
+                        {enabledIds.map((optId) => {
+                          const opt = drinkSizes?.options?.find((o) => o.id === optId);
+                          const value = modeShots[optId] ?? 0;
+                          return (
+                            <div key={optId} className="flex items-center gap-2">
+                              <span className="text-sm text-gray-700">{opt?.name ?? optId}</span>
+                              <ShotsStepper
+                                label=""
+                                value={value}
+                                onChange={(n) => {
+                                  setSizeShotsByMode((prev) => ({
+                                    ...prev,
+                                    [modeKey]: { ...prev[modeKey], [optId]: n },
+                                  }));
+                                }}
+                                min={0}
+                                max={20}
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
         )}
       </div>
 

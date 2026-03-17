@@ -286,6 +286,11 @@ export type DrinkSizesByModePayload = {
     HOT?: Record<string, number>;
     CONCENTRATED?: Record<string, number>;
   };
+  sizeShotsByMode?: {
+    ICED?: Record<string, number>;
+    HOT?: Record<string, number>;
+    CONCENTRATED?: Record<string, number>;
+  };
 };
 
 export type MenuItemSizePrice = {
@@ -294,6 +299,7 @@ export type MenuItemSizePrice = {
   sizeOptionId: string;
   sizeCode: string;
   priceCents: number;
+  includedShots?: number | null;
 };
 
 export type MenuItem = {
@@ -314,6 +320,9 @@ export type MenuItem = {
   drinkSizeConfigs?: DrinkSizeConfig[];
   drinkModeDefaults?: DrinkModeDefault[];
   hasSizes?: boolean;
+  supportsShots?: boolean;
+  defaultShots?: number | null;
+  shotsPerSizeEnabled?: boolean;
   sizePrices?: MenuItemSizePrice[];
   category?: Category | null;
   subCategory?: SubCategory | null;
@@ -523,6 +532,7 @@ export const api = {
     hasSizes?: boolean;
     supportsShots?: boolean;
     defaultShots?: number | null;
+    shotsPerSizeEnabled?: boolean;
   }): Promise<MenuItem> {
     return apiFetch("/admin/items", {
       method: "POST",
@@ -553,6 +563,7 @@ export const api = {
       hasSizes?: boolean;
       supportsShots?: boolean;
       defaultShots?: number | null;
+      shotsPerSizeEnabled?: boolean;
       sortOrder?: number;
     }
   ): Promise<MenuItem> {

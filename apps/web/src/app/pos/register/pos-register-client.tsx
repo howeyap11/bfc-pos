@@ -3053,9 +3053,9 @@ export default function PosRegisterClient() {
       const txBody = buildCreateTransactionBody({ cart: cartSnapshot, discountCents: 0, serviceType });
 
       console.log("[PAY] TX BODY", { 
-        itemCount: items.length,
+        itemCount: cartSnapshot.length,
         discountCents: txBody.discountCents,
-        firstItem: items[0]
+        firstItem: cartSnapshot[0]
       });
 
       // Build headers - only include x-staff-key if valid

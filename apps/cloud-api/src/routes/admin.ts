@@ -212,6 +212,7 @@ export async function adminRoutes(app: FastifyInstance) {
     hasSizes: z.boolean().optional().default(false),
     supportsShots: z.boolean().optional().default(false),
     defaultShots: z.number().int().min(0).optional().nullable(),
+    shotsPerSizeEnabled: z.boolean().optional().default(false),
   });
   const menuItemUpdateSchema = z
     .object({
@@ -227,6 +228,7 @@ export async function adminRoutes(app: FastifyInstance) {
       hasSizes: z.boolean().optional(),
       supportsShots: z.boolean().optional(),
       defaultShots: z.number().int().min(0).optional().nullable(),
+      shotsPerSizeEnabled: z.boolean().optional(),
     })
     .partial();
 
@@ -780,8 +782,12 @@ export async function adminRoutes(app: FastifyInstance) {
     }
     const shotData =
       parsed.data.supportsShots
-        ? { supportsShots: true, defaultShots: parsed.data.defaultShots ?? 1 }
-        : { supportsShots: false, defaultShots: null };
+        ? {
+            supportsShots: true,
+            defaultShots: parsed.data.defaultShots ?? 1,
+            shotsPerSizeEnabled: parsed.data.shotsPerSizeEnabled ?? false,
+          }
+        : { supportsShots: false, defaultShots: null, shotsPerSizeEnabled: false };
     return app.prisma.menuItem.create({
       data: {
         name: parsed.data.name,
@@ -928,6 +934,7 @@ export async function adminRoutes(app: FastifyInstance) {
       version: number;
       supportsShots?: boolean;
       defaultShots?: number | null;
+      shotsPerSizeEnabled?: boolean;
     } = {
       ...parsed.data,
       defaultSizeOptionId: defaultSizeOptionId ?? null,
@@ -942,9 +949,15 @@ export async function adminRoutes(app: FastifyInstance) {
     if (parsed.data.supportsShots === true) {
       updateData.supportsShots = true;
       updateData.defaultShots = parsed.data.defaultShots ?? 1;
+      if (parsed.data.shotsPerSizeEnabled !== undefined) {
+        updateData.shotsPerSizeEnabled = parsed.data.shotsPerSizeEnabled;
+      }
     } else if (parsed.data.supportsShots === false) {
       updateData.supportsShots = false;
       updateData.defaultShots = null;
+      updateData.shotsPerSizeEnabled = false;
+    } else if (parsed.data.shotsPerSizeEnabled !== undefined) {
+      updateData.shotsPerSizeEnabled = parsed.data.shotsPerSizeEnabled;
     }
     if (parsed.data.subCategoryId) {
       const sub = await app.prisma.subCategory.findUnique({ where: { id: parsed.data.subCategoryId }, select: { categoryId: true } });
@@ -971,6 +984,13 @@ export async function adminRoutes(app: FastifyInstance) {
         CONCENTRATED: z.record(z.string(), z.number().int().min(0)).optional(),
       })
       .optional(),
+    sizeShotsByMode: z
+      .object({
+        ICED: z.record(z.string(), z.number().int().min(0).max(20)).optional(),
+        HOT: z.record(z.string(), z.number().int().min(0).max(20)).optional(),
+        CONCENTRATED: z.record(z.string(), z.number().int().min(0).max(20)).optional(),
+      })
+      .optional(),
   });
 
   app.put("/items/:id/drink-sizes", async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
@@ -994,7 +1014,7 @@ export async function adminRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "DRINK_SIZES_GROUP_MISSING", message: validIds.error };
     }
-    const { drinkSizesByMode, hasSizes: hasSizesInput, sizePricesByMode } = parsed.data;
+    const { drinkSizesByMode, hasSizes: hasSizesInput, sizePricesByMode, sizeShotsByMode } = parsed.data;
     const modes = ["ICED", "HOT", "CONCENTRATED"] as const;
     let anyEnabled = false;
     for (const mode of modes) {
@@ -1064,6 +1084,7 @@ export async function adminRoutes(app: FastifyInstance) {
         // Create price rows for enabled sizes when hasSizes is true
         if (hasSizes) {
           const modePrices = sizePricesByMode?.[mode] ?? {};
+          const modeShots = sizeShotsByMode?.[mode] ?? {};
           const optionIdsNeedingPrice = enabledOptionIds.filter((optId) => modePrices[optId] !== undefined);
           if (optionIdsNeedingPrice.length > 0) {
             const options = await app.prisma.menuOption.findMany({
@@ -1078,6 +1099,7 @@ export async function adminRoutes(app: FastifyInstance) {
                 sizeOptionId: optId,
                 sizeCode: nameById.get(optId) ?? optId,
                 priceCents: modePrices[optId] ?? 0,
+                includedShots: modeShots[optId] != null ? modeShots[optId] : null,
               })),
             });
           }
