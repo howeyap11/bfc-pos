@@ -1,0 +1,11 @@
+# Optional: use this for the cloud-ui service (Settings → Config file path: /apps/cloud-ui/railway.toml).
+# Root directory must stay at repo root so pnpm lockfile is found.
+# Install is fixed by removing @woovi/node-printer from onlyBuiltDependencies in pnpm-workspace.yaml.
+# For faster installs, set Install Command in dashboard to: pnpm install --filter "cloud-ui..."
+
+[build]
+buildCommand = "pnpm --filter cloud-ui run build"
+watchPatterns = ["apps/cloud-ui/**"]
+
+[deploy]
+startCommand = "pnpm --filter cloud-ui run start"

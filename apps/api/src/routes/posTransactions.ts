@@ -919,13 +919,27 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       ),
     ];
     const categoryByCloudId = new Map<string, string | null>();
+    const subCategoryNameByMenuItemCloudId = new Map<string, string | null>();
     if (cloudIds.length > 0) {
       const cloudItems = await app.prisma.cloudMenuItem.findMany({
         where: { cloudId: { in: cloudIds } },
-        select: { cloudId: true, categoryCloudId: true },
+        select: { cloudId: true, categoryCloudId: true, subCategoryCloudId: true },
       });
       for (const row of cloudItems) {
         categoryByCloudId.set(row.cloudId, row.categoryCloudId);
+      }
+      const subCategoryCloudIds = [...new Set(cloudItems.map((r) => r.subCategoryCloudId).filter((c): c is string => !!c))];
+      const subCategoryNameBySubCloudId = new Map<string, string>();
+      if (subCategoryCloudIds.length > 0) {
+        const subCats = await app.prisma.cloudSubCategory.findMany({
+          where: { cloudId: { in: subCategoryCloudIds } },
+          select: { cloudId: true, name: true },
+        });
+        for (const s of subCats) subCategoryNameBySubCloudId.set(s.cloudId, s.name);
+      }
+      for (const row of cloudItems) {
+        const name = row.subCategoryCloudId ? (subCategoryNameBySubCloudId.get(row.subCategoryCloudId) ?? null) : null;
+        subCategoryNameByMenuItemCloudId.set(row.cloudId, name);
       }
     }
     const enrichedLineItems = transaction.lineItems.map((li) => ({
@@ -938,6 +952,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       customerName: li.customerName ?? null,
       optionsJson: li.optionsJson,
       categoryCloudId: li.item?.cloudId ? categoryByCloudId.get(li.item.cloudId) ?? null : null,
+      subCategoryName: li.item?.cloudId ? subCategoryNameByMenuItemCloudId.get(li.item.cloudId) ?? null : null,
       stickerName: undefined as string | null | undefined,
     }));
     const txForPrint = {

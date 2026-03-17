@@ -192,6 +192,32 @@ function parseOptionsJson(optionsJson: string | null | undefined): ParsedOpt[] {
   }
 }
 
+/** Soft-wrap text into up to maxLines lines of ~maxCharsPerLine; truncate last line with "..." if over. */
+function wrapStickerText(text: string, maxLines: number, maxCharsPerLine: number): string[] {
+  const t = text.trim();
+  if (!t) return [];
+  const out: string[] = [];
+  let rest = t;
+  while (out.length < maxLines && rest.length > 0) {
+    if (rest.length <= maxCharsPerLine) {
+      out.push(rest);
+      rest = "";
+      break;
+    }
+    let breakAt = rest.lastIndexOf(" ", maxCharsPerLine);
+    if (breakAt <= 0) breakAt = maxCharsPerLine;
+    out.push(rest.slice(0, breakAt).trim());
+    rest = rest.slice(breakAt).trim();
+  }
+  if (rest.length > 0 && out.length > 0) {
+    const lastIdx = out.length - 1;
+    const last = out[lastIdx];
+    const truncateAt = Math.max(0, maxCharsPerLine - 3);
+    out[lastIdx] = last.length > truncateAt ? last.slice(0, truncateAt).trim() + "..." : last + "...";
+  }
+  return out.slice(0, maxLines);
+}
+
 function isStandardDrinkOptions(opts: ParsedOpt[]): boolean {
   const hasMilk = opts.some((o) => o && (o as ParsedOpt).type === "milk");
   const hasShotsUpcharge = opts.some((o) => {
@@ -207,13 +233,15 @@ function isStandardDrinkOptions(opts: ParsedOpt[]): boolean {
   return !hasMilk && !hasShotsUpcharge && !hasAddOnOrNamed;
 }
 
-/** Sticker-print drink name: single path for sticker readability. Use optional stickerName when present, else line name. */
-function getStickerDrinkName(line: { name: string; stickerName?: string | null }): string {
-  return (line.stickerName && line.stickerName.trim()) ? line.stickerName.trim() : line.name;
+/** Sticker-print drink name: "Sub-category: Item" when subCategoryName set, else optional stickerName, else line name. */
+function getStickerDrinkName(line: { name: string; stickerName?: string | null; subCategoryName?: string | null }): string {
+  const itemLabel = (line.stickerName && line.stickerName.trim()) ? line.stickerName.trim() : line.name;
+  const sub = line.subCategoryName != null && line.subCategoryName.trim() !== "" ? line.subCategoryName.trim() : null;
+  return sub ? `${sub}: ${itemLabel}` : itemLabel;
 }
 
-/** Sticker line order: 1 drink name, 2 temp+size (with optional customer name left), 3 shots, 4 milk, 5 sweetness (once), 6 add-ons, 7 ice, 8 special instructions (quoted). Transaction type at bottom-right. Uses specialInstructions only for prep; note is audit-only. customerName prints left of temp/size. */
-function getStickerLineLabel(line: { name: string; optionsJson?: string | null; note?: string | null; stickerName?: string | null; specialInstructions?: string | null; customerName?: string | null }): string[] {
+/** Sticker line order: 1 drink name (with optional sub-category), 2 temp+size (with optional customer name left), 3 shots, 4 milk, 5 sweetness (once), 6 add-ons (grouped, wrapped), 7 ice, 8 special instructions (quoted). Transaction type at bottom-right. Uses specialInstructions only for prep; note is audit-only. customerName prints left of temp/size. */
+function getStickerLineLabel(line: { name: string; optionsJson?: string | null; note?: string | null; stickerName?: string | null; subCategoryName?: string | null; specialInstructions?: string | null; customerName?: string | null }): string[] {
   const opts = parseOptionsJson(line.optionsJson);
   const lines: string[] = [];
 
@@ -301,13 +329,19 @@ function getStickerLineLabel(line: { name: string; optionsJson?: string | null; 
     if (/ADD|SYRUP|SAUCE|EXTRA|OPTION|TOPPING|DRIZZLE|CREAM|DESSERT/.test(g)) return true;
     return /SYRUP|SAUCE|ICE CREAM|WHIPPED|CREAM|DRIZZLE/.test(n);
   });
+  const addOnNames: string[] = [];
   for (const o of addOnOpts) {
     const raw = (o as { name?: string }).name ?? "";
     const name = normalizeModifierLabel(raw);
     if (name && !seenModifierLabels.has(name)) {
       seenModifierLabels.add(name);
-      lines.push(name);
+      addOnNames.push(name);
     }
+  }
+  if (addOnNames.length > 0) {
+    const addOnsLabel = "Add-ons: " + addOnNames.join(", ");
+    const addOnLines = wrapStickerText(addOnsLabel, 3, 24);
+    for (const ln of addOnLines) lines.push(ln);
   }
 
   // Sticker prep: specialInstructions only. note is discount/audit and must NOT print on sticker.
@@ -351,6 +385,8 @@ export type TransactionForPrint = {
     specialInstructions?: string | null;
     /** Per-item customer name; printed on sticker left of temp/size line. */
     customerName?: string | null;
+    /** Sub-category name for sticker title line (e.g. "Espresso: Caramel Macchiato"). */
+    subCategoryName?: string | null;
   }>;
   payments: Array<{ method: string; amountCents: number }>;
 };
