@@ -58,7 +58,7 @@ export default function DevicesPage() {
     try {
       const r = await api.createDevice({ name: addName.trim() });
       setNewDeviceKey(r.device.deviceKey);
-      setSuccess("Device created. Copy the Device Key and add it to the POS .env as DEVICE_KEY=...");
+      setSuccess("Device created. Copy the Device Key and set it in POS Settings → Device key on the mini PC.");
       setAddName("");
       load();
     } catch (err: unknown) {
@@ -136,9 +136,8 @@ export default function DevicesPage() {
     <div className="max-w-2xl">
       <h1 className="mb-2 text-xl font-semibold text-white">POS Devices</h1>
       <p className="mb-6 text-sm text-white/60">
-        Manage POS devices and send remote commands (update, restart, force sync). Add a device, copy its key to the
-        mini PC&apos;s <code className="rounded bg-white/10 px-1">apps/api/.env</code> as{" "}
-        <code className="rounded bg-white/10 px-1">DEVICE_KEY=...</code>, and ensure <code className="rounded bg-white/10 px-1">CLOUD_URL</code> is set.
+        Manage POS devices and send remote commands (update, restart, force sync). Add a device, then on each mini PC
+        open POS Settings and set the Device Key so the device can receive commands. Ensure <code className="rounded bg-white/10 px-1">CLOUD_URL</code> is set in the API environment if needed.
       </p>
 
       {devMode && (
@@ -216,7 +215,7 @@ export default function DevicesPage() {
         <p className="text-sm text-white/50">Loading devices…</p>
       ) : devices.length === 0 ? (
         <div className="rounded-lg border p-6" style={panelStyle}>
-          <p className="text-sm text-white/50">No devices yet. Add one above and configure it on your mini PC.</p>
+          <p className="text-sm text-white/50">No devices yet. Add one above, then set the Device Key in POS Settings on the mini PC.</p>
         </div>
       ) : (
         <div className="space-y-4">

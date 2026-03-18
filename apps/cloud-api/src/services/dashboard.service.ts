@@ -107,17 +107,49 @@ export async function getDashboardKpis(
   };
 }
 
+/** Ensure every calendar day from startDate to endDate (inclusive) has a bucket. */
+function fillDailyBuckets(buckets: Map<string, number>, startDate: string, endDate: string): void {
+  const [sy, sm, sd] = startDate.split("-").map(Number);
+  const [ey, em, ed] = endDate.split("-").map(Number);
+  const curr = new Date(Date.UTC(sy, sm - 1, sd, 0, 0, 0, 0));
+  const end = new Date(Date.UTC(ey, em - 1, ed, 23, 59, 59, 999));
+  while (curr.getTime() <= end.getTime()) {
+    const key = `${curr.getUTCFullYear()}-${String(curr.getUTCMonth() + 1).padStart(2, "0")}-${String(curr.getUTCDate()).padStart(2, "0")}`;
+    if (!buckets.has(key)) buckets.set(key, 0);
+    curr.setUTCDate(curr.getUTCDate() + 1);
+  }
+}
+
+/** Ensure every month from startDate to endDate (inclusive) has a bucket. */
+function fillMonthlyBuckets(buckets: Map<string, number>, startDate: string, endDate: string): void {
+  const [sy, sm] = startDate.split("-").map(Number);
+  const [ey, em] = endDate.split("-").map(Number);
+  let y = sy;
+  let m = sm;
+  while (y < ey || (y === ey && m <= em)) {
+    const key = `${y}-${String(m).padStart(2, "0")}`;
+    if (!buckets.has(key)) buckets.set(key, 0);
+    m += 1;
+    if (m > 12) {
+      m = 1;
+      y += 1;
+    }
+  }
+}
+
 export async function getSalesByDate(
   prisma: PrismaClient,
   storeId: string,
   range: DateRange,
-  granularity: "hourly" | "daily" | "monthly"
+  granularity: "hourly" | "daily" | "monthly",
+  options?: { startDate: string; endDate: string }
 ): Promise<SalesByDateBucket[]> {
   const txs = await prisma.syncedTransaction.findMany({
     where: { storeId, status: "PAID", createdAt: { gte: range.start, lt: range.end } },
     select: { createdAt: true, totalCents: true },
   });
 
+  const offsetHours = getDashboardTzOffsetHours();
   const buckets = new Map<string, number>();
   for (const t of txs) {
     const d = new Date(t.createdAt);
@@ -125,11 +157,19 @@ export async function getSalesByDate(
     if (granularity === "hourly") {
       key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}T${String(d.getUTCHours()).padStart(2, "0")}:00`;
     } else if (granularity === "daily") {
-      key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+      const local = new Date(d.getTime() + offsetHours * 60 * 60 * 1000);
+      key = `${local.getUTCFullYear()}-${String(local.getUTCMonth() + 1).padStart(2, "0")}-${String(local.getUTCDate()).padStart(2, "0")}`;
     } else {
-      key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+      const local = new Date(d.getTime() + offsetHours * 60 * 60 * 1000);
+      key = `${local.getUTCFullYear()}-${String(local.getUTCMonth() + 1).padStart(2, "0")}`;
     }
     buckets.set(key, (buckets.get(key) ?? 0) + t.totalCents);
+  }
+
+  if (granularity === "daily" && options?.startDate && options?.endDate) {
+    fillDailyBuckets(buckets, options.startDate, options.endDate);
+  } else if (granularity === "monthly" && options?.startDate && options?.endDate) {
+    fillMonthlyBuckets(buckets, options.startDate, options.endDate);
   }
 
   const sorted = Array.from(buckets.entries()).sort((a, b) => a[0].localeCompare(b[0]));

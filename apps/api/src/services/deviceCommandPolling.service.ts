@@ -3,9 +3,9 @@ import { resolve, join } from "node:path";
 import { existsSync } from "node:fs";
 import { runCatalogSync, runTransactionSyncFlush } from "./syncScheduler.js";
 import { setCommandState, setLastUpdateAt } from "./commandState.service.js";
+import { getDeviceKey } from "./deviceKey.service.js";
 
 const CLOUD_URL = process.env.CLOUD_URL ?? "";
-const DEVICE_KEY = process.env.DEVICE_KEY ?? "";
 const POS_VERSION = process.env.POS_VERSION ?? "1.0.0";
 
 const COMMAND_POLL_INTERVAL_MS = 2 * 60 * 1000; // 2 min
@@ -22,7 +22,7 @@ async function postStatus(
   const url = `${CLOUD_URL.replace(/\/$/, "")}/sync/commands/${commandId}/status`;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    "X-Device-Key": DEVICE_KEY,
+    "X-Device-Key": getDeviceKey(),
   };
   const body = JSON.stringify(
     errorMessage !== undefined ? { status, errorMessage } : { status }
@@ -177,14 +177,15 @@ export async function executeLocalCommand(
 }
 
 export async function pollDeviceCommands(app: FastifyInstance): Promise<void> {
-  if (!CLOUD_URL?.trim() || !DEVICE_KEY?.trim()) return;
+  const deviceKey = getDeviceKey();
+  if (!CLOUD_URL?.trim() || !deviceKey) return;
   if (pollInFlight) return;
 
   pollInFlight = true;
   try {
     const url = `${CLOUD_URL.replace(/\/$/, "")}/sync/commands/pending`;
     const res = await fetch(url, {
-      headers: { "X-Device-Key": DEVICE_KEY },
+      headers: { "X-Device-Key": deviceKey },
     });
 
     if (!res.ok) {
@@ -208,7 +209,8 @@ export async function pollDeviceCommands(app: FastifyInstance): Promise<void> {
 }
 
 export async function sendHeartbeat(): Promise<void> {
-  if (!CLOUD_URL?.trim() || !DEVICE_KEY?.trim()) return;
+  const deviceKey = getDeviceKey();
+  if (!CLOUD_URL?.trim() || !deviceKey) return;
   const now = Date.now();
   if (now - lastHeartbeat < HEARTBEAT_INTERVAL_MS) return;
   lastHeartbeat = now;
@@ -219,7 +221,7 @@ export async function sendHeartbeat(): Promise<void> {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Device-Key": DEVICE_KEY,
+        "X-Device-Key": deviceKey,
       },
       body: JSON.stringify({ posVersion: POS_VERSION }),
     });
@@ -229,7 +231,8 @@ export async function sendHeartbeat(): Promise<void> {
 }
 
 export function startDeviceCommandPolling(app: FastifyInstance): void {
-  if (!CLOUD_URL?.trim() || !DEVICE_KEY?.trim()) {
+  const deviceKey = getDeviceKey();
+  if (!CLOUD_URL?.trim() || !deviceKey) {
     app.log.info("Device command polling disabled: CLOUD_URL or DEVICE_KEY not set");
     return;
   }

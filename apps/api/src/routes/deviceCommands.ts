@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { requireStaffHook } from "../plugins/staffGuard.js";
 import { requireAdminRole } from "../services/syncCatalog.service.js";
 import { pollDeviceCommands, executeLocalCommand } from "../services/deviceCommandPolling.service.js";
+import { getDeviceKey, maskForKeyDisplay, setDeviceKey, clearDeviceKey } from "../services/deviceKey.service.js";
 
 export async function deviceCommandsRoutes(app: FastifyInstance) {
   const adminGuard = async (req: FastifyRequest, reply: FastifyReply) => {
@@ -9,6 +10,39 @@ export async function deviceCommandsRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: "FORBIDDEN", message: "Admin role required" });
     }
   };
+
+  /** GET device-key: masked status only (staff). Never returns the key. */
+  app.get("/device-key", { preHandler: [requireStaffHook] }, async (_req, reply) => {
+    const key = getDeviceKey();
+    const configured = key.length > 0;
+    return reply.send({
+      configured,
+      ...(configured && { masked: maskForKeyDisplay(key) }),
+    });
+  });
+
+  /** PUT device-key: set key (admin). Body { key: string }. Validates trim, non-empty. */
+  app.put("/device-key", { preHandler: [requireStaffHook, adminGuard] }, async (req, reply) => {
+    const body = req.body as { key?: string };
+    const raw = body?.key;
+    const key = typeof raw === "string" ? raw.trim() : "";
+    if (!key) {
+      return reply.code(400).send({ error: "EMPTY_KEY", message: "Device key cannot be empty" });
+    }
+    try {
+      setDeviceKey(key);
+      return reply.send({ ok: true });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return reply.code(400).send({ error: "INVALID", message: msg });
+    }
+  });
+
+  /** DELETE device-key: clear stored key (admin). Env fallback still applies until restart. */
+  app.delete("/device-key", { preHandler: [requireStaffHook, adminGuard] }, async (_req, reply) => {
+    clearDeviceKey();
+    return reply.send({ ok: true });
+  });
 
   /** Trigger immediate cloud command poll (check for updates) */
   app.post("/device/poll-commands", { preHandler: [requireStaffHook, adminGuard] }, async (req, reply) => {

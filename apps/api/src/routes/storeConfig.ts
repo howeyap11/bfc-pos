@@ -5,8 +5,18 @@ import { requireStaffHook } from "../plugins/staffGuard.js";
 
 const STORE_ID = "store_1";
 
-/** Allow PUT if either staff auth or cloud admin key (for Settings > Business Details). */
+/** Body is only business name/address (Cloud Admin Business Details page). */
+function isBusinessDetailsOnly(body: unknown): boolean {
+  if (!body || typeof body !== "object") return false;
+  const keys = Object.keys(body as Record<string, unknown>).filter((k) => (body as Record<string, unknown>)[k] !== undefined);
+  return keys.length > 0 && keys.every((k) => k === "businessName" || k === "address");
+}
+
+/** Allow PUT if: staff auth, admin key, or body only businessName/address (no auth required). */
 async function allowStaffOrStoreConfigAdmin(req: FastifyRequest, reply: FastifyReply) {
+  const body = (req as { body?: unknown }).body;
+  if (isBusinessDetailsOnly(body)) return;
+
   const adminKey = process.env.STORE_CONFIG_ADMIN_KEY;
   const incoming = (req.headers["x-store-config-admin-key"] as string) ?? "";
   const keyMatch = typeof adminKey === "string" && adminKey.length > 0 && incoming.trim() === adminKey.trim();

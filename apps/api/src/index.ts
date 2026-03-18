@@ -43,6 +43,7 @@ import { startSyncScheduler, runTransactionSyncFlush } from "./services/syncSche
 import { startDeviceCommandPolling } from "./services/deviceCommandPolling.service.js";
 import { getCommandState } from "./services/commandState.service.js";
 import { getSyncStatus } from "./services/syncScheduler.js";
+import { getDeviceKey } from "./services/deviceKey.service.js";
 
 const app = Fastify({ logger: true });
 
@@ -76,7 +77,7 @@ app.get("/device/status", async () => {
   const { state: commandState, errorMessage, lastUpdateAt } = getCommandState();
   return {
     version: process.env.POS_VERSION ?? "1.0.0",
-    deviceConfigured: !!process.env.DEVICE_KEY,
+    deviceConfigured: getDeviceKey().length > 0,
     commandState,
     ...(errorMessage && { errorMessage }),
     ...(lastUpdateAt && { lastUpdateAt: lastUpdateAt.toISOString() }),
@@ -661,7 +662,7 @@ try {
   const syncEnv = {
     CLOUD_URL: (process.env.CLOUD_URL ?? "").trim() ? "present" : "missing",
     CLOUD_KEY: (process.env.CLOUD_KEY ?? "").trim() ? "present" : "missing",
-    DEVICE_KEY: (process.env.DEVICE_KEY ?? "").trim() ? "present" : "missing",
+    DEVICE_KEY: getDeviceKey() ? "present" : "missing",
   };
   app.log.info({ syncEnv }, "Sync env status (use DEVICE_KEY for device polling; CLOUD_KEY is not used)");
 

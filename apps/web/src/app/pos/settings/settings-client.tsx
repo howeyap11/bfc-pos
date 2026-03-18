@@ -57,6 +57,10 @@ export default function SettingsClient() {
   const [printerTestLoading, setPrinterTestLoading] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [overlay, setOverlay] = useState<"updating" | "restarting" | null>(null);
+  const [deviceKeyConfig, setDeviceKeyConfig] = useState<{ configured: boolean; masked?: string } | null>(null);
+  const [deviceKeyInput, setDeviceKeyInput] = useState("");
+  const [deviceKeySaving, setDeviceKeySaving] = useState(false);
+  const [deviceKeyMessage, setDeviceKeyMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -105,16 +109,29 @@ export default function SettingsClient() {
     }
   }, []);
 
+  const loadDeviceKeyConfig = useCallback(async () => {
+    try {
+      const headers = await getStaffHeaders();
+      const res = await fetch("/api/device-key", { cache: "no-store", headers });
+      const data = await res.json();
+      if (res.ok) setDeviceKeyConfig({ configured: data.configured, masked: data.masked });
+      else setDeviceKeyConfig(null);
+    } catch {
+      setDeviceKeyConfig(null);
+    }
+  }, []);
+
   useEffect(() => {
     if (isAuthenticated) {
       loadConfig();
       loadStatus();
       loadPrinters();
       loadCategories();
+      loadDeviceKeyConfig();
       const t = setInterval(loadStatus, 5000);
       return () => clearInterval(t);
     }
-  }, [isAuthenticated, loadStatus, loadPrinters, loadCategories]);
+  }, [isAuthenticated, loadStatus, loadPrinters, loadCategories, loadDeviceKeyConfig]);
 
   useEffect(() => {
     if (status?.commandState === "updating") setOverlay("updating");
@@ -175,6 +192,54 @@ export default function SettingsClient() {
     const staff = typeof window !== "undefined" ? localStorage.getItem("bfc_active_staff") : null;
     const staffKey = staff ? (JSON.parse(staff) as { staffKey?: string }).staffKey : null;
     return staffKey ? { "x-staff-key": staffKey } : {};
+  }
+
+  async function handleSaveDeviceKey() {
+    setDeviceKeyMessage(null);
+    const key = deviceKeyInput.trim();
+    if (!key) {
+      setDeviceKeyMessage({ type: "error", text: "Enter a device key" });
+      return;
+    }
+    setDeviceKeySaving(true);
+    try {
+      const headers = await getStaffHeaders();
+      const res = await fetch("/api/device-key", {
+        method: "PUT",
+        headers: { "content-type": "application/json", ...headers },
+        body: JSON.stringify({ key }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || data.error || "Failed to save");
+      setDeviceKeyInput("");
+      setDeviceKeyMessage({ type: "success", text: "Device key saved" });
+      await loadDeviceKeyConfig();
+      if (status) await loadStatus();
+    } catch (e: unknown) {
+      setDeviceKeyMessage({ type: "error", text: e instanceof Error ? e.message : "Failed to save" });
+    } finally {
+      setDeviceKeySaving(false);
+    }
+  }
+
+  async function handleClearDeviceKey() {
+    if (!confirm("Clear the stored device key? Remote commands will stop until a key is set again.")) return;
+    setDeviceKeyMessage(null);
+    setDeviceKeySaving(true);
+    try {
+      const headers = await getStaffHeaders();
+      const res = await fetch("/api/device-key", { method: "DELETE", headers });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || data.error || "Failed to clear");
+      setDeviceKeyInput("");
+      setDeviceKeyMessage({ type: "success", text: "Device key cleared" });
+      await loadDeviceKeyConfig();
+      if (status) await loadStatus();
+    } catch (e: unknown) {
+      setDeviceKeyMessage({ type: "error", text: e instanceof Error ? e.message : "Failed to clear" });
+    } finally {
+      setDeviceKeySaving(false);
+    }
   }
 
   async function handleSavePrinters() {
@@ -793,6 +858,107 @@ export default function SettingsClient() {
             </dl>
           ) : (
             <p style={{ color: COLORS.textSecondary }}>Loading…</p>
+          )}
+        </div>
+
+        {/* Device Key */}
+        <div
+          style={{
+            background: COLORS.bgPanel,
+            borderRadius: 8,
+            padding: 20,
+            marginBottom: 24,
+            border: `1px solid ${COLORS.borderLight}`,
+          }}
+        >
+          <h2 style={{ margin: "0 0 16px 0", fontSize: 16, fontWeight: 600, color: COLORS.textPrimary }}>
+            Device key
+          </h2>
+          <p style={{ color: COLORS.textSecondary, marginBottom: 16, fontSize: 14 }}>
+            Used for remote POS control (updates, restart, sync from Cloud Admin). Set the key from Cloud Admin → POS Settings → POS Devices after adding a device.
+          </p>
+          {deviceKeyConfig ? (
+            <>
+              <div style={{ marginBottom: 12 }}>
+                {deviceKeyConfig.configured ? (
+                  <p style={{ fontSize: 14, color: COLORS.textPrimary }}>
+                    Status: <span style={{ color: COLORS.success }}>Configured</span>
+                    {deviceKeyConfig.masked && (
+                      <span style={{ marginLeft: 8, color: COLORS.textSecondary }}>({deviceKeyConfig.masked})</span>
+                    )}
+                  </p>
+                ) : (
+                  <p style={{ fontSize: 14, color: COLORS.textSecondary }}>Status: Not configured</p>
+                )}
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <input
+                  type="password"
+                  value={deviceKeyInput}
+                  onChange={(e) => setDeviceKeyInput(e.target.value)}
+                  placeholder="Paste device key to set or replace"
+                  autoComplete="off"
+                  style={{
+                    padding: "10px 12px",
+                    fontSize: 14,
+                    background: COLORS.bgDark,
+                    border: `1px solid ${COLORS.borderLight}`,
+                    borderRadius: 6,
+                    color: COLORS.textPrimary,
+                  }}
+                />
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    onClick={handleSaveDeviceKey}
+                    disabled={deviceKeySaving}
+                    style={{
+                      padding: "10px 16px",
+                      fontSize: 14,
+                      fontWeight: 600,
+                      background: deviceKeySaving ? COLORS.bgDark : COLORS.primary,
+                      color: "#fff",
+                      border: "none",
+                      borderRadius: 6,
+                      cursor: deviceKeySaving ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    {deviceKeySaving ? "Saving…" : "Save / Update key"}
+                  </button>
+                  {deviceKeyConfig.configured && (
+                    <button
+                      type="button"
+                      onClick={handleClearDeviceKey}
+                      disabled={deviceKeySaving}
+                      style={{
+                        padding: "10px 16px",
+                        fontSize: 14,
+                        background: COLORS.bgDark,
+                        color: COLORS.textSecondary,
+                        border: `1px solid ${COLORS.borderLight}`,
+                        borderRadius: 6,
+                        cursor: deviceKeySaving ? "not-allowed" : "pointer",
+                      }}
+                    >
+                      Clear key
+                    </button>
+                  )}
+                </div>
+              </div>
+              {deviceKeyMessage && (
+                <p
+                  style={{
+                    marginTop: 12,
+                    fontSize: 13,
+                    color: deviceKeyMessage.type === "error" ? COLORS.error : COLORS.success,
+                  }}
+                >
+                  {deviceKeyMessage.text}
+                </p>
+              )}
+            </>
+          ) : (
+            <p style={{ color: COLORS.textSecondary, fontSize: 14 }}>Loading…</p>
           )}
         </div>
 

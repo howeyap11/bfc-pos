@@ -3245,11 +3245,14 @@ export async function adminRoutes(app: FastifyInstance) {
 
   app.get("/dashboard/sales-by-date", async (req: FastifyRequest<{ Querystring: { startDate?: string; endDate?: string; storeId?: string; granularity?: string } }>) => {
     const storeId = (req.query.storeId || dashboardStoreId()) as string;
-    const { range } = dashboardDateRange(req);
+    const { startDate, endDate, range } = dashboardDateRange(req);
     const granularity = (req.query.granularity === "daily" || req.query.granularity === "monthly")
       ? req.query.granularity
       : "hourly";
-    const buckets = await getSalesByDate(app.prisma, storeId, range, granularity);
+    const buckets = await getSalesByDate(app.prisma, storeId, range, granularity, {
+      startDate,
+      endDate,
+    });
     return { buckets };
   });
 
