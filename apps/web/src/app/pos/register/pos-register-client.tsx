@@ -2719,7 +2719,7 @@ export default function PosRegisterClient() {
     setError(null);
 
     try {
-      const serviceType = cart[0]?.transactionTypeCode === "FOODPANDA" || cart[0]?.transactionTypeCode === "DELIVERY" ? "FOODPANDA" : cart[0]?.transactionTypeCode === "TO_GO" || cart[0]?.transactionTypeCode === "TAKE_OUT" ? "TO_GO" : "DINE_IN";
+      const serviceType = cart[0]?.transactionTypeCode ?? "FOR_HERE";
       const body = buildCreateTransactionBody({ cart, discountCents: 0, serviceType, ...(qrOrderId && { orderId: qrOrderId }) });
 
       const data = await fetchJson("/api/pos/transactions", {
@@ -2942,7 +2942,7 @@ export default function PosRegisterClient() {
       let transactionId = currentTransaction?.id;
       if (!transactionId) {
         console.log("[SplitPayment] Creating sale first");
-        const serviceType = cart[0]?.transactionTypeCode === "FOODPANDA" || cart[0]?.transactionTypeCode === "DELIVERY" ? "FOODPANDA" : cart[0]?.transactionTypeCode === "TO_GO" || cart[0]?.transactionTypeCode === "TAKE_OUT" ? "TO_GO" : "DINE_IN";
+        const serviceType = cart[0]?.transactionTypeCode ?? "FOR_HERE";
         const body = buildCreateTransactionBody({ cart, discountCents: 0, serviceType, ...(qrOrderId && { orderId: qrOrderId }) });
         const data = await fetchJson("/api/pos/transactions", {
           method: "POST",
@@ -3049,7 +3049,7 @@ export default function PosRegisterClient() {
 
       console.log("[PAY] Creating transaction...", { itemCount: cartSnapshot.length });
 
-      const serviceType = cartSnapshot[0]?.transactionTypeCode === "FOODPANDA" || cartSnapshot[0]?.transactionTypeCode === "DELIVERY" ? "FOODPANDA" : cartSnapshot[0]?.transactionTypeCode === "TO_GO" || cartSnapshot[0]?.transactionTypeCode === "TAKE_OUT" ? "TO_GO" : "DINE_IN";
+      const serviceType = cartSnapshot[0]?.transactionTypeCode ?? "FOR_HERE";
       const txBody = buildCreateTransactionBody({ cart: cartSnapshot, discountCents: 0, serviceType });
 
       console.log("[PAY] TX BODY", { 

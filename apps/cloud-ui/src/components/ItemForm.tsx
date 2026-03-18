@@ -1014,7 +1014,7 @@ export default function ItemForm({
                           const value = modeShots[optId] ?? 0;
                           return (
                             <div key={optId} className="flex items-center gap-2">
-                              <span className="text-sm text-gray-700">{opt?.name ?? optId}</span>
+                              <span className="text-sm text-gray-700">{opt?.label ?? optId}</span>
                               <ShotsStepper
                                 label=""
                                 value={value}

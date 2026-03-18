@@ -7,7 +7,7 @@
 // When cash reconciliation is ready, re-enable the NO_OPEN_REGISTER check in POST /pos/transactions.
 //
 import type { FastifyInstance } from "fastify";
-import type { MilkType, ShotsPricingMode } from "@prisma/client";
+import type { MilkType, ServiceType, ShotsPricingMode } from "@prisma/client";
 import { requireStaffHook } from "../plugins/staffGuard";
 import { verifyAdminPin } from "../services/adminPin.service";
 import { enqueueOutbox } from "../services/outbox.service";
@@ -138,7 +138,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         discountTag?: "SNR" | "PWD" | null; // Discount type for audit
       }>;
       discountCents?: number;
-      serviceType?: "DINE_IN" | "TO_GO" | "FOODPANDA" | "DELIVERY";
+      serviceType?: "DINE_IN" | "TO_GO" | "FOODPANDA" | "DELIVERY" | "FOR_HERE" | "TAKE_OUT";
       orderId?: string; // Optional link to QR order
     };
 
@@ -305,14 +305,27 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
 
     // Determine service type, source
     // NOTE: Service fees are now per-line (lineSurchargeCents), not transaction-level
-    const serviceTypeInput = body.serviceType ?? "DINE_IN";
-    let serviceType: "DINE_IN" | "TO_GO" | "DELIVERY";
+    const serviceTypeInput = String(body.serviceType ?? "DINE_IN").trim().toUpperCase();
+    let serviceType: ServiceType;
     let source: "POS" | "FOODPANDA";
 
-    if (serviceTypeInput === "FOODPANDA" || serviceTypeInput === "DELIVERY") {
+    if (serviceTypeInput === "FOODPANDA" || serviceTypeInput === "FOOD_PANDA") {
+      serviceType = "FOODPANDA" as ServiceType;
+      source = "FOODPANDA";
+    } else if (serviceTypeInput === "GRABFOOD" || serviceTypeInput === "GRAB_FOOD") {
       serviceType = "DELIVERY";
       source = "FOODPANDA";
-    } else if (serviceTypeInput === "TO_GO") {
+    } else if (serviceTypeInput === "BFC_APP" || serviceTypeInput === "BFCAPP") {
+      serviceType = "DELIVERY";
+      source = "POS";
+    } else if (serviceTypeInput === "DELIVERY") {
+      serviceType = "DELIVERY";
+      source = "FOODPANDA";
+    } else if (
+      serviceTypeInput === "TO_GO" ||
+      serviceTypeInput === "TAKE_OUT" ||
+      serviceTypeInput === "TAKEOUT"
+    ) {
       serviceType = "TO_GO";
       source = "POS";
     } else {
@@ -883,7 +896,13 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       return { error: "TRANSACTION_NOT_FOUND" };
     }
     try {
-      await printReceiptToDevice(transaction);
+      await printReceiptToDevice({
+        ...transaction,
+        createdAt:
+          transaction.createdAt instanceof Date
+            ? transaction.createdAt.toISOString()
+            : String(transaction.createdAt),
+      });
       return { ok: true };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err ?? "Receipt print failed");
@@ -957,6 +976,10 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     }));
     const txForPrint = {
       ...transaction,
+      createdAt:
+        transaction.createdAt instanceof Date
+          ? transaction.createdAt.toISOString()
+          : String(transaction.createdAt),
       lineItems: enrichedLineItems,
     };
     // #region agent log

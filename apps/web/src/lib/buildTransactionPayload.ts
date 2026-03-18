@@ -110,7 +110,8 @@ export function buildTxLineInputs(cart: CartItem[]): TxLineInput[] {
 export function buildCreateTransactionBody(args: {
   cart: CartItem[];
   discountCents?: number;
-  serviceType?: "DINE_IN" | "TO_GO" | "FOODPANDA" | "DELIVERY";
+  /** Actual transaction type from POS (FOR_HERE, TO_GO, FOODPANDA, etc.). API normalizes to stored enum. */
+  serviceType?: "FOR_HERE" | "DINE_IN" | "TO_GO" | "TAKE_OUT" | "FOODPANDA" | "DELIVERY";
   orderId?: string;
   tablePublicKey?: string;
 }) {

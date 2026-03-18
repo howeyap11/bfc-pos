@@ -1152,6 +1152,7 @@ enum ServiceType {
   DINE_IN
   TO_GO
   DELIVERY
+  FOODPANDA
 }
 
 enum TransactionPaymentStatus {

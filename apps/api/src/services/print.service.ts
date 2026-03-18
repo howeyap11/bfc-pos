@@ -238,10 +238,14 @@ function getStickerItemName(line: { name: string; stickerName?: string | null })
   return (line.stickerName && line.stickerName.trim()) ? line.stickerName.trim() : line.name;
 }
 
-/** Sticker top rows: stacked order = customer name (if present) -> sub-category (if present) -> item title -> temp+size. Then shots, milk, sweetness, ice, add-ons, special instructions. */
-function getStickerLineLabel(line: { name: string; optionsJson?: string | null; note?: string | null; stickerName?: string | null; subCategoryName?: string | null; specialInstructions?: string | null; customerName?: string | null }): { lines: string[]; topRowCount: number; itemTitleIndex: number } {
+/** Role of each top row for font hierarchy: meta = small, item = large, temp = medium. */
+type TopRowRole = "meta" | "item" | "temp";
+
+/** Sticker top: FOR name (if present), then sub-category (own line), then item title (large), then temp+size (medium). No "||". */
+function getStickerLineLabel(line: { name: string; optionsJson?: string | null; note?: string | null; stickerName?: string | null; subCategoryName?: string | null; specialInstructions?: string | null; customerName?: string | null }): { lines: string[]; topRowCount: number; topRoles: TopRowRole[] } {
   const opts = parseOptionsJson(line.optionsJson);
   const lines: string[] = [];
+  const topRoles: TopRowRole[] = [];
   const itemName = getStickerItemName(line);
   const sub = line.subCategoryName != null && line.subCategoryName.trim() !== "" ? line.subCategoryName.trim() : null;
   const customerNameStr = line.customerName != null && line.customerName.trim() !== "" ? line.customerName.trim() : "";
@@ -250,13 +254,23 @@ function getStickerLineLabel(line: { name: string; optionsJson?: string | null; 
     ? (sizeOpt.baseType ?? "").charAt(0) + (sizeOpt.baseType ?? "").slice(1).toLowerCase() + " " + sizeOpt.sizeLabel
     : "";
 
-  // Top rows in strict order: 1) customer name, 2) sub-category, 3) item title, 4) temp+size
-  if (customerNameStr) lines.push(customerNameStr);
-  if (sub) lines.push(sub);
+  // Line 1: FOR {customerName} when present
+  if (customerNameStr) {
+    lines.push("FOR " + customerNameStr);
+    topRoles.push("meta");
+  }
+  // Line 2 (or 1): sub-category on its own line
+  if (sub) {
+    lines.push(sub);
+    topRoles.push("meta");
+  }
   lines.push(itemName);
-  if (tempSizeStr) lines.push(tempSizeStr);
+  topRoles.push("item");
+  if (tempSizeStr) {
+    lines.push(tempSizeStr);
+    topRoles.push("temp");
+  }
   const topRowCount = lines.length;
-  const itemTitleIndex = (customerNameStr ? 1 : 0) + (sub ? 1 : 0);
 
   const shotsOpt = opts.find((o) => o && (o as ParsedOpt).type === "shots") as { qty?: number; upchargeCents?: number } | undefined;
   if (shotsOpt && (shotsOpt.qty ?? 0) >= 1) {
@@ -360,7 +374,7 @@ function getStickerLineLabel(line: { name: string; optionsJson?: string | null; 
   }
 
   const filtered = lines.filter((s) => s.trim() !== "");
-  return { lines: filtered, topRowCount, itemTitleIndex };
+  return { lines: filtered, topRowCount, topRoles };
 }
 
 export type TransactionForPrint = {
@@ -428,9 +442,13 @@ const TSPL_MAIN_Y = 22;
 // whole block anchor
 const TSPL_BLOCK_BASE_X = 570;
 
-/** Vertical step (dots) per top row; top rows are stacked: name -> sub -> item -> temp+size. */
+/** Vertical step (dots) per top row. */
 const TSPL_TOP_ROW_STEP = 38;
-/** Modifiers (shots, milk, ice, add-ons, etc.) start after top rows; first modifier offset = topRowCount * TSPL_TOP_ROW_STEP. */
+/** Extra gap (dots) after item title row so it does not touch temp+size. */
+const TSPL_GAP_AFTER_ITEM = 14;
+/** Extra gap (dots) after temp+size row so it does not touch first modifier (shots). */
+const TSPL_GAP_AFTER_TEMP = 14;
+/** Step between modifier rows (shots, milk, ice, etc.). */
 const TSPL_MODIFIER_STEP = 38;
 /** Transaction type: bottom-right, inside printable area with margin (dots from edges). */
 const TSPL_TRANSACTION_TYPE_MARGIN_DOTS = 120;
@@ -448,18 +466,32 @@ function escapeTsplString(s: string): string {
 /** TSPL rotation: 90 = 90° (X down label, Y across). */
 const TSPL_ROTATION_90 = 90;
 
+/** Cumulative vertical offset (dots) for top row index i; includes gaps after item and temp rows. */
+function topRowCumulativeOffset(i: number, roles: TopRowRole[]): number {
+  let offset = 0;
+  for (let j = 0; j < i; j++) {
+    offset += TSPL_TOP_ROW_STEP;
+    if (roles[j] === "item") offset += TSPL_GAP_AFTER_ITEM;
+    if (roles[j] === "temp") offset += TSPL_GAP_AFTER_TEMP;
+  }
+  return offset;
+}
+
 function buildOneLabelTspl(
   lines: string[],
   transactionTypeLabel?: string,
   widthMm?: number,
   heightMm?: number,
   topRowCount?: number,
-  itemTitleIndex?: number
+  topRoles?: TopRowRole[]
 ): string {
   const out: string[] = ["CLS"];
   const mainY = TSPL_MAIN_Y;
   const top = topRowCount ?? 0;
-  const itemIdx = itemTitleIndex ?? 0;
+  const roles = topRoles ?? [];
+  const modifiersStartOffset = top > 0
+    ? topRowCumulativeOffset(top, roles) + TSPL_TOP_ROW_STEP + (roles[top - 1] === "item" ? TSPL_GAP_AFTER_ITEM : 0) + (roles[top - 1] === "temp" ? TSPL_GAP_AFTER_TEMP : 0)
+    : 0;
 
   for (let i = 0; i < lines.length; i++) {
     const content = lines[i].trim();
@@ -467,13 +499,14 @@ function buildOneLabelTspl(
     const escaped = escapeTsplString(content);
     let x: number;
     if (i < top) {
-      x = TSPL_BLOCK_BASE_X - i * TSPL_TOP_ROW_STEP;
-      const isItemTitle = i === itemIdx;
-      const fontMul = isItemTitle ? 2 : 1;
-      out.push(`TEXT ${x},${mainY},"3",${TSPL_ROTATION_90},1,${fontMul},"${escaped}"`);
+      x = TSPL_BLOCK_BASE_X - topRowCumulativeOffset(i, roles);
+      const role = roles[i];
+      const fontX = role === "item" ? 2 : 1;
+      const fontY = role === "item" ? 2 : role === "temp" ? 2 : 1;
+      out.push(`TEXT ${x},${mainY},"3",${TSPL_ROTATION_90},${fontX},${fontY},"${escaped}"`);
     } else {
       const modifierIndex = i - top;
-      x = TSPL_BLOCK_BASE_X - (top * TSPL_TOP_ROW_STEP + modifierIndex * TSPL_MODIFIER_STEP);
+      x = TSPL_BLOCK_BASE_X - (modifiersStartOffset + modifierIndex * TSPL_MODIFIER_STEP);
       out.push(`TEXT ${x},${mainY},"3",${TSPL_ROTATION_90},1,1,"${escaped}"`);
     }
   }
@@ -488,18 +521,31 @@ function buildOneLabelTspl(
 }
 
 function formatTransactionTypeLabel(serviceType: string | null | undefined): string {
-  const raw = serviceType == null ? "" : String(serviceType).trim();
-  const s = raw.toUpperCase();
+  const s = String(serviceType ?? "").trim().toUpperCase();
 
   if (!s) return "FOR HERE";
-  if (s === "DINE_IN" || s === "FOR_HERE") return "FOR HERE";
-  if (s === "TO_GO" || s === "TAKEOUT") return "TAKEOUT";
-  if (s === "DELIVERY") return "DELIVERY";
-  if (s === "FOODPANDA") return "FOODPANDA";
-  if (s === "GRABFOOD") return "GRABFOOD";
 
-  // Unknown non-empty: print raw value for debugging (do not silently default to FOR HERE)
-  return raw || "FOR HERE";
+  const labelMap: Record<string, string> = {
+    DINE_IN: "FOR HERE",
+    FOR_HERE: "FOR HERE",
+
+    TO_GO: "TAKEOUT",
+    TAKEOUT: "TAKEOUT",
+    TAKE_OUT: "TAKEOUT",
+
+    DELIVERY: "DELIVERY",
+
+    FOODPANDA: "FOODPANDA",
+    FOOD_PANDA: "FOODPANDA",
+
+    GRABFOOD: "GRABFOOD",
+    GRAB_FOOD: "GRABFOOD",
+
+    BFC_APP: "BFC APP",
+    BFCAPP: "BFC APP",
+  };
+
+  return labelMap[s] ?? s;
 }
 
 /** Build TSPL string for sticker lines (caller must filter by shouldPrintSticker with stickerPrintCategoryIds). */
@@ -515,8 +561,8 @@ export function buildStickerTspl(
   console.log("[STICKER_VERIFY] computed transactionTypeLabel:", transactionTypeLabel);
   const blocks: string[] = [tsplHeader(widthMm, heightMm)];
   for (const line of tx.lineItems) {
-    const { lines: lineLabels, topRowCount, itemTitleIndex } = getStickerLineLabel(line);
-    blocks.push(buildOneLabelTspl(lineLabels, transactionTypeLabel, widthMm, heightMm, topRowCount, itemTitleIndex));
+    const { lines: lineLabels, topRowCount, topRoles } = getStickerLineLabel(line);
+    blocks.push(buildOneLabelTspl(lineLabels, transactionTypeLabel, widthMm, heightMm, topRowCount, topRoles));
   }
   blocks.push("FORM 2,0\n"); // small feed so last label is not clipped
   return blocks.join("\n");
@@ -529,7 +575,7 @@ export function buildTestStickerTspl(
 ): string {
   const header = tsplHeader(widthMm, heightMm);
   const testLines = ["BFC POS TEST", "Sticker OK"];
-  return header + buildOneLabelTspl(testLines, "FOR HERE", widthMm, heightMm, 2, 1) + "\nFORM 2,0\n";
+  return header + buildOneLabelTspl(testLines, "FOR HERE", widthMm, heightMm, 2, ["meta", "item"]) + "\nFORM 2,0\n";
 }
 
 export async function printReceiptToDevice(tx: TransactionForPrint): Promise<void> {
@@ -558,7 +604,7 @@ export async function printStickersToDevice(
 
   // Verification: log actual input and generated TSPL for first sticker (run one real print and inspect logs)
   const firstLine = stickerLines[0];
-  const { lines: firstLineLabels, topRowCount, itemTitleIndex } = getStickerLineLabel(firstLine);
+  const { lines: firstLineLabels, topRowCount, topRoles } = getStickerLineLabel(firstLine);
   const transactionTypeLabel = formatTransactionTypeLabel(tx.serviceType ?? undefined);
   const widthDots = Math.round(config.stickerWidthMm * TSPL_DOTS_PER_MM);
   const heightDots = Math.round(config.stickerHeightMm * TSPL_DOTS_PER_MM);
@@ -578,7 +624,7 @@ export async function printStickersToDevice(
     },
     serviceType: tx.serviceType,
     transactionTypeLabel,
-    getStickerLineLabelResult: { lines: firstLineLabels, topRowCount, itemTitleIndex },
+    getStickerLineLabelResult: { lines: firstLineLabels, topRowCount, topRoles },
     boundsDots: { widthDots, heightDots },
   };
   const idxCls = tspl.indexOf("CLS");
