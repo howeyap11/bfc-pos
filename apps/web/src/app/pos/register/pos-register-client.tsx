@@ -208,6 +208,7 @@ type Transaction = {
     note?: string | null;
     customerName?: string | null;
     optionsJson?: string | null;
+    displayLabel?: string | null;
   }>;
   payments: Array<{
     id: string;
@@ -5251,6 +5252,7 @@ export default function PosRegisterClient() {
             {currentTransaction.lineItems.map((line) => {
               const { primary, secondary } = lineItemDisplayParts(line);
               const mods = [primary, ...secondary].filter(Boolean).join(" · ");
+              const lineLabel = line.displayLabel ?? `${line.qty}× ${line.name}`;
               return (
                 <div
                   key={line.id}
@@ -5258,7 +5260,7 @@ export default function PosRegisterClient() {
                 >
                   <div>
                     <strong style={{ color: "#fff" }}>
-                      {line.qty}× {line.name}
+                      {lineLabel}
                     </strong>
                     {mods && (
                       <div style={{ fontSize: 13, color: "#aaa" }}>{mods}</div>

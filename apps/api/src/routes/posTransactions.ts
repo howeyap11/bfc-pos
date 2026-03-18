@@ -13,7 +13,7 @@ import { verifyAdminPin } from "../services/adminPin.service";
 import { enqueueOutbox } from "../services/outbox.service";
 import { ensureItemForCloudId } from "../services/catalogCache.service";
 import { uploadTransactionToCloud } from "../services/transactionSync.service";
-import { printReceiptToDevice, printStickersToDevice } from "../services/print.service";
+import { printReceiptToDevice, printStickersToDevice, formatTransactionLineLabel } from "../services/print.service";
 
 const STORE_ID = "store_1";
 
@@ -102,8 +102,23 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     });
 
     const hasMore = transactions.length > limit;
-    const items = hasMore ? transactions.slice(0, limit) : transactions;
-    const nextCursor = hasMore ? items[items.length - 1].transactionNo : null;
+    const rawItems = hasMore ? transactions.slice(0, limit) : transactions;
+    const nextCursor = hasMore ? rawItems[rawItems.length - 1].transactionNo : null;
+
+    const items = rawItems.map((tx) => ({
+      ...tx,
+      lineItems: tx.lineItems.map((li) => ({
+        ...li,
+        displayLabel: formatTransactionLineLabel({
+          name: li.name,
+          optionsJson: li.optionsJson,
+          categoryName: li.categoryName ?? li.item?.category?.name ?? undefined,
+          subCategoryName: li.subCategoryName ?? undefined,
+          qty: li.qty,
+          includeQuantity: true,
+        }),
+      })),
+    }));
 
     return {
       items,
@@ -219,9 +234,36 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
 
     const cloudItems = await app.prisma.cloudMenuItem.findMany({
       where: { cloudId: { in: cloudIds }, storeId: STORE_ID },
-      select: { cloudId: true, isDrink: true, serveVessel: true, defaultShots: true, defaultSubstituteCloudId: true },
+      select: {
+        cloudId: true,
+        isDrink: true,
+        serveVessel: true,
+        defaultShots: true,
+        defaultSubstituteCloudId: true,
+        categoryCloudId: true,
+        subCategoryCloudId: true,
+      },
     });
     const cloudItemMap = new Map(cloudItems.map((c) => [c.cloudId, c]));
+
+    const categoryCloudIds = [...new Set(cloudItems.map((c) => c.categoryCloudId).filter((id): id is string => !!id))];
+    const subCategoryCloudIds = [...new Set(cloudItems.map((c) => c.subCategoryCloudId).filter((id): id is string => !!id))];
+    const categoryNameByCloudId = new Map<string, string>();
+    const subCategoryNameByCloudId = new Map<string, string>();
+    if (categoryCloudIds.length > 0) {
+      const categories = await app.prisma.cloudCategory.findMany({
+        where: { cloudId: { in: categoryCloudIds }, storeId: STORE_ID },
+        select: { cloudId: true, name: true },
+      });
+      for (const cat of categories) categoryNameByCloudId.set(cat.cloudId, cat.name);
+    }
+    if (subCategoryCloudIds.length > 0) {
+      const subCats = await app.prisma.cloudSubCategory.findMany({
+        where: { cloudId: { in: subCategoryCloudIds }, storeId: STORE_ID },
+        select: { cloudId: true, name: true },
+      });
+      for (const sub of subCats) subCategoryNameByCloudId.set(sub.cloudId, sub.name);
+    }
 
     const substituteIds = new Set<string>();
     body.items.forEach((it) => {
@@ -513,6 +555,11 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
 
       const optionsJson = JSON.stringify(optionsData);
 
+      const categoryName =
+        cloudItem?.categoryCloudId != null ? categoryNameByCloudId.get(cloudItem.categoryCloudId) ?? null : null;
+      const subCategoryName =
+        cloudItem?.subCategoryCloudId != null ? subCategoryNameByCloudId.get(cloudItem.subCategoryCloudId) ?? null : null;
+
       return {
         itemId: dbItem.id,
         name: dbItem.name,
@@ -526,6 +573,8 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         optionsJson,
         isDrink: cloudItem?.isDrink ?? null,
         serveVessel: cloudItem?.serveVessel ?? null,
+        categoryName: categoryName ?? undefined,
+        subCategoryName: subCategoryName ?? undefined,
       };
     });
 
@@ -936,19 +985,60 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       ),
     ];
     const categoryByCloudId = new Map<string, string | null>();
+    const categoryNameByCloudId = new Map<string, string>();
+    const subCategoryNameByCloudId = new Map<string, string>();
+    const categoryNameByMenuItemCloudId = new Map<string, string>();
+    const subCategoryNameByMenuItemCloudId = new Map<string, string>();
     if (cloudIds.length > 0) {
       const cloudItems = await app.prisma.cloudMenuItem.findMany({
         where: { cloudId: { in: cloudIds } },
-        select: { cloudId: true, categoryCloudId: true },
+        select: { cloudId: true, categoryCloudId: true, subCategoryCloudId: true },
       });
       for (const row of cloudItems) {
         categoryByCloudId.set(row.cloudId, row.categoryCloudId);
       }
+      const catIds = [...new Set(cloudItems.map((r) => r.categoryCloudId).filter((c): c is string => !!c))];
+      const subIds = [...new Set(cloudItems.map((r) => r.subCategoryCloudId).filter((c): c is string => !!c))];
+      if (catIds.length > 0) {
+        const cats = await app.prisma.cloudCategory.findMany({
+          where: { cloudId: { in: catIds }, storeId: STORE_ID },
+          select: { cloudId: true, name: true },
+        });
+        for (const c of cats) categoryNameByCloudId.set(c.cloudId, c.name);
+      }
+      if (subIds.length > 0) {
+        const subs = await app.prisma.cloudSubCategory.findMany({
+          where: { cloudId: { in: subIds }, storeId: STORE_ID },
+          select: { cloudId: true, name: true },
+        });
+        for (const s of subs) subCategoryNameByCloudId.set(s.cloudId, s.name);
+      }
+      for (const mi of cloudItems) {
+        if (mi.categoryCloudId) categoryNameByMenuItemCloudId.set(mi.cloudId, categoryNameByCloudId.get(mi.categoryCloudId) ?? "");
+        if (mi.subCategoryCloudId) subCategoryNameByMenuItemCloudId.set(mi.cloudId, subCategoryNameByCloudId.get(mi.subCategoryCloudId) ?? "");
+      }
     }
-    const lineItemsWithCategory = transaction.lineItems.map((li) => ({
-      ...li,
-      categoryCloudId: li.item?.cloudId ? categoryByCloudId.get(li.item.cloudId) ?? null : null,
-    }));
+    const lineItemsWithCategory = transaction.lineItems.map((li) => {
+      const cloudId = li.item?.cloudId ?? null;
+      const categoryCloudId = cloudId ? categoryByCloudId.get(cloudId) ?? null : null;
+      const categoryName = li.categoryName ?? (cloudId ? categoryNameByMenuItemCloudId.get(cloudId) ?? null : null);
+      const subCategoryName = li.subCategoryName ?? (cloudId ? subCategoryNameByMenuItemCloudId.get(cloudId) ?? null : null);
+      const displayLabel = formatTransactionLineLabel({
+        name: li.name,
+        optionsJson: li.optionsJson,
+        categoryName: categoryName ?? undefined,
+        subCategoryName: subCategoryName ?? undefined,
+        qty: li.qty,
+        includeQuantity: true,
+      });
+      return {
+        ...li,
+        categoryCloudId,
+        categoryName: categoryName ?? undefined,
+        subCategoryName: subCategoryName ?? undefined,
+        displayLabel,
+      };
+    });
     return { ...transaction, lineItems: lineItemsWithCategory };
   });
 

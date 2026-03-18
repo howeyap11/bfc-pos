@@ -30,6 +30,9 @@ type Transaction = {
     lineTotal: number;
     optionsJson?: string | null;
     note?: string | null;
+    displayLabel?: string | null;
+    /** Category name from backend (snapshot at sell time); use for All Categories report. */
+    categoryName?: string | null;
     item?: {
       category?: {
         id: string;
@@ -422,8 +425,8 @@ export default function TransactionsClient() {
         if (netQty <= 0 && netAmount <= 0) continue;
 
         const categoryName =
-          line.item && line.item.category ? line.item.category.name : null;
-        const catKey = categoryName || "Uncategorized";
+          line.categoryName ?? (line.item?.category?.name ?? null);
+        const catKey = categoryName?.trim() ? categoryName.trim() : "Uncategorized";
         const existingCat = categoriesMap.get(catKey) || {
           name: catKey,
           qty: 0,
@@ -436,7 +439,7 @@ export default function TransactionsClient() {
         if (includeThisTxInFilter) {
           ejournalRows.push({
             id: `${tx.id}-${line.id}`,
-            label: line.name,
+            label: line.displayLabel ?? line.name,
             categoryName,
             cashier,
             qty: netQty,
@@ -876,6 +879,7 @@ export default function TransactionsClient() {
                                 const refunded = isLineRefunded(line);
                                 const { primary, secondary } = lineItemDisplayParts(line);
                                 const mods = [primary, ...secondary].filter(Boolean).join(", ");
+                                const lineLabel = line.displayLabel ?? `${line.qty}× ${line.name}`;
                                 return (
                                   <div 
                                     key={line.id}
@@ -886,7 +890,7 @@ export default function TransactionsClient() {
                                     }}
                                   >
                                     <span style={{ fontWeight: "600" }}>
-                                      {line.qty}× {line.name}
+                                      {lineLabel}
                                     </span>
                                     {mods && (
                                       <span style={{ color: refunded ? "#555" : "#888", fontSize: 11, marginLeft: 4 }}>
@@ -1457,7 +1461,7 @@ export default function TransactionsClient() {
                         />
                         <div style={{ flex: 1 }}>
                           <div style={{ fontSize: 14, color: "#fff", fontWeight: "600", marginBottom: 4 }}>
-                            {line.qty}× {line.name}
+                            {line.displayLabel ?? `${line.qty}× ${line.name}`}
                           </div>
                           {mods && (
                             <div style={{ fontSize: 12, color: "#888" }}>

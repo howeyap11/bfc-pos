@@ -54,6 +54,7 @@ type Transaction = ReceiptTransaction & {
     isDrink?: boolean | null;
     serveVessel?: string | null;
     optionsJson?: string | null;
+    displayLabel?: string | null;
   }>;
 };
 
@@ -575,7 +576,7 @@ export default function TransactionSuccessClient() {
                 {/* Item Details */}
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: "500", fontSize: 14, marginBottom: 4 }}>
-                    {item.name} ×{item.qty}
+                    {item.displayLabel ?? `${item.name} ×${item.qty}`}
                   </div>
                   {hasMods && (
                     <div style={{ fontSize: 12, color: "#374151", marginBottom: 4 }}>

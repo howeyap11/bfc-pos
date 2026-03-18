@@ -15,6 +15,7 @@ export type ReceiptLineItem = {
   note?: string | null;
   optionsJson?: string | null;
   categoryCloudId?: string | null;
+  displayLabel?: string | null;
 };
 
 export type ReceiptTransaction = {
@@ -80,9 +81,10 @@ export function buildReceiptHtml(tx: ReceiptTransaction): string {
     .map((item) => {
       const { primary, secondary } = lineItemDisplayParts(item);
       const mods = [primary, ...secondary].filter(Boolean).join(" · ");
+      const label = item.displayLabel ?? `${item.qty}× ${item.name}`;
       return `
         <tr>
-          <td style="padding:4px 8px;border-bottom:1px solid #eee">${item.qty}× ${item.name}${mods ? ` (${mods})` : ""}</td>
+          <td style="padding:4px 8px;border-bottom:1px solid #eee">${label}${mods ? ` (${mods})` : ""}</td>
           <td style="padding:4px 8px;border-bottom:1px solid #eee;text-align:right;white-space:nowrap">${formatPesos(item.lineTotal)}</td>
         </tr>`;
     })

@@ -335,7 +335,7 @@ export function TransactionsContent() {
                               {tx.lineItems && tx.lineItems.length > 0 ? (
                                 tx.lineItems.map((line, idx) => (
                                   <div key={idx} className="text-sm text-white flex justify-between gap-2">
-                                    <span className="font-medium">{line.qty}× {line.name}</span>
+                                    <span className="font-medium">{line.displayLabel ?? `${line.qty}× ${line.name}`}</span>
                                     <span className="text-green-400 shrink-0">{formatPesos(line.lineTotal)}</span>
                                   </div>
                                 ))

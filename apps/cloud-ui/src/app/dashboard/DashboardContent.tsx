@@ -221,7 +221,7 @@ export function DashboardContent() {
         </div>
 
         {/* 5. Four donut charts - fixed min height so they don't get cramped */}
-        <div className="mb-8 grid min-h-[320px] shrink-0 gap-6 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="mb-8 grid min-h-[360px] shrink-0 gap-6 sm:grid-cols-2 xl:grid-cols-4">
           <DonutChartCard
             title="Sales by Category"
             data={salesByCategory.map((r) => ({ name: r.category, value: r.amountCents }))}

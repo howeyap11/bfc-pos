@@ -158,6 +158,30 @@ function lineItemDisplayParts(optionsJson: string | null | undefined): { primary
   return { primary: primary.join(" "), secondary };
 }
 
+/** Format: "CATEGORY: SUB-CATEGORY [Item Name Size Temp]" with safe fallbacks. Used for receipt and transaction displays. */
+export function formatTransactionLineLabel(opts: {
+  name: string;
+  optionsJson?: string | null;
+  categoryName?: string | null;
+  subCategoryName?: string | null;
+  qty: number;
+  /** If true, append " xN" when qty > 1 (for receipt/display). */
+  includeQuantity?: boolean;
+}): string {
+  const { name, optionsJson, categoryName, subCategoryName, qty, includeQuantity } = opts;
+  const { primary } = lineItemDisplayParts(optionsJson);
+  const bracketContent = [name.trim(), primary].filter(Boolean).join(" ").trim() || name.trim();
+  const bracket = bracketContent ? `[${bracketContent}]` : "";
+  let prefix = "";
+  const cat = categoryName != null && String(categoryName).trim() !== "" ? String(categoryName).trim() : null;
+  const sub = subCategoryName != null && String(subCategoryName).trim() !== "" ? String(subCategoryName).trim() : null;
+  if (cat && sub) prefix = `${cat.toUpperCase()}: ${sub.toUpperCase()} `;
+  else if (cat) prefix = `${cat.toUpperCase()} `;
+  const base = prefix ? prefix + bracket : (bracket || name.trim());
+  const qtySuffix = includeQuantity && qty > 1 ? ` x${qty}` : "";
+  return base + qtySuffix;
+}
+
 function formatPesos(cents: number): string {
   return `Php ${(cents / 100).toFixed(2)}`;
 }
@@ -442,14 +466,16 @@ export type TransactionForPrint = {
     note?: string | null;
     optionsJson?: string | null;
     categoryCloudId?: string | null;
+    /** Snapshot or resolved category name for receipt/display (e.g. "BFC MENU"). */
+    categoryName?: string | null;
+    /** Snapshot or resolved sub-category name for receipt/display (e.g. "BREWED"). */
+    subCategoryName?: string | null;
     /** When set, used as the printable drink name on the sticker; else line name is used. */
     stickerName?: string | null;
     /** Item prep instructions only (quoted on sticker below ice). Distinct from note used for audit/discount. */
     specialInstructions?: string | null;
     /** Per-item customer name; printed on sticker left of temp/size line. */
     customerName?: string | null;
-    /** Sub-category name for sticker title line (e.g. "Espresso: Caramel Macchiato"). */
-    subCategoryName?: string | null;
   }>;
   payments: Array<{ method: string; amountCents: number }>;
 };
@@ -469,15 +495,25 @@ export function buildReceiptEscPos(tx: TransactionForPrint): Buffer {
       (s) => s !== primary && !primary.endsWith(" " + s)
     );
     const mods = [primary, ...secondaryDedup].filter(Boolean);
-    const mainText = `${item.qty} x ${item.name}`.trim();
     const addonsStr = mods.length > 0 ? "(" + mods.join(", ") + ")" : "";
+    const displayBase = formatTransactionLineLabel({
+      name: item.name,
+      optionsJson: item.optionsJson,
+      categoryName: item.categoryName,
+      subCategoryName: item.subCategoryName,
+      qty: item.qty,
+      includeQuantity: true,
+    });
+    const mainText = addonsStr ? `${displayBase} ${addonsStr}` : displayBase;
     const priceStr = formatPesos(item.lineTotal);
-    const firstLineText = addonsStr && mainText.length + 1 + addonsStr.length <= RECEIPT_TEXT_WIDTH
-      ? mainText + " " + addonsStr
-      : mainText;
+    const firstLineText = mainText.length <= RECEIPT_TEXT_WIDTH
+      ? mainText
+      : addonsStr
+        ? displayBase
+        : mainText;
     const paddedFirst = firstLineText.padEnd(RECEIPT_TEXT_WIDTH);
     lines.push(paddedFirst + priceStr.padStart(RECEIPT_PRICE_COLUMN_WIDTH));
-    if (addonsStr && firstLineText === mainText) {
+    if (addonsStr && firstLineText === displayBase) {
       for (const line of wrapReceiptAddons(addonsStr, RECEIPT_TEXT_WIDTH)) {
         lines.push(line);
       }
