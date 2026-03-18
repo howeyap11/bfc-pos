@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { apiFetch, setToken, API } from "@/lib/api";
+import { apiFetch, setToken } from "@/lib/api";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -15,7 +15,6 @@ export default function LoginPage() {
     e.preventDefault();
     setError("");
     setLoading(true);
-    console.log("API URL:", API);
     try {
       const data = await apiFetch("/auth/login", {
         method: "POST",

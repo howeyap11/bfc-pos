@@ -5,6 +5,10 @@
 __turbopack_context__.s([
     "API",
     ()=>API,
+    "STAFF_ROLES",
+    ()=>STAFF_ROLES,
+    "STAFF_ROLE_LABELS",
+    ()=>STAFF_ROLE_LABELS,
     "api",
     ()=>api,
     "apiFetch",
@@ -112,6 +116,24 @@ function normalizeSubCategories(subCategories) {
     if (Array.isArray(subCategories)) return subCategories;
     return [];
 }
+const STAFF_ROLES = [
+    "HEAD_BARISTA",
+    "HEAD_CHEF",
+    "BARISTA",
+    "LEAD_BARISTA",
+    "MANAGER",
+    "KITCHEN_STAFF",
+    "ADMIN"
+];
+const STAFF_ROLE_LABELS = {
+    HEAD_BARISTA: "Head Barista",
+    HEAD_CHEF: "Head Chef",
+    BARISTA: "Barista",
+    LEAD_BARISTA: "Lead Barista",
+    MANAGER: "Manager",
+    KITCHEN_STAFF: "Kitchen Staff",
+    ADMIN: "Admin"
+};
 const api = {
     getItems (includeDeleted) {
         const qs = includeDeleted ? "?includeDeleted=1" : "";
@@ -148,6 +170,14 @@ const api = {
     deleteItem (id) {
         return apiFetch(`/admin/items/${id}`, {
             method: "DELETE"
+        });
+    },
+    reorderItems (order) {
+        return apiFetch("/admin/items/reorder", {
+            method: "POST",
+            body: JSON.stringify({
+                order
+            })
         });
     },
     updateItem (id, body) {
@@ -191,6 +221,14 @@ const api = {
             body: JSON.stringify(body)
         });
     },
+    reorderCategories (order) {
+        return apiFetch("/admin/categories/reorder", {
+            method: "POST",
+            body: JSON.stringify({
+                order
+            })
+        });
+    },
     deleteCategory (id) {
         return apiFetch(`/admin/categories/${id}`, {
             method: "DELETE"
@@ -214,9 +252,22 @@ const api = {
             body: JSON.stringify(body)
         });
     },
-    deleteSubCategory (id) {
+    reorderSubCategories (order) {
+        return apiFetch("/admin/subcategories/reorder", {
+            method: "POST",
+            body: JSON.stringify({
+                order
+            })
+        });
+    },
+    deleteSubCategory (id, options) {
         return apiFetch(`/admin/subcategories/${id}`, {
-            method: "DELETE"
+            method: "DELETE",
+            ...options?.moveItemsToSubCategoryId ? {
+                body: JSON.stringify({
+                    moveItemsToSubCategoryId: options.moveItemsToSubCategoryId
+                })
+            } : {}
         });
     },
     getOptionGroups () {
@@ -235,6 +286,17 @@ const api = {
         return apiFetch(`/admin/option-groups/${id}`, {
             method: "PATCH",
             body: JSON.stringify(body)
+        });
+    },
+    getOptionRecipe (groupId, optionId) {
+        return apiFetch(`/admin/option-groups/${groupId}/options/${optionId}/recipe`);
+    },
+    putOptionRecipe (groupId, optionId, lines) {
+        return apiFetch(`/admin/option-groups/${groupId}/options/${optionId}/recipe`, {
+            method: "PUT",
+            body: JSON.stringify({
+                lines
+            })
         });
     },
     deleteOptionGroup (id) {
@@ -278,6 +340,189 @@ const api = {
             method: "PUT",
             body: JSON.stringify({
                 groupIds
+            })
+        });
+    },
+    getAddOns () {
+        return apiFetch("/admin/add-ons");
+    },
+    createAddOn (body) {
+        return apiFetch("/admin/add-ons", {
+            method: "POST",
+            body: JSON.stringify(body)
+        });
+    },
+    patchAddOn (id, body) {
+        return apiFetch(`/admin/add-ons/${id}`, {
+            method: "PATCH",
+            body: JSON.stringify(body)
+        });
+    },
+    deleteAddOn (id) {
+        return apiFetch(`/admin/add-ons/${id}`, {
+            method: "DELETE"
+        });
+    },
+    getAddOnRecipe (id) {
+        return apiFetch(`/admin/add-ons/${id}/recipe`);
+    },
+    putAddOnRecipe (id, lines) {
+        return apiFetch(`/admin/add-ons/${id}/recipe`, {
+            method: "PUT",
+            body: JSON.stringify({
+                lines
+            })
+        });
+    },
+    getSubstitutes () {
+        return apiFetch("/admin/substitutes");
+    },
+    createSubstitute (body) {
+        return apiFetch("/admin/substitutes", {
+            method: "POST",
+            body: JSON.stringify(body)
+        });
+    },
+    patchSubstitute (id, body) {
+        return apiFetch(`/admin/substitutes/${id}`, {
+            method: "PATCH",
+            body: JSON.stringify(body)
+        });
+    },
+    deleteSubstitute (id) {
+        return apiFetch(`/admin/substitutes/${id}`, {
+            method: "DELETE"
+        });
+    },
+    putSubstituteRecipeConsumption (id, rows) {
+        return apiFetch(`/admin/substitutes/${id}/recipe-consumption`, {
+            method: "PUT",
+            body: JSON.stringify({
+                rows
+            })
+        });
+    },
+    putSubstitutePrices (id, prices) {
+        return apiFetch(`/admin/substitutes/${id}/prices`, {
+            method: "PUT",
+            body: JSON.stringify({
+                prices
+            })
+        });
+    },
+    getAddOnGroups () {
+        return apiFetch("/admin/add-on-groups");
+    },
+    createAddOnGroup (body) {
+        return apiFetch("/admin/add-on-groups", {
+            method: "POST",
+            body: JSON.stringify(body)
+        });
+    },
+    patchAddOnGroup (id, body) {
+        return apiFetch(`/admin/add-on-groups/${id}`, {
+            method: "PATCH",
+            body: JSON.stringify(body)
+        });
+    },
+    deleteAddOnGroup (id) {
+        return apiFetch(`/admin/add-on-groups/${id}`, {
+            method: "DELETE"
+        });
+    },
+    createAddOnOption (groupId, body) {
+        return apiFetch(`/admin/add-on-groups/${groupId}/options`, {
+            method: "POST",
+            body: JSON.stringify(body)
+        });
+    },
+    patchAddOnOption (groupId, optionId, body) {
+        return apiFetch(`/admin/add-on-groups/${groupId}/options/${optionId}`, {
+            method: "PATCH",
+            body: JSON.stringify(body)
+        });
+    },
+    deleteAddOnOption (groupId, optionId) {
+        return apiFetch(`/admin/add-on-groups/${groupId}/options/${optionId}`, {
+            method: "DELETE"
+        });
+    },
+    putAddOnOptionRecipe (groupId, optionId, lines) {
+        return apiFetch(`/admin/add-on-groups/${groupId}/options/${optionId}/recipe`, {
+            method: "PUT",
+            body: JSON.stringify({
+                lines
+            })
+        });
+    },
+    getSubstituteGroups () {
+        return apiFetch("/admin/substitute-groups");
+    },
+    createSubstituteGroup (body) {
+        return apiFetch("/admin/substitute-groups", {
+            method: "POST",
+            body: JSON.stringify(body)
+        });
+    },
+    patchSubstituteGroup (id, body) {
+        return apiFetch(`/admin/substitute-groups/${id}`, {
+            method: "PATCH",
+            body: JSON.stringify(body)
+        });
+    },
+    deleteSubstituteGroup (id) {
+        return apiFetch(`/admin/substitute-groups/${id}`, {
+            method: "DELETE"
+        });
+    },
+    createSubstituteOption (groupId, body) {
+        return apiFetch(`/admin/substitute-groups/${groupId}/options`, {
+            method: "POST",
+            body: JSON.stringify(body)
+        });
+    },
+    patchSubstituteOption (groupId, optionId, body) {
+        return apiFetch(`/admin/substitute-groups/${groupId}/options/${optionId}`, {
+            method: "PATCH",
+            body: JSON.stringify(body)
+        });
+    },
+    deleteSubstituteOption (groupId, optionId) {
+        return apiFetch(`/admin/substitute-groups/${groupId}/options/${optionId}`, {
+            method: "DELETE"
+        });
+    },
+    putSubstituteOptionRecipe (groupId, optionId, lines) {
+        return apiFetch(`/admin/substitute-groups/${groupId}/options/${optionId}/recipe`, {
+            method: "PUT",
+            body: JSON.stringify({
+                lines
+            })
+        });
+    },
+    putItemAddOnGroups (itemId, groupIds) {
+        return apiFetch(`/admin/items/${itemId}/add-on-groups`, {
+            method: "PUT",
+            body: JSON.stringify({
+                groupIds
+            })
+        });
+    },
+    putItemSubstitutes (itemId, substituteIds, defaultSubstituteId) {
+        return apiFetch(`/admin/items/${itemId}/substitutes`, {
+            method: "PUT",
+            body: JSON.stringify({
+                substituteIds,
+                defaultSubstituteId
+            })
+        });
+    },
+    putItemSubstituteGroups (itemId, groupIds, defaultSubstituteOptionId) {
+        return apiFetch(`/admin/items/${itemId}/substitute-groups`, {
+            method: "PUT",
+            body: JSON.stringify({
+                groupIds,
+                defaultSubstituteOptionId
             })
         });
     },
@@ -411,6 +656,188 @@ const api = {
         return apiFetch(`/admin/ingredients/${id}`, {
             method: "PATCH",
             body: JSON.stringify(body)
+        });
+    },
+    getTransactionsExport (params) {
+        const q = new URLSearchParams();
+        if (params.storeId) q.set("storeId", params.storeId);
+        q.set("from", params.from);
+        q.set("to", params.to);
+        return apiFetch(`/admin/transactions/export?${q}`);
+    },
+    getTransactions (params) {
+        const q = new URLSearchParams();
+        if (params.storeId) q.set("storeId", params.storeId);
+        if (params.from) q.set("from", params.from);
+        if (params.to) q.set("to", params.to);
+        if (params.limit) q.set("limit", String(params.limit));
+        if (params.cursor) q.set("cursor", params.cursor);
+        return apiFetch(`/admin/transactions?${q}`);
+    },
+    getDailyReport (params) {
+        const q = new URLSearchParams();
+        if (params.storeId) q.set("storeId", params.storeId);
+        if (params.date) q.set("date", params.date);
+        return apiFetch(`/admin/reports/daily?${q}`);
+    },
+    getAdminPinConfigured () {
+        return apiFetch("/admin/settings/admin-pin");
+    },
+    setAdminPin (pin) {
+        return apiFetch("/admin/settings/admin-pin", {
+            method: "PUT",
+            body: JSON.stringify({
+                pin
+            })
+        });
+    },
+    /** Store config (receipt header: business name & address). Use same API as POS (store-config). */ getStoreConfig () {
+        return apiFetch("/store-config");
+    },
+    putStoreConfig (body) {
+        const headers = {};
+        const adminKey = __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$1$2e$6_$40$babel$2b$core$40$7$2e$2_9d8d1bf7a8807769963b5151bd760c41$2f$node_modules$2f$next$2f$dist$2f$build$2f$polyfills$2f$process$2e$js__$5b$app$2d$client$5d$__$28$ecmascript$29$__["default"].env.NEXT_PUBLIC_STORE_CONFIG_ADMIN_KEY;
+        if (adminKey) headers["x-store-config-admin-key"] = adminKey;
+        return apiFetch("/store-config", {
+            method: "PUT",
+            headers: Object.keys(headers).length ? headers : undefined,
+            body: JSON.stringify(body)
+        });
+    },
+    // Staff (POS cashiers/managers) - source of truth for names and PINs; syncs to POS
+    getStaff () {
+        return apiFetch("/admin/staff");
+    },
+    createStaff (body) {
+        return apiFetch("/admin/staff", {
+            method: "POST",
+            body: JSON.stringify(body)
+        });
+    },
+    getStaffById (id) {
+        return apiFetch(`/admin/staff/${id}`);
+    },
+    patchStaff (id, body) {
+        return apiFetch(`/admin/staff/${id}`, {
+            method: "PATCH",
+            body: JSON.stringify(body)
+        });
+    },
+    getMonthlyReport (params) {
+        const q = new URLSearchParams();
+        if (params.storeId) q.set("storeId", params.storeId);
+        if (params.year) q.set("year", String(params.year));
+        if (params.month) q.set("month", String(params.month));
+        return apiFetch(`/admin/reports/monthly?${q}`);
+    },
+    getDashboardSummary (params) {
+        const q = new URLSearchParams();
+        if (params.startDate) q.set("startDate", params.startDate);
+        if (params.endDate) q.set("endDate", params.endDate);
+        if (params.storeId) q.set("storeId", params.storeId);
+        return apiFetch(`/admin/dashboard/summary?${q}`);
+    },
+    getDashboardSalesByDate (params) {
+        const q = new URLSearchParams();
+        if (params.startDate) q.set("startDate", params.startDate);
+        if (params.endDate) q.set("endDate", params.endDate);
+        if (params.storeId) q.set("storeId", params.storeId);
+        if (params.granularity) q.set("granularity", params.granularity);
+        return apiFetch(`/admin/dashboard/sales-by-date?${q}`);
+    },
+    getDashboardPaymentTypes (params) {
+        const q = new URLSearchParams();
+        if (params.startDate) q.set("startDate", params.startDate);
+        if (params.endDate) q.set("endDate", params.endDate);
+        if (params.storeId) q.set("storeId", params.storeId);
+        return apiFetch(`/admin/dashboard/payment-types?${q}`);
+    },
+    getDashboardSalesByCategory (params) {
+        const q = new URLSearchParams();
+        if (params.startDate) q.set("startDate", params.startDate);
+        if (params.endDate) q.set("endDate", params.endDate);
+        if (params.storeId) q.set("storeId", params.storeId);
+        return apiFetch(`/admin/dashboard/sales-by-category?${q}`);
+    },
+    getDashboardSalesByItem (params) {
+        const q = new URLSearchParams();
+        if (params.startDate) q.set("startDate", params.startDate);
+        if (params.endDate) q.set("endDate", params.endDate);
+        if (params.storeId) q.set("storeId", params.storeId);
+        return apiFetch(`/admin/dashboard/sales-by-item?${q}`);
+    },
+    getDashboardSalesByCashier (params) {
+        const q = new URLSearchParams();
+        if (params.startDate) q.set("startDate", params.startDate);
+        if (params.endDate) q.set("endDate", params.endDate);
+        if (params.storeId) q.set("storeId", params.storeId);
+        return apiFetch(`/admin/dashboard/sales-by-cashier?${q}`);
+    },
+    getDashboardSalesByPayment (params) {
+        const q = new URLSearchParams();
+        if (params.startDate) q.set("startDate", params.startDate);
+        if (params.endDate) q.set("endDate", params.endDate);
+        if (params.storeId) q.set("storeId", params.storeId);
+        return apiFetch(`/admin/dashboard/sales-by-payment?${q}`);
+    },
+    getDashboardItemsSold (params) {
+        const q = new URLSearchParams();
+        if (params.startDate) q.set("startDate", params.startDate);
+        if (params.endDate) q.set("endDate", params.endDate);
+        if (params.storeId) q.set("storeId", params.storeId);
+        if (params.sortBy) q.set("sortBy", params.sortBy);
+        if (params.order) q.set("order", params.order);
+        if (params.page != null) q.set("page", String(params.page));
+        if (params.pageSize != null) q.set("pageSize", String(params.pageSize));
+        return apiFetch(`/admin/dashboard/items-sold?${q}`);
+    },
+    // Device management & remote commands
+    getDevices () {
+        return apiFetch("/admin/devices");
+    },
+    createDevice (body) {
+        return apiFetch("/admin/devices", {
+            method: "POST",
+            body: JSON.stringify(body)
+        });
+    },
+    getDevice (id) {
+        return apiFetch(`/admin/devices/${id}`);
+    },
+    createDeviceCommand (deviceId, type) {
+        return apiFetch(`/admin/devices/${deviceId}/commands`, {
+            method: "POST",
+            body: JSON.stringify({
+                type
+            })
+        });
+    },
+    deleteDevice (id) {
+        return apiFetch(`/admin/devices/${id}`, {
+            method: "DELETE"
+        });
+    },
+    // Dev mode: verify password and clear admin cache (no transaction deletion)
+    verifyPassword (password) {
+        return apiFetch("/admin/dev/verify-password", {
+            method: "POST",
+            body: JSON.stringify({
+                password
+            })
+        });
+    },
+    logDevAction (body) {
+        return apiFetch("/admin/dev/log-action", {
+            method: "POST",
+            body: JSON.stringify(body)
+        });
+    },
+    clearAdminCache (password) {
+        return apiFetch("/admin/dev/clear-admin-cache", {
+            method: "POST",
+            body: JSON.stringify({
+                password
+            })
         });
     },
     async uploadIngredientImage (id, file) {

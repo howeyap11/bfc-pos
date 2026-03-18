@@ -28,12 +28,20 @@ export default function BusinessDetailsPage() {
     setSaving(true);
     setError("");
     setSuccess("");
+    const body = { businessName: businessName.trim() || null, address: address.trim() || null };
     try {
-      await api.putStoreConfig({ businessName: businessName.trim() || null, address: address.trim() || null });
+      await api.putStoreConfig(body);
       setSuccess("Saved. Business name and address will appear on receipts.");
       setTimeout(() => setSuccess(""), 3000);
-    } catch {
-      setError("Failed to save");
+    } catch (err: unknown) {
+      const bodyErr = err && typeof err === "object" && "body" in err ? (err as { body?: unknown }).body : undefined;
+      const serverMsg =
+        bodyErr && typeof bodyErr === "object" && "message" in bodyErr && typeof (bodyErr as { message: unknown }).message === "string"
+          ? (bodyErr as { message: string }).message
+          : bodyErr && typeof bodyErr === "object" && "error" in bodyErr
+            ? String((bodyErr as { error: unknown }).error)
+            : null;
+      setError(serverMsg || "Failed to save");
     } finally {
       setSaving(false);
     }

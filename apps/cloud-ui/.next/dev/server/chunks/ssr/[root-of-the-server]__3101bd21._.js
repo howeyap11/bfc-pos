@@ -29,6 +29,10 @@ module.exports = mod;
 __turbopack_context__.s([
     "API",
     ()=>API,
+    "STAFF_ROLES",
+    ()=>STAFF_ROLES,
+    "STAFF_ROLE_LABELS",
+    ()=>STAFF_ROLE_LABELS,
     "api",
     ()=>api,
     "apiFetch",
@@ -132,6 +136,24 @@ function normalizeSubCategories(subCategories) {
     if (Array.isArray(subCategories)) return subCategories;
     return [];
 }
+const STAFF_ROLES = [
+    "HEAD_BARISTA",
+    "HEAD_CHEF",
+    "BARISTA",
+    "LEAD_BARISTA",
+    "MANAGER",
+    "KITCHEN_STAFF",
+    "ADMIN"
+];
+const STAFF_ROLE_LABELS = {
+    HEAD_BARISTA: "Head Barista",
+    HEAD_CHEF: "Head Chef",
+    BARISTA: "Barista",
+    LEAD_BARISTA: "Lead Barista",
+    MANAGER: "Manager",
+    KITCHEN_STAFF: "Kitchen Staff",
+    ADMIN: "Admin"
+};
 const api = {
     getItems (includeDeleted) {
         const qs = includeDeleted ? "?includeDeleted=1" : "";
@@ -168,6 +190,14 @@ const api = {
     deleteItem (id) {
         return apiFetch(`/admin/items/${id}`, {
             method: "DELETE"
+        });
+    },
+    reorderItems (order) {
+        return apiFetch("/admin/items/reorder", {
+            method: "POST",
+            body: JSON.stringify({
+                order
+            })
         });
     },
     updateItem (id, body) {
@@ -209,6 +239,14 @@ const api = {
             body: JSON.stringify(body)
         });
     },
+    reorderCategories (order) {
+        return apiFetch("/admin/categories/reorder", {
+            method: "POST",
+            body: JSON.stringify({
+                order
+            })
+        });
+    },
     deleteCategory (id) {
         return apiFetch(`/admin/categories/${id}`, {
             method: "DELETE"
@@ -232,9 +270,22 @@ const api = {
             body: JSON.stringify(body)
         });
     },
-    deleteSubCategory (id) {
+    reorderSubCategories (order) {
+        return apiFetch("/admin/subcategories/reorder", {
+            method: "POST",
+            body: JSON.stringify({
+                order
+            })
+        });
+    },
+    deleteSubCategory (id, options) {
         return apiFetch(`/admin/subcategories/${id}`, {
-            method: "DELETE"
+            method: "DELETE",
+            ...options?.moveItemsToSubCategoryId ? {
+                body: JSON.stringify({
+                    moveItemsToSubCategoryId: options.moveItemsToSubCategoryId
+                })
+            } : {}
         });
     },
     getOptionGroups () {
@@ -253,6 +304,17 @@ const api = {
         return apiFetch(`/admin/option-groups/${id}`, {
             method: "PATCH",
             body: JSON.stringify(body)
+        });
+    },
+    getOptionRecipe (groupId, optionId) {
+        return apiFetch(`/admin/option-groups/${groupId}/options/${optionId}/recipe`);
+    },
+    putOptionRecipe (groupId, optionId, lines) {
+        return apiFetch(`/admin/option-groups/${groupId}/options/${optionId}/recipe`, {
+            method: "PUT",
+            body: JSON.stringify({
+                lines
+            })
         });
     },
     deleteOptionGroup (id) {
@@ -296,6 +358,189 @@ const api = {
             method: "PUT",
             body: JSON.stringify({
                 groupIds
+            })
+        });
+    },
+    getAddOns () {
+        return apiFetch("/admin/add-ons");
+    },
+    createAddOn (body) {
+        return apiFetch("/admin/add-ons", {
+            method: "POST",
+            body: JSON.stringify(body)
+        });
+    },
+    patchAddOn (id, body) {
+        return apiFetch(`/admin/add-ons/${id}`, {
+            method: "PATCH",
+            body: JSON.stringify(body)
+        });
+    },
+    deleteAddOn (id) {
+        return apiFetch(`/admin/add-ons/${id}`, {
+            method: "DELETE"
+        });
+    },
+    getAddOnRecipe (id) {
+        return apiFetch(`/admin/add-ons/${id}/recipe`);
+    },
+    putAddOnRecipe (id, lines) {
+        return apiFetch(`/admin/add-ons/${id}/recipe`, {
+            method: "PUT",
+            body: JSON.stringify({
+                lines
+            })
+        });
+    },
+    getSubstitutes () {
+        return apiFetch("/admin/substitutes");
+    },
+    createSubstitute (body) {
+        return apiFetch("/admin/substitutes", {
+            method: "POST",
+            body: JSON.stringify(body)
+        });
+    },
+    patchSubstitute (id, body) {
+        return apiFetch(`/admin/substitutes/${id}`, {
+            method: "PATCH",
+            body: JSON.stringify(body)
+        });
+    },
+    deleteSubstitute (id) {
+        return apiFetch(`/admin/substitutes/${id}`, {
+            method: "DELETE"
+        });
+    },
+    putSubstituteRecipeConsumption (id, rows) {
+        return apiFetch(`/admin/substitutes/${id}/recipe-consumption`, {
+            method: "PUT",
+            body: JSON.stringify({
+                rows
+            })
+        });
+    },
+    putSubstitutePrices (id, prices) {
+        return apiFetch(`/admin/substitutes/${id}/prices`, {
+            method: "PUT",
+            body: JSON.stringify({
+                prices
+            })
+        });
+    },
+    getAddOnGroups () {
+        return apiFetch("/admin/add-on-groups");
+    },
+    createAddOnGroup (body) {
+        return apiFetch("/admin/add-on-groups", {
+            method: "POST",
+            body: JSON.stringify(body)
+        });
+    },
+    patchAddOnGroup (id, body) {
+        return apiFetch(`/admin/add-on-groups/${id}`, {
+            method: "PATCH",
+            body: JSON.stringify(body)
+        });
+    },
+    deleteAddOnGroup (id) {
+        return apiFetch(`/admin/add-on-groups/${id}`, {
+            method: "DELETE"
+        });
+    },
+    createAddOnOption (groupId, body) {
+        return apiFetch(`/admin/add-on-groups/${groupId}/options`, {
+            method: "POST",
+            body: JSON.stringify(body)
+        });
+    },
+    patchAddOnOption (groupId, optionId, body) {
+        return apiFetch(`/admin/add-on-groups/${groupId}/options/${optionId}`, {
+            method: "PATCH",
+            body: JSON.stringify(body)
+        });
+    },
+    deleteAddOnOption (groupId, optionId) {
+        return apiFetch(`/admin/add-on-groups/${groupId}/options/${optionId}`, {
+            method: "DELETE"
+        });
+    },
+    putAddOnOptionRecipe (groupId, optionId, lines) {
+        return apiFetch(`/admin/add-on-groups/${groupId}/options/${optionId}/recipe`, {
+            method: "PUT",
+            body: JSON.stringify({
+                lines
+            })
+        });
+    },
+    getSubstituteGroups () {
+        return apiFetch("/admin/substitute-groups");
+    },
+    createSubstituteGroup (body) {
+        return apiFetch("/admin/substitute-groups", {
+            method: "POST",
+            body: JSON.stringify(body)
+        });
+    },
+    patchSubstituteGroup (id, body) {
+        return apiFetch(`/admin/substitute-groups/${id}`, {
+            method: "PATCH",
+            body: JSON.stringify(body)
+        });
+    },
+    deleteSubstituteGroup (id) {
+        return apiFetch(`/admin/substitute-groups/${id}`, {
+            method: "DELETE"
+        });
+    },
+    createSubstituteOption (groupId, body) {
+        return apiFetch(`/admin/substitute-groups/${groupId}/options`, {
+            method: "POST",
+            body: JSON.stringify(body)
+        });
+    },
+    patchSubstituteOption (groupId, optionId, body) {
+        return apiFetch(`/admin/substitute-groups/${groupId}/options/${optionId}`, {
+            method: "PATCH",
+            body: JSON.stringify(body)
+        });
+    },
+    deleteSubstituteOption (groupId, optionId) {
+        return apiFetch(`/admin/substitute-groups/${groupId}/options/${optionId}`, {
+            method: "DELETE"
+        });
+    },
+    putSubstituteOptionRecipe (groupId, optionId, lines) {
+        return apiFetch(`/admin/substitute-groups/${groupId}/options/${optionId}/recipe`, {
+            method: "PUT",
+            body: JSON.stringify({
+                lines
+            })
+        });
+    },
+    putItemAddOnGroups (itemId, groupIds) {
+        return apiFetch(`/admin/items/${itemId}/add-on-groups`, {
+            method: "PUT",
+            body: JSON.stringify({
+                groupIds
+            })
+        });
+    },
+    putItemSubstitutes (itemId, substituteIds, defaultSubstituteId) {
+        return apiFetch(`/admin/items/${itemId}/substitutes`, {
+            method: "PUT",
+            body: JSON.stringify({
+                substituteIds,
+                defaultSubstituteId
+            })
+        });
+    },
+    putItemSubstituteGroups (itemId, groupIds, defaultSubstituteOptionId) {
+        return apiFetch(`/admin/items/${itemId}/substitute-groups`, {
+            method: "PUT",
+            body: JSON.stringify({
+                groupIds,
+                defaultSubstituteOptionId
             })
         });
     },
@@ -429,6 +674,210 @@ const api = {
             body: JSON.stringify(body)
         });
     },
+    getTransactionsExport (params) {
+        const q = new URLSearchParams();
+        if (params.storeId) q.set("storeId", params.storeId);
+        q.set("from", params.from);
+        q.set("to", params.to);
+        return apiFetch(`/admin/transactions/export?${q}`);
+    },
+    getTransactions (params) {
+        const q = new URLSearchParams();
+        if (params.storeId) q.set("storeId", params.storeId);
+        if (params.from) q.set("from", params.from);
+        if (params.to) q.set("to", params.to);
+        if (params.limit) q.set("limit", String(params.limit));
+        if (params.cursor) q.set("cursor", params.cursor);
+        return apiFetch(`/admin/transactions?${q}`);
+    },
+    getDailyReport (params) {
+        const q = new URLSearchParams();
+        if (params.storeId) q.set("storeId", params.storeId);
+        if (params.date) q.set("date", params.date);
+        return apiFetch(`/admin/reports/daily?${q}`);
+    },
+    getAdminPinConfigured () {
+        return apiFetch("/admin/settings/admin-pin");
+    },
+    setAdminPin (pin) {
+        return apiFetch("/admin/settings/admin-pin", {
+            method: "PUT",
+            body: JSON.stringify({
+                pin
+            })
+        });
+    },
+    /** Store config (receipt header: business name & address). Use same API as POS (store-config). */ getStoreConfig () {
+        return apiFetch("/store-config");
+    },
+    putStoreConfig (body) {
+        const headers = {};
+        const adminKey = process.env.NEXT_PUBLIC_STORE_CONFIG_ADMIN_KEY;
+        if (adminKey) headers["x-store-config-admin-key"] = adminKey;
+        // #region agent log
+        const putUrl = `${API.replace(/\/$/, "")}/store-config`;
+        fetch("http://127.0.0.1:7330/ingest/4412edb8-6093-4552-97f7-a28d77cc8a0f", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "X-Debug-Session-Id": "a7cf5a"
+            },
+            body: JSON.stringify({
+                sessionId: "a7cf5a",
+                location: "api.ts:putStoreConfig",
+                message: "PUT store-config request",
+                data: {
+                    url: putUrl,
+                    hasAdminKey: !!adminKey,
+                    bodyKeys: Object.keys(body)
+                },
+                timestamp: Date.now(),
+                hypothesisId: "H4"
+            })
+        }).catch(()=>{});
+        // #endregion
+        return apiFetch("/store-config", {
+            method: "PUT",
+            headers: Object.keys(headers).length ? headers : undefined,
+            body: JSON.stringify(body)
+        });
+    },
+    // Staff (POS cashiers/managers) - source of truth for names and PINs; syncs to POS
+    getStaff () {
+        return apiFetch("/admin/staff");
+    },
+    createStaff (body) {
+        return apiFetch("/admin/staff", {
+            method: "POST",
+            body: JSON.stringify(body)
+        });
+    },
+    getStaffById (id) {
+        return apiFetch(`/admin/staff/${id}`);
+    },
+    patchStaff (id, body) {
+        return apiFetch(`/admin/staff/${id}`, {
+            method: "PATCH",
+            body: JSON.stringify(body)
+        });
+    },
+    getMonthlyReport (params) {
+        const q = new URLSearchParams();
+        if (params.storeId) q.set("storeId", params.storeId);
+        if (params.year) q.set("year", String(params.year));
+        if (params.month) q.set("month", String(params.month));
+        return apiFetch(`/admin/reports/monthly?${q}`);
+    },
+    getDashboardSummary (params) {
+        const q = new URLSearchParams();
+        if (params.startDate) q.set("startDate", params.startDate);
+        if (params.endDate) q.set("endDate", params.endDate);
+        if (params.storeId) q.set("storeId", params.storeId);
+        return apiFetch(`/admin/dashboard/summary?${q}`);
+    },
+    getDashboardSalesByDate (params) {
+        const q = new URLSearchParams();
+        if (params.startDate) q.set("startDate", params.startDate);
+        if (params.endDate) q.set("endDate", params.endDate);
+        if (params.storeId) q.set("storeId", params.storeId);
+        if (params.granularity) q.set("granularity", params.granularity);
+        return apiFetch(`/admin/dashboard/sales-by-date?${q}`);
+    },
+    getDashboardPaymentTypes (params) {
+        const q = new URLSearchParams();
+        if (params.startDate) q.set("startDate", params.startDate);
+        if (params.endDate) q.set("endDate", params.endDate);
+        if (params.storeId) q.set("storeId", params.storeId);
+        return apiFetch(`/admin/dashboard/payment-types?${q}`);
+    },
+    getDashboardSalesByCategory (params) {
+        const q = new URLSearchParams();
+        if (params.startDate) q.set("startDate", params.startDate);
+        if (params.endDate) q.set("endDate", params.endDate);
+        if (params.storeId) q.set("storeId", params.storeId);
+        return apiFetch(`/admin/dashboard/sales-by-category?${q}`);
+    },
+    getDashboardSalesByItem (params) {
+        const q = new URLSearchParams();
+        if (params.startDate) q.set("startDate", params.startDate);
+        if (params.endDate) q.set("endDate", params.endDate);
+        if (params.storeId) q.set("storeId", params.storeId);
+        return apiFetch(`/admin/dashboard/sales-by-item?${q}`);
+    },
+    getDashboardSalesByCashier (params) {
+        const q = new URLSearchParams();
+        if (params.startDate) q.set("startDate", params.startDate);
+        if (params.endDate) q.set("endDate", params.endDate);
+        if (params.storeId) q.set("storeId", params.storeId);
+        return apiFetch(`/admin/dashboard/sales-by-cashier?${q}`);
+    },
+    getDashboardSalesByPayment (params) {
+        const q = new URLSearchParams();
+        if (params.startDate) q.set("startDate", params.startDate);
+        if (params.endDate) q.set("endDate", params.endDate);
+        if (params.storeId) q.set("storeId", params.storeId);
+        return apiFetch(`/admin/dashboard/sales-by-payment?${q}`);
+    },
+    getDashboardItemsSold (params) {
+        const q = new URLSearchParams();
+        if (params.startDate) q.set("startDate", params.startDate);
+        if (params.endDate) q.set("endDate", params.endDate);
+        if (params.storeId) q.set("storeId", params.storeId);
+        if (params.sortBy) q.set("sortBy", params.sortBy);
+        if (params.order) q.set("order", params.order);
+        if (params.page != null) q.set("page", String(params.page));
+        if (params.pageSize != null) q.set("pageSize", String(params.pageSize));
+        return apiFetch(`/admin/dashboard/items-sold?${q}`);
+    },
+    // Device management & remote commands
+    getDevices () {
+        return apiFetch("/admin/devices");
+    },
+    createDevice (body) {
+        return apiFetch("/admin/devices", {
+            method: "POST",
+            body: JSON.stringify(body)
+        });
+    },
+    getDevice (id) {
+        return apiFetch(`/admin/devices/${id}`);
+    },
+    createDeviceCommand (deviceId, type) {
+        return apiFetch(`/admin/devices/${deviceId}/commands`, {
+            method: "POST",
+            body: JSON.stringify({
+                type
+            })
+        });
+    },
+    deleteDevice (id) {
+        return apiFetch(`/admin/devices/${id}`, {
+            method: "DELETE"
+        });
+    },
+    // Dev mode: verify password and clear admin cache (no transaction deletion)
+    verifyPassword (password) {
+        return apiFetch("/admin/dev/verify-password", {
+            method: "POST",
+            body: JSON.stringify({
+                password
+            })
+        });
+    },
+    logDevAction (body) {
+        return apiFetch("/admin/dev/log-action", {
+            method: "POST",
+            body: JSON.stringify(body)
+        });
+    },
+    clearAdminCache (password) {
+        return apiFetch("/admin/dev/clear-admin-cache", {
+            method: "POST",
+            body: JSON.stringify({
+                password
+            })
+        });
+    },
     async uploadIngredientImage (id, file) {
         const token = ("TURBOPACK compile-time falsy", 0) ? "TURBOPACK unreachable" : null;
         const form = new FormData();
@@ -507,6 +956,11 @@ const nav = [
         icon: IconGrid
     },
     {
+        href: "/menu",
+        label: "Menu",
+        icon: IconMenu
+    },
+    {
         href: "/transactions",
         label: "Transactions",
         icon: IconReceipt
@@ -522,19 +976,20 @@ const nav = [
         icon: IconPackage
     },
     {
-        href: "/menu",
-        label: "Menu",
-        icon: IconMenu
+        href: "/reports",
+        label: "Reports",
+        icon: IconChart
     },
     {
         href: "/menu-settings/sizes",
         label: "Menu Settings",
-        icon: IconSettings
+        icon: IconSettings,
+        matchPrefix: "/menu-settings"
     },
     {
-        href: "/reports",
-        label: "Reports",
-        icon: IconChart
+        href: "/settings",
+        label: "Settings",
+        icon: IconSettings
     }
 ];
 function IconGrid({ className }) {
@@ -550,12 +1005,12 @@ function IconGrid({ className }) {
             d: "M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"
         }, void 0, false, {
             fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-            lineNumber: 20,
+            lineNumber: 21,
             columnNumber: 7
         }, this)
     }, void 0, false, {
         fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-        lineNumber: 19,
+        lineNumber: 20,
         columnNumber: 5
     }, this);
 }
@@ -572,12 +1027,12 @@ function IconReceipt({ className }) {
             d: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"
         }, void 0, false, {
             fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-            lineNumber: 27,
+            lineNumber: 28,
             columnNumber: 7
         }, this)
     }, void 0, false, {
         fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-        lineNumber: 26,
+        lineNumber: 27,
         columnNumber: 5
     }, this);
 }
@@ -594,12 +1049,12 @@ function IconFlask({ className }) {
             d: "M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"
         }, void 0, false, {
             fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-            lineNumber: 34,
+            lineNumber: 35,
             columnNumber: 7
         }, this)
     }, void 0, false, {
         fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-        lineNumber: 33,
+        lineNumber: 34,
         columnNumber: 5
     }, this);
 }
@@ -616,12 +1071,12 @@ function IconPackage({ className }) {
             d: "M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"
         }, void 0, false, {
             fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-            lineNumber: 41,
+            lineNumber: 42,
             columnNumber: 7
         }, this)
     }, void 0, false, {
         fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-        lineNumber: 40,
+        lineNumber: 41,
         columnNumber: 5
     }, this);
 }
@@ -638,12 +1093,12 @@ function IconMenu({ className }) {
             d: "M4 6h16M4 12h16M4 18h16"
         }, void 0, false, {
             fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-            lineNumber: 48,
+            lineNumber: 49,
             columnNumber: 7
         }, this)
     }, void 0, false, {
         fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-        lineNumber: 47,
+        lineNumber: 48,
         columnNumber: 5
     }, this);
 }
@@ -661,7 +1116,7 @@ function IconSettings({ className }) {
                 d: "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
             }, void 0, false, {
                 fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-                lineNumber: 55,
+                lineNumber: 56,
                 columnNumber: 7
             }, this),
             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$1$2e$6_$40$babel$2b$core$40$7$2e$2_9d8d1bf7a8807769963b5151bd760c41$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("path", {
@@ -670,13 +1125,13 @@ function IconSettings({ className }) {
                 d: "M15 12a3 3 0 11-6 0 3 3 0 016 0z"
             }, void 0, false, {
                 fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-                lineNumber: 56,
+                lineNumber: 57,
                 columnNumber: 7
             }, this)
         ]
     }, void 0, true, {
         fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-        lineNumber: 54,
+        lineNumber: 55,
         columnNumber: 5
     }, this);
 }
@@ -693,12 +1148,12 @@ function IconChart({ className }) {
             d: "M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"
         }, void 0, false, {
             fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-            lineNumber: 63,
+            lineNumber: 64,
             columnNumber: 7
         }, this)
     }, void 0, false, {
         fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-        lineNumber: 62,
+        lineNumber: 63,
         columnNumber: 5
     }, this);
 }
@@ -715,20 +1170,22 @@ function IconLogout({ className }) {
             d: "M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
         }, void 0, false, {
             fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-            lineNumber: 70,
+            lineNumber: 71,
             columnNumber: 7
         }, this)
     }, void 0, false, {
         fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-        lineNumber: 69,
+        lineNumber: 70,
         columnNumber: 5
     }, this);
 }
 function DashboardNav() {
     const pathname = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$1$2e$6_$40$babel$2b$core$40$7$2e$2_9d8d1bf7a8807769963b5151bd760c41$2f$node_modules$2f$next$2f$navigation$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["usePathname"])();
-    function isActive(href) {
-        if (href === "/dashboard") return pathname === "/dashboard";
-        return pathname === href || pathname.startsWith(href + "/");
+    function isActive(item) {
+        const prefix = item.matchPrefix ?? item.href;
+        if (item.href === "/dashboard") return pathname === "/dashboard";
+        if (item.matchPrefix) return pathname === prefix || pathname.startsWith(prefix + "/");
+        return pathname === item.href || pathname.startsWith(item.href + "/");
     }
     return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$1$2e$6_$40$babel$2b$core$40$7$2e$2_9d8d1bf7a8807769963b5151bd760c41$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("aside", {
         className: "fixed left-0 top-0 z-10 flex h-screen w-56 flex-col p-3",
@@ -745,18 +1202,19 @@ function DashboardNav() {
                         children: "Cloud Admin"
                     }, void 0, false, {
                         fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-                        lineNumber: 92,
+                        lineNumber: 95,
                         columnNumber: 11
                     }, this)
                 }, void 0, false, {
                     fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-                    lineNumber: 91,
+                    lineNumber: 94,
                     columnNumber: 9
                 }, this),
                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$1$2e$6_$40$babel$2b$core$40$7$2e$2_9d8d1bf7a8807769963b5151bd760c41$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("nav", {
                     className: "flex-1 space-y-1 overflow-y-auto px-2 py-3",
-                    children: nav.map(({ href, label, icon: Icon })=>{
-                        const active = isActive(href);
+                    children: nav.map((item)=>{
+                        const { href, label, icon: Icon } = item;
+                        const active = isActive(item);
                         return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$1$2e$6_$40$babel$2b$core$40$7$2e$2_9d8d1bf7a8807769963b5151bd760c41$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$1$2e$6_$40$babel$2b$core$40$7$2e$2_9d8d1bf7a8807769963b5151bd760c41$2f$node_modules$2f$next$2f$dist$2f$client$2f$app$2d$dir$2f$link$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["default"], {
                             href: href,
                             className: `flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-colors ${active ? "bg-emerald-500/30 text-white" : "text-white/75 hover:bg-white/10 hover:text-white"}`,
@@ -765,26 +1223,26 @@ function DashboardNav() {
                                     className: "h-5 w-5 flex-shrink-0"
                                 }, void 0, false, {
                                     fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-                                    lineNumber: 107,
+                                    lineNumber: 111,
                                     columnNumber: 17
                                 }, this),
                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$1$2e$6_$40$babel$2b$core$40$7$2e$2_9d8d1bf7a8807769963b5151bd760c41$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
                                     children: label
                                 }, void 0, false, {
                                     fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-                                    lineNumber: 108,
+                                    lineNumber: 112,
                                     columnNumber: 17
                                 }, this)
                             ]
                         }, href, true, {
                             fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-                            lineNumber: 98,
+                            lineNumber: 102,
                             columnNumber: 15
                         }, this);
                     })
                 }, void 0, false, {
                     fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-                    lineNumber: 94,
+                    lineNumber: 97,
                     columnNumber: 9
                 }, this),
                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$1$2e$6_$40$babel$2b$core$40$7$2e$2_9d8d1bf7a8807769963b5151bd760c41$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -801,36 +1259,36 @@ function DashboardNav() {
                                 className: "h-5 w-5 flex-shrink-0"
                             }, void 0, false, {
                                 fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-                                lineNumber: 122,
+                                lineNumber: 126,
                                 columnNumber: 13
                             }, this),
                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$1$2e$6_$40$babel$2b$core$40$7$2e$2_9d8d1bf7a8807769963b5151bd760c41$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
                                 children: "Logout"
                             }, void 0, false, {
                                 fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-                                lineNumber: 123,
+                                lineNumber: 127,
                                 columnNumber: 13
                             }, this)
                         ]
                     }, void 0, true, {
                         fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-                        lineNumber: 114,
+                        lineNumber: 118,
                         columnNumber: 11
                     }, this)
                 }, void 0, false, {
                     fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-                    lineNumber: 113,
+                    lineNumber: 117,
                     columnNumber: 9
                 }, this)
             ]
         }, void 0, true, {
             fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-            lineNumber: 85,
+            lineNumber: 88,
             columnNumber: 7
         }, this)
     }, void 0, false, {
         fileName: "[project]/apps/cloud-ui/src/components/DashboardNav.tsx",
-        lineNumber: 84,
+        lineNumber: 87,
         columnNumber: 5
     }, this);
 }

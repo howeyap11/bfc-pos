@@ -1,0 +1,4 @@
+{"sessionId":"a7cf5a","location":"cloud-api/storeConfig.ts:PUT","message":"cloud-api PUT store-config","data":{"hasPosBackend":false,"bodyKeys":["businessName","address"]},"timestamp":1773874245816,"hypothesisId":"H1"}
+{"sessionId":"a7cf5a","location":"cloud-api/storeConfig.ts:PUT 503","message":"POS_BACKEND_URL not set","data":{"hasPosBackend":false},"timestamp":1773874245817,"hypothesisId":"H1"}
+{"sessionId":"a7cf5a","location":"cloud-api/storeConfig.ts:PUT","message":"cloud-api PUT store-config","data":{"hasPosBackend":false,"bodyKeys":["businessName","address"]},"timestamp":1773874327529,"hypothesisId":"H1"}
+{"sessionId":"a7cf5a","location":"cloud-api/storeConfig.ts:PUT 503","message":"POS_BACKEND_URL not set","data":{"hasPosBackend":false},"timestamp":1773874327530,"hypothesisId":"H1"}

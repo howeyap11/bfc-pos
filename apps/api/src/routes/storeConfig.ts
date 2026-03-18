@@ -15,7 +15,8 @@ function isBusinessDetailsOnly(body: unknown): boolean {
 /** Allow PUT if: staff auth, admin key, or body only businessName/address (no auth required). */
 async function allowStaffOrStoreConfigAdmin(req: FastifyRequest, reply: FastifyReply) {
   const body = (req as { body?: unknown }).body;
-  if (isBusinessDetailsOnly(body)) return;
+  const onlyBusinessDetails = isBusinessDetailsOnly(body);
+  if (onlyBusinessDetails) return;
 
   const adminKey = process.env.STORE_CONFIG_ADMIN_KEY;
   const incoming = (req.headers["x-store-config-admin-key"] as string) ?? "";
@@ -109,21 +110,26 @@ const storeConfigRoutesImpl: FastifyPluginAsync = async (app) => {
         updateData.address = body.address?.trim() || null;
       }
 
-      const config = await app.prisma.storeConfig.upsert({
-        where: { storeId: STORE_ID },
-        update: updateData,
-        create: {
-          storeId: STORE_ID,
-          enabledPaymentMethods: JSON.stringify(body.enabledPaymentMethods || ["CASH"]),
-          splitPaymentEnabled: body.splitPaymentEnabled ?? true,
-          paymentMethodOrder: body.paymentMethodOrder ? JSON.stringify(body.paymentMethodOrder) : null,
-          stickerPrintCategoryIds: Array.isArray(body.stickerPrintCategoryIds)
-            ? JSON.stringify(body.stickerPrintCategoryIds)
-            : null,
-          businessName: body.businessName?.trim() || null,
-          address: body.address?.trim() || null,
-        },
-      });
+      let config;
+      try {
+        config = await app.prisma.storeConfig.upsert({
+          where: { storeId: STORE_ID },
+          update: updateData,
+          create: {
+            storeId: STORE_ID,
+            enabledPaymentMethods: JSON.stringify(body.enabledPaymentMethods || ["CASH"]),
+            splitPaymentEnabled: body.splitPaymentEnabled ?? true,
+            paymentMethodOrder: body.paymentMethodOrder ? JSON.stringify(body.paymentMethodOrder) : null,
+            stickerPrintCategoryIds: Array.isArray(body.stickerPrintCategoryIds)
+              ? JSON.stringify(body.stickerPrintCategoryIds)
+              : null,
+            businessName: body.businessName?.trim() || null,
+            address: body.address?.trim() || null,
+          },
+        });
+      } catch (upsertErr) {
+        throw upsertErr;
+      }
 
       const stickerPrintCategoryIds = config.stickerPrintCategoryIds
         ? (JSON.parse(config.stickerPrintCategoryIds) as string[])
