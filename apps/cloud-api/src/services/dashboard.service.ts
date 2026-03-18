@@ -68,7 +68,7 @@ export async function getDashboardKpis(
   range: DateRange
 ): Promise<DashboardKpis> {
   const txs = await prisma.syncedTransaction.findMany({
-    where: { storeId, status: "PAID", createdAt: { gte: range.start, lte: range.end } },
+    where: { storeId, status: "PAID", createdAt: { gte: range.start, lt: range.end } },
     select: {
       totalCents: true,
       discountCents: true,
@@ -114,7 +114,7 @@ export async function getSalesByDate(
   granularity: "hourly" | "daily" | "monthly"
 ): Promise<SalesByDateBucket[]> {
   const txs = await prisma.syncedTransaction.findMany({
-    where: { storeId, status: "PAID", createdAt: { gte: range.start, lte: range.end } },
+    where: { storeId, status: "PAID", createdAt: { gte: range.start, lt: range.end } },
     select: { createdAt: true, totalCents: true },
   });
 
@@ -175,7 +175,7 @@ export async function getPaymentTypeTotals(
   range: DateRange
 ): Promise<PaymentTypeTotal[]> {
   const txs = await prisma.syncedTransaction.findMany({
-    where: { storeId, status: "PAID", createdAt: { gte: range.start, lte: range.end } },
+    where: { storeId, status: "PAID", createdAt: { gte: range.start, lt: range.end } },
     select: { paymentsJson: true },
   });
 
@@ -219,7 +219,7 @@ export async function getSalesByCategory(
 ): Promise<SalesByCategoryRow[]> {
   const [txs, menuItems] = await Promise.all([
     prisma.syncedTransaction.findMany({
-      where: { storeId, status: "PAID", createdAt: { gte: range.start, lte: range.end } },
+      where: { storeId, status: "PAID", createdAt: { gte: range.start, lt: range.end } },
       select: { lineItemsSummaryJson: true },
     }),
     prisma.menuItem.findMany({
@@ -256,7 +256,7 @@ export async function getSalesByItem(
   topN = 20
 ): Promise<SalesByItemRow[]> {
   const txs = await prisma.syncedTransaction.findMany({
-    where: { storeId, status: "PAID", createdAt: { gte: range.start, lte: range.end } },
+    where: { storeId, status: "PAID", createdAt: { gte: range.start, lt: range.end } },
     select: { lineItemsSummaryJson: true },
   });
 
@@ -287,7 +287,7 @@ export async function getSalesByCashier(
   range: DateRange
 ): Promise<SalesByCashierRow[]> {
   const txs = await prisma.syncedTransaction.findMany({
-    where: { storeId, status: "PAID", createdAt: { gte: range.start, lte: range.end } },
+    where: { storeId, status: "PAID", createdAt: { gte: range.start, lt: range.end } },
     select: { cashierName: true, totalCents: true },
   });
 
@@ -319,7 +319,7 @@ export async function getItemsSold(
 ): Promise<{ rows: ItemsSoldRow[]; total: number }> {
   const [txs, menuItems] = await Promise.all([
     prisma.syncedTransaction.findMany({
-      where: { storeId, status: "PAID", createdAt: { gte: range.start, lte: range.end } },
+      where: { storeId, status: "PAID", createdAt: { gte: range.start, lt: range.end } },
       select: { lineItemsSummaryJson: true },
     }),
     prisma.menuItem.findMany({
@@ -418,21 +418,49 @@ export function getStoreName(): string {
   return process.env.STORE_NAME || process.env.BUSINESS_NAME || "Store";
 }
 
-/** Build date range using local timezone (12:00am to 11:59pm). */
+/** Business timezone offset in hours (e.g. 8 for Asia/Manila UTC+8). Used for dashboard date boundaries. */
+function getDashboardTzOffsetHours(): number {
+  const v = process.env.DASHBOARD_TZ_OFFSET_HOURS;
+  if (v !== undefined && v !== "") {
+    const n = parseInt(v, 10);
+    if (!Number.isNaN(n) && n >= -14 && n <= 14) return n;
+  }
+  return 8;
+}
+
+/**
+ * Start of the given calendar day in business timezone, as a UTC Date.
+ * e.g. "2026-03-19" with offset +8 => 2026-03-18T16:00:00.000Z (midnight Mar 19 in Manila).
+ */
+function startOfDayUtc(y: number, m: number, d: number, offsetHours: number): Date {
+  const ms = Date.UTC(y, m - 1, d, 0, 0, 0, 0) - offsetHours * 60 * 60 * 1000;
+  return new Date(ms);
+}
+
+/**
+ * Build date range for dashboard queries.
+ * Interprets startDate/endDate as calendar days in business timezone (e.g. Asia/Manila).
+ * Returns [start, end) so use createdAt >= start && createdAt < end.
+ * DB stores UTC; this converts the selected local day(s) to exact UTC instants once.
+ */
 export function buildDateRange(startDate: string, endDate: string): DateRange {
+  const offsetHours = getDashboardTzOffsetHours();
   const [sy, sm, sd] = startDate.split("-").map(Number);
   const [ey, em, ed] = endDate.split("-").map(Number);
-  const start = new Date(sy, sm - 1, sd, 0, 0, 0, 0);
-  const end = new Date(ey, em - 1, ed, 23, 59, 59, 999);
+  const start = startOfDayUtc(sy, sm, sd, offsetHours);
+  const end = startOfDayUtc(ey, em, ed + 1, offsetHours);
   return { start, end };
 }
 
-/** Default date filter: today in local timezone. */
+/** Default date filter: today in business timezone (so 1:00 AM local is still "today"). */
 export function getDefaultDateRange(): { startDate: string; endDate: string } {
   const n = new Date();
-  const y = n.getFullYear();
-  const m = String(n.getMonth() + 1).padStart(2, "0");
-  const d = String(n.getDate()).padStart(2, "0");
+  const offsetHours = getDashboardTzOffsetHours();
+  const businessMs = n.getTime() + offsetHours * 60 * 60 * 1000;
+  const b = new Date(businessMs);
+  const y = b.getUTCFullYear();
+  const m = String(b.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(b.getUTCDate()).padStart(2, "0");
   const date = `${y}-${m}-${d}`;
   return { startDate: date, endDate: date };
 }

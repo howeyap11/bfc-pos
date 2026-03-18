@@ -402,7 +402,14 @@ export type SyncedTransactionRow = {
   voidedAt: string | null;
   voidReason: string | null;
   payments: { method: string; amountCents: number }[];
-  lineItems: { name: string; qty: number; lineTotal: number }[];
+  lineItems: {
+    name: string;
+    qty: number;
+    lineTotal: number;
+    displayLabel?: string;
+    categoryName?: string | null;
+    subcategoryName?: string | null;
+  }[];
 };
 
 export type DailyReport = {
