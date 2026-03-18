@@ -56,15 +56,15 @@ export async function apiFetch(path: string, init?: RequestInit) {
   }
 
   if (!res.ok) {
-    console.error("[API] FAILED", {
+    const errInfo = {
       path,
       status: res.status,
       statusText: res.statusText,
       contentType,
       rawPreview: raw.slice(0, 400),
-      rawText: raw,
       parsedData: data,
-    });
+    };
+    console.error("[API] FAILED", path, res.status, res.statusText, errInfo);
 
     // Handle 401 errors with specific staff key issues
     if (res.status === 401) {

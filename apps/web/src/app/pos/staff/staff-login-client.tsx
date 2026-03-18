@@ -315,10 +315,9 @@ export default function StaffLoginClient() {
 
       {staffList.length === 0 && !error && (
         <div style={{ padding: 24, textAlign: "center", color: "#aaa" }}>
-          <p>No staff found. Run seed to create sample staff.</p>
+          <p>No staff found. Sync staff from Cloud Admin.</p>
           <pre style={{ marginTop: 16, fontSize: 12, color: "#666" }}>
-            cd apps/api{"\n"}
-            npx tsx prisma/seed.ts
+            Cloud Admin → Staff, then sync to this store
           </pre>
         </div>
       )}
@@ -332,7 +331,7 @@ export default function StaffLoginClient() {
             </p>
             <ul style={{ color: "#fca5a5", fontSize: 13, textAlign: "left", marginBottom: 12 }}>
               <li>The API server is not running (start it with: <code>npm run dev</code> in apps/api)</li>
-              <li>The database is not seeded (run: <code>npx tsx prisma/seed.ts</code> in apps/api)</li>
+              <li>Staff has not been synced from Cloud Admin</li>
               <li>Network connection issue</li>
             </ul>
             <button

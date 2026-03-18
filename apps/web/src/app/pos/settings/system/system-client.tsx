@@ -143,7 +143,7 @@ export default function SystemClient() {
       const staffKey = staff ? (JSON.parse(staff) as { staffKey?: string }).staffKey : null;
       const headers: Record<string, string> = { "content-type": "application/json" };
       if (staffKey) headers["x-staff-key"] = staffKey;
-      const res = await fetch("/api/device/commands/sync-catalog", { method: "POST", headers });
+      const res = await fetch("/api/device/commands/sync-catalog", { method: "POST", headers, body: "{}" });
       const data = await res.json();
       if (!res.ok) throw new Error(data.message || data.error || "Failed");
       if (isAuthenticated) await loadStatus();

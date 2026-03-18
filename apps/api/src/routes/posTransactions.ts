@@ -1053,14 +1053,28 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       reply.code(404);
       return { error: "TRANSACTION_NOT_FOUND" };
     }
+    const storeConfig = await app.prisma.storeConfig.findUnique({
+      where: { storeId: STORE_ID },
+      select: { businessName: true, address: true },
+    });
+    const receiptHeader =
+      storeConfig && (storeConfig.businessName || storeConfig.address)
+        ? {
+            businessName: storeConfig.businessName ?? null,
+            address: storeConfig.address ?? null,
+          }
+        : undefined;
     try {
-      await printReceiptToDevice({
-        ...transaction,
-        createdAt:
-          transaction.createdAt instanceof Date
-            ? transaction.createdAt.toISOString()
-            : String(transaction.createdAt),
-      });
+      await printReceiptToDevice(
+        {
+          ...transaction,
+          createdAt:
+            transaction.createdAt instanceof Date
+              ? transaction.createdAt.toISOString()
+              : String(transaction.createdAt),
+        },
+        receiptHeader
+      );
       return { ok: true };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err ?? "Receipt print failed");

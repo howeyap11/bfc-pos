@@ -3452,11 +3452,10 @@ export default function PosRegisterClient() {
         <div style={{ padding: 16, background: "#2a2410", border: "2px solid #f59e0b", borderRadius: 8, marginBottom: 16 }}>
           <h2 style={{ color: "#fbbf24", marginTop: 0 }}>📋 No Menu Items Found</h2>
           <p style={{ color: "#ddd", fontSize: 14 }}>
-            The menu is empty. Please run the seed script or add items in Prisma Studio.
+            The menu is empty. Sync catalog from Cloud Admin or add items in Cloud Admin.
           </p>
           <pre style={{ background: "#2a2a2a", color: "#ddd", padding: 12, borderRadius: 4, fontSize: 13, overflow: "auto" }}>
-            cd apps/api{"\n"}
-            npx prisma db seed
+            POS Settings → Sync catalog from Cloud Admin
           </pre>
         </div>
         <button
@@ -3550,7 +3549,7 @@ export default function PosRegisterClient() {
             <div style={{ flex: 1, overflow: "auto", padding: 20, background: "#1f1f1f" }}>
           {viewMode === "tiles" && subcategories.length > 0 ? (
             /* Subcategory Tiles Grid (UTAK Style) */
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, maxWidth: 900 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 16 }}>
               {subcategories.map((subcategory, index) => {
                 const colors = tileColors[index % tileColors.length];
                 return (

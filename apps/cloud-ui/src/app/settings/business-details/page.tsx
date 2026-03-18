@@ -1,14 +1,27 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { COLORS } from "@/lib/theme";
+import { api } from "@/lib/api";
 
 export default function BusinessDetailsPage() {
   const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [success, setSuccess] = useState("");
   const [error, setError] = useState("");
   const [businessName, setBusinessName] = useState("");
   const [address, setAddress] = useState("");
+
+  useEffect(() => {
+    api
+      .getStoreConfig()
+      .then((config) => {
+        setBusinessName(config.businessName ?? "");
+        setAddress(config.address ?? "");
+      })
+      .catch(() => setError("Failed to load business details"))
+      .finally(() => setLoading(false));
+  }, []);
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
@@ -16,8 +29,8 @@ export default function BusinessDetailsPage() {
     setError("");
     setSuccess("");
     try {
-      await new Promise((r) => setTimeout(r, 300));
-      setSuccess("Saved (placeholder – backend not yet connected)");
+      await api.putStoreConfig({ businessName: businessName.trim() || null, address: address.trim() || null });
+      setSuccess("Saved. Business name and address will appear on receipts.");
       setTimeout(() => setSuccess(""), 3000);
     } catch {
       setError("Failed to save");
@@ -44,6 +57,9 @@ export default function BusinessDetailsPage() {
         <div className="mb-4 rounded border border-red-500/50 bg-red-500/10 p-3 text-sm text-red-400">
           {error}
         </div>
+      )}
+      {loading && (
+        <p className="mb-4 text-sm text-white/60">Loading…</p>
       )}
       <form onSubmit={handleSave} className="space-y-6">
         <div
@@ -77,7 +93,7 @@ export default function BusinessDetailsPage() {
           <div className="mt-6">
             <button
               type="submit"
-              disabled={saving}
+              disabled={saving || loading}
               className="rounded px-4 py-2 text-sm font-medium text-black disabled:opacity-50"
               style={{ background: COLORS.primary }}
             >

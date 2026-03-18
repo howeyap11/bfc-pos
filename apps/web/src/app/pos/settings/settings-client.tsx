@@ -254,6 +254,7 @@ export default function SettingsClient() {
       const res = await fetch("/api/device/commands/sync-catalog", {
         method: "POST",
         headers: { "content-type": "application/json", ...headers },
+        body: "{}",
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.message || data.error || "Failed");

@@ -1,9 +1,12 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
+import { formatTransactionLineLabel } from "../services/print.service";
 
 const PosOrdersQuery = z.object({
   tab: z.enum(["pending", "qr"]).default("qr"),
 });
+
+const STORE_ID = "store_1";
 
 export const posOrdersRoutes: FastifyPluginAsync = async (app) => {
   app.get("/pos/orders", { preHandler: app.requireStaff }, async (req, reply) => {
@@ -12,7 +15,7 @@ export const posOrdersRoutes: FastifyPluginAsync = async (app) => {
 
     const orders = await app.prisma.order.findMany({
       where: {
-        storeId: "store_1",
+        storeId: STORE_ID,
         ...(tab === "qr"
           ? {
               status: "PLACED",
@@ -40,7 +43,7 @@ export const posOrdersRoutes: FastifyPluginAsync = async (app) => {
       },
     });
 
-    return orders.map((o) => ({
+    const ordersPayload = orders.map((o) => ({
       id: o.id,
       orderNo: o.orderNo,
       status: o.status,
@@ -79,5 +82,118 @@ export const posOrdersRoutes: FastifyPluginAsync = async (app) => {
         })),
       })),
     }));
+
+    // For pending tab, also return PAID transactions that don't have prep completed (pending order cards)
+    let pendingTransactions: Array<{
+      id: string;
+      transactionNo: number;
+      status: string;
+      source: string;
+      createdAt: string;
+      createdBy: string | null;
+      table: { id: string; label: string; zone: { code: string; name: string } | null } | null;
+      lineItems: Array<{
+        id: string;
+        qty: number;
+        unitPrice: number;
+        lineNote: string | null;
+        specialInstructions: string | null;
+        name: string;
+        optionsJson: string | null;
+        categoryName: string | null;
+        subCategoryName: string | null;
+        displayLabel: string;
+        item: { id: string; name: string; imageUrl: string | null; category: { name: string; prepArea: string } | null } | null;
+      }>;
+    }> = [];
+
+    if (tab === "pending") {
+      const txList = await app.prisma.transaction.findMany({
+        where: {
+          storeId: STORE_ID,
+          status: "PAID",
+          prepCompletedAt: null,
+        },
+        orderBy: { createdAt: "asc" },
+        take: 100,
+        include: {
+          table: { select: { id: true, label: true, zone: { select: { code: true, name: true } } } },
+          lineItems: {
+            include: {
+              item: {
+                select: {
+                  id: true,
+                  name: true,
+                  category: { select: { name: true, prepArea: true } },
+                  images: { orderBy: [{ isPrimary: "desc" }, { sort: "asc" }], take: 1, select: { url: true } },
+                },
+              },
+            },
+          },
+        },
+      });
+
+      pendingTransactions = txList.map((tx) => ({
+        id: tx.id,
+        transactionNo: tx.transactionNo,
+        status: tx.status,
+        source: tx.source,
+        createdAt: tx.createdAt.toISOString(),
+        createdBy: tx.createdBy,
+        table: tx.table
+          ? {
+              id: tx.table.id,
+              label: tx.table.label,
+              zone: tx.table.zone ? { code: tx.table.zone.code, name: tx.table.zone.name } : null,
+            }
+          : null,
+        lineItems: tx.lineItems.map((li) => ({
+          id: li.id,
+          qty: li.qty,
+          unitPrice: li.unitPrice,
+          lineNote: li.lineNote,
+          specialInstructions: li.specialInstructions,
+          name: li.name,
+          optionsJson: li.optionsJson,
+          categoryName: li.categoryName,
+          subCategoryName: li.subCategoryName,
+          displayLabel: formatTransactionLineLabel({
+            name: li.name,
+            optionsJson: li.optionsJson,
+            categoryName: li.categoryName ?? li.item?.category?.name ?? undefined,
+            subCategoryName: li.subCategoryName ?? undefined,
+            qty: li.qty,
+            includeQuantity: true,
+          }),
+          item: li.item
+            ? {
+                id: li.item.id,
+                name: li.item.name,
+                imageUrl: li.item.images[0]?.url ?? null,
+                category: li.item.category ? { name: li.item.category.name, prepArea: li.item.category.prepArea } : null,
+              }
+            : null,
+        })),
+      }));
+    }
+
+    return { orders: ordersPayload, pendingTransactions };
+  });
+
+  // Mark a transaction's prep as complete (attach prep time to transaction)
+  app.patch("/pos/transactions/:id/prep-complete", { preHandler: app.requireStaff }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const transaction = await app.prisma.transaction.findFirst({
+      where: { id, storeId: STORE_ID, status: "PAID" },
+    });
+    if (!transaction) {
+      reply.code(404);
+      return { error: "Transaction not found or not paid" };
+    }
+    await app.prisma.transaction.update({
+      where: { id },
+      data: { prepCompletedAt: new Date() },
+    });
+    return { ok: true };
   });
 };

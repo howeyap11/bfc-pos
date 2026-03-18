@@ -426,7 +426,7 @@ function getStickerLineLabel(line: { name: string; optionsJson?: string | null; 
   }
   if (addOnNames.length > 0) {
     const addOnsLabel = "Add-ons: " + addOnNames.join(", ");
-    const addOnLines = wrapStickerText(addOnsLabel, 10, 35);
+    const addOnLines = wrapStickerText(addOnsLabel, 10, 28);
     for (const ln of addOnLines) lines.push(ln);
   }
 
@@ -480,10 +480,25 @@ export type TransactionForPrint = {
   payments: Array<{ method: string; amountCents: number }>;
 };
 
-export function buildReceiptEscPos(tx: TransactionForPrint): Buffer {
+/** Optional receipt header from Settings/Business Details. */
+export type ReceiptHeaderOptions = {
+  businessName?: string | null;
+  address?: string | null;
+};
+
+export function buildReceiptEscPos(tx: TransactionForPrint, header?: ReceiptHeaderOptions | null): Buffer {
   const paymentMethod = tx.payments[0]?.method ?? "CASH";
   const lines: string[] = [];
-  lines.push("");
+
+  if (header?.businessName?.trim()) {
+    lines.push(header.businessName.trim());
+  }
+  if (header?.address?.trim()) {
+    const addressLines = header.address.trim().split(",").map((s) => s.trim()).filter(Boolean);
+    for (const line of addressLines) lines.push(line);
+  }
+  if (lines.length > 0) lines.push("");
+
   lines.push("RECEIPT #" + tx.transactionNo);
   lines.push(new Date(tx.createdAt).toLocaleString());
   if (tx.createdBy) lines.push("Cashier: " + tx.createdBy);
@@ -681,11 +696,14 @@ export function buildTestStickerTspl(
   return header + buildOneLabelTspl(testLines, "FOR HERE", widthMm, heightMm, 2, ["meta", "item"]) + "\nFORM 2,0\n";
 }
 
-export async function printReceiptToDevice(tx: TransactionForPrint): Promise<void> {
+export async function printReceiptToDevice(
+  tx: TransactionForPrint,
+  header?: ReceiptHeaderOptions | null
+): Promise<void> {
   const config = await getPrinterConfig();
   const name = getPrinterName(config.receiptPrinter);
   if (!name) throw new Error("Printer not configured");
-  const data = buildReceiptEscPos(tx);
+  const data = buildReceiptEscPos(tx, header);
   await sendRawToWindowsPrinter(name, data);
 }
 

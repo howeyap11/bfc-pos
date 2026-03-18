@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { COLORS } from "@/lib/theme";
 import type { CartItem } from "@/lib/buildTransactionPayload";
+import { lineItemDisplayParts } from "@/lib/printHelpers";
 
 const CART_STORAGE_KEY = "bfc_pos_cart";
 const QR_ORDER_STORAGE_KEY = "bfc_pos_qr_order_id";
@@ -38,6 +39,40 @@ type PosOrder = {
   items: OrderLineItem[];
 };
 
+/** Pending PAID transaction (no prep completed yet) — shown as order card with timer, transaction labels, images */
+type PendingTransactionLineItem = {
+  id: string;
+  qty: number;
+  unitPrice: number;
+  lineNote: string | null;
+  specialInstructions: string | null;
+  name: string;
+  optionsJson: string | null;
+  categoryName: string | null;
+  subCategoryName: string | null;
+  displayLabel: string;
+  item: {
+    id: string;
+    name: string;
+    imageUrl: string | null;
+    category: { name: string; prepArea: string } | null;
+  } | null;
+};
+
+type PendingTransaction = {
+  id: string;
+  transactionNo: number;
+  status: string;
+  source: string;
+  createdAt: string;
+  createdBy: string | null;
+  table: { id: string; label: string; zone: { code: string; name: string } | null } | null;
+  lineItems: PendingTransactionLineItem[];
+};
+
+/** Unified item for pending tab: either QR/table Order or PAID Transaction */
+type PendingItem = { kind: "order"; order: PosOrder } | { kind: "transaction"; transaction: PendingTransaction };
+
 const POLL_INTERVAL_MS = 5000;
 const CARD_COLLAPSED_WIDTH = 240;
 const CARD_COLLAPSED_MIN_WIDTH = 200;
@@ -60,6 +95,19 @@ function groupItemsByPrepArea(items: OrderLineItem[]): { KITCHEN: OrderLineItem[
   const kitchen: OrderLineItem[] = [];
   const bar: OrderLineItem[] = [];
   for (const li of items) {
+    const prepArea = li.item?.category?.prepArea;
+    if (prepArea === "KITCHEN") kitchen.push(li);
+    else bar.push(li);
+  }
+  return { KITCHEN: kitchen, BAR: bar };
+}
+
+function groupTransactionLinesByPrepArea(
+  lineItems: PendingTransactionLineItem[]
+): { KITCHEN: PendingTransactionLineItem[]; BAR: PendingTransactionLineItem[] } {
+  const kitchen: PendingTransactionLineItem[] = [];
+  const bar: PendingTransactionLineItem[] = [];
+  for (const li of lineItems) {
     const prepArea = li.item?.category?.prepArea;
     if (prepArea === "KITCHEN") kitchen.push(li);
     else bar.push(li);
@@ -168,14 +216,18 @@ export default function OrdersClient() {
   const [activeStaff, setActiveStaff] = useState<{ staffKey: string } | null>(null);
   const [innerTab, setInnerTab] = useState<"qr" | "pending">("qr");
   const [orders, setOrders] = useState<PosOrder[]>([]);
+  const [pendingTransactions, setPendingTransactions] = useState<PendingTransaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const [newOrderBadge, setNewOrderBadge] = useState(0);
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
+  /** When on Pending tab, which single card is expanded (order id or transaction id) */
+  const [expandedPendingId, setExpandedPendingId] = useState<string | null>(null);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [acceptingId, setAcceptingId] = useState<string | null>(null);
   const [decliningId, setDecliningId] = useState<string | null>(null);
+  const [completingTransactionId, setCompletingTransactionId] = useState<string | null>(null);
 
   useEffect(() => {
     try {
@@ -215,13 +267,16 @@ export default function OrdersClient() {
       const text = await res.text();
       if (!res.ok) throw new Error(JSON.parse(text || "{}").error || text || "Failed to load orders");
 
-      const data = JSON.parse(text) as PosOrder[];
+      const data = JSON.parse(text) as { orders?: PosOrder[]; pendingTransactions?: PendingTransaction[] } | PosOrder[];
+      const orderList = Array.isArray(data) ? data : (data.orders ?? []);
+      const pendingTxList = Array.isArray(data) ? [] : (data.pendingTransactions ?? []);
       setOrders((prev) => {
-        if (hasLoadedOnce && data.length > prev.length) {
-          setNewOrderBadge((b) => b + (data.length - prev.length));
+        if (hasLoadedOnce && orderList.length > prev.length) {
+          setNewOrderBadge((b) => b + (orderList.length - prev.length));
         }
-        return data;
+        return orderList;
       });
+      setPendingTransactions(pendingTxList);
       setHasLoadedOnce(true);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -243,16 +298,46 @@ export default function OrdersClient() {
     return () => clearInterval(t);
   }, [activeStaff?.staffKey, innerTab, loadOrders]);
 
-  useEffect(() => {
-    if (orders.length === 0) {
-      setExpandedOrderId(null);
-      return;
-    }
-    setExpandedOrderId((prev) => {
-      if (!prev || !orders.some((o) => o.id === prev)) return orders[0].id;
-      return prev;
+  // Merge orders + pending transactions for pending tab, sorted by createdAt asc
+  const pendingItems: PendingItem[] = useMemo(() => {
+    if (innerTab !== "pending") return [];
+    const items: PendingItem[] = [
+      ...orders.map((o) => ({ kind: "order" as const, order: o })),
+      ...pendingTransactions.map((tx) => ({ kind: "transaction" as const, transaction: tx })),
+    ];
+    items.sort((a, b) => {
+      const tA = a.kind === "order" ? a.order.createdAt : a.transaction.createdAt;
+      const tB = b.kind === "order" ? b.order.createdAt : b.transaction.createdAt;
+      return new Date(tA).getTime() - new Date(tB).getTime();
     });
-  }, [orders]);
+    return items;
+  }, [innerTab, orders, pendingTransactions]);
+
+  useEffect(() => {
+    if (innerTab === "qr") {
+      if (orders.length === 0) {
+        setExpandedOrderId(null);
+        return;
+      }
+      setExpandedOrderId((prev) => {
+        if (!prev || !orders.some((o) => o.id === prev)) return orders[0]?.id ?? null;
+        return prev;
+      });
+      setExpandedPendingId(null);
+    } else {
+      if (pendingItems.length === 0) {
+        setExpandedPendingId(null);
+        return;
+      }
+      setExpandedPendingId((prev) => {
+        const firstId = pendingItems[0].kind === "order" ? pendingItems[0].order.id : pendingItems[0].transaction.id;
+        const stillValid = prev && pendingItems.some((p) => (p.kind === "order" ? p.order.id === prev : p.transaction.id === prev));
+        if (!stillValid) return firstId;
+        return prev;
+      });
+      setExpandedOrderId(null);
+    }
+  }, [orders, innerTab, pendingItems]);
 
   const clearNewOrderBadge = () => setNewOrderBadge(0);
 
@@ -331,6 +416,25 @@ export default function OrdersClient() {
     }
   }
 
+  async function handlePrepCompleteTransaction(tx: PendingTransaction) {
+    if (!activeStaff?.staffKey || completingTransactionId) return;
+    setCompletingTransactionId(tx.id);
+    setError(null);
+    try {
+      const res = await fetch(`/api/pos/transactions/${tx.id}/prep-complete`, {
+        method: "PATCH",
+        headers: { "x-staff-key": activeStaff.staffKey },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || data.message || "Failed to mark prep complete");
+      await loadOrders();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCompletingTransactionId(null);
+    }
+  }
+
   const renderOrderCard = (
     o: PosOrder,
     opts: {
@@ -340,11 +444,15 @@ export default function OrdersClient() {
       showSecondary?: boolean;
       onSecondary?: () => void;
       secondaryLabel?: string;
+      /** When on Pending tab, use this for expanded state and click */
+      expandedId?: string | null;
+      onExpand?: (id: string) => void;
     }
   ) => {
     const minutes = getMinutesElapsed(o.createdAt);
     const timerColor = getTimerColor(minutes);
-    const isExpanded = expandedOrderId === o.id;
+    const isExpanded = opts.expandedId != null ? opts.expandedId === o.id : expandedOrderId === o.id;
+    const onCardClick = opts.onExpand ?? (() => setExpandedOrderId(o.id));
     const { KITCHEN: kitchenItems, BAR: barItems } = groupItemsByPrepArea(o.items);
     const isLoading = opts.isQr && (acceptingId === o.id || decliningId === o.id);
 
@@ -580,8 +688,8 @@ export default function OrdersClient() {
         key={o.id}
         role="button"
         tabIndex={0}
-        onClick={() => setExpandedOrderId(o.id)}
-        onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setExpandedOrderId(o.id)}
+        onClick={() => onCardClick(o.id)}
+        onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onCardClick(o.id)}
         style={{
           display: "flex",
           flexDirection: "column",
@@ -601,6 +709,162 @@ export default function OrdersClient() {
       </div>
     );
   };
+
+  function renderTransactionCard(tx: PendingTransaction) {
+    const minutes = getMinutesElapsed(tx.createdAt);
+    const timerColor = getTimerColor(minutes);
+    const isExpanded = expandedPendingId === tx.id;
+    const { KITCHEN: kitchenLines, BAR: barLines } = groupTransactionLinesByPrepArea(tx.lineItems);
+    const isLoading = completingTransactionId === tx.id;
+
+    const header = (
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: isExpanded ? 16 : 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 18, fontWeight: "700", color: timerColor, display: "flex", alignItems: "center", gap: 6 }}>
+            <span>🕐</span>
+            <span>{Math.floor(minutes / 60)}:{String(minutes % 60).padStart(2, "0")}</span>
+          </span>
+          <span style={{ fontSize: isExpanded ? 14 : 16, fontWeight: "600", color: COLORS.textPrimary }}>
+            Receipt #{String(tx.transactionNo).padStart(4, "0")}
+          </span>
+          {tx.createdBy && (
+            <span style={{ fontSize: 12, color: COLORS.textSecondary }}>{tx.createdBy}</span>
+          )}
+        </div>
+      </div>
+    );
+
+    function renderTxLine(li: PendingTransactionLineItem) {
+      const { primary, secondary } = lineItemDisplayParts({ optionsJson: li.optionsJson });
+      const addons = [primary, ...secondary].filter(Boolean).join(" · ");
+      return (
+        <div
+          key={li.id}
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 10,
+            background: "#2a2a2a",
+            padding: "10px 14px",
+            borderRadius: 10,
+            minWidth: 200,
+          }}
+        >
+          {li.item?.imageUrl ? (
+            <img src={li.item.imageUrl} alt="" style={{ width: 48, height: 48, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} />
+          ) : (
+            <div style={{ width: 48, height: 48, borderRadius: 8, background: "#1a1a1a", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, color: "#666" }}>—</div>
+          )}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: "600", color: COLORS.textPrimary, fontSize: 13 }}>
+              {li.displayLabel}
+            </div>
+            {addons && <div style={{ fontSize: 12, color: COLORS.textSecondary, marginTop: 2 }}>{addons}</div>}
+            {(li.lineNote || li.specialInstructions) && (
+              <div style={{ fontSize: 11, color: "#fbbf24", marginTop: 4, fontStyle: "italic" }}>
+                {li.lineNote && <span>Note: {li.lineNote}</span>}
+                {li.lineNote && li.specialInstructions && " · "}
+                {li.specialInstructions && <span>Prep: {li.specialInstructions}</span>}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    const cardContent = (
+      <>
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+          {header}
+          {tx.table && isExpanded && (
+            <div style={{ fontSize: 14, color: COLORS.textSecondary, marginBottom: 8 }}>
+              {tx.table.zone?.code}-{tx.table.label}
+            </div>
+          )}
+          {isExpanded ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 16, marginBottom: 16 }}>
+              {kitchenLines.length > 0 && (
+                <div>
+                  <h4 style={{ margin: "0 0 8px 0", fontSize: 12, fontWeight: "700", color: COLORS.textSecondary, textTransform: "uppercase" }}>Kitchen</h4>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>{kitchenLines.map(renderTxLine)}</div>
+                </div>
+              )}
+              {barLines.length > 0 && (
+                <div>
+                  <h4 style={{ margin: "0 0 8px 0", fontSize: 12, fontWeight: "700", color: COLORS.textSecondary, textTransform: "uppercase" }}>Bar</h4>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>{barLines.map(renderTxLine)}</div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {kitchenLines.length > 0 && (
+                <div style={{ fontSize: 15, color: "#fff", fontWeight: "600", lineHeight: 1.4 }}>
+                  <span style={{ color: COLORS.textSecondary, fontSize: 12, textTransform: "uppercase", fontWeight: "700" }}>Kitchen </span>
+                  {kitchenLines.map((li) => li.displayLabel).join(", ")}
+                </div>
+              )}
+              {barLines.length > 0 && (
+                <div style={{ fontSize: 15, color: "#fff", fontWeight: "600", lineHeight: 1.4 }}>
+                  <span style={{ color: COLORS.textSecondary, fontSize: 12, textTransform: "uppercase", fontWeight: "700" }}>Bar </span>
+                  {barLines.map((li) => li.displayLabel).join(", ")}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        <div style={{ marginTop: "auto", display: "flex", justifyContent: "flex-end", paddingTop: 16 }}>
+          <button
+            type="button"
+            disabled={isLoading}
+            onClick={(e) => {
+              e.stopPropagation();
+              handlePrepCompleteTransaction(tx);
+            }}
+            style={{
+              padding: "10px 18px",
+              fontSize: 14,
+              fontWeight: "600",
+              background: COLORS.primary,
+              color: "#fff",
+              border: "none",
+              borderRadius: 8,
+              cursor: isLoading ? "not-allowed" : "pointer",
+              opacity: isLoading ? 0.7 : 1,
+            }}
+          >
+            {isLoading ? "Saving…" : "Done"}
+          </button>
+        </div>
+      </>
+    );
+
+    return (
+      <div
+        key={tx.id}
+        role="button"
+        tabIndex={0}
+        onClick={() => setExpandedPendingId(tx.id)}
+        onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setExpandedPendingId(tx.id)}
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          background: COLORS.bgPanel,
+          borderRadius: 12,
+          padding: 16,
+          border: `2px solid ${COLORS.borderLight}`,
+          overflow: "hidden",
+          minWidth: isExpanded ? CARD_EXPANDED_MIN_WIDTH : CARD_COLLAPSED_MIN_WIDTH,
+          width: isExpanded ? CARD_EXPANDED_WIDTH : CARD_COLLAPSED_WIDTH,
+          minHeight: CARD_MIN_HEIGHT,
+          flexShrink: 0,
+          cursor: "pointer",
+        }}
+      >
+        {cardContent}
+      </div>
+    );
+  }
 
   if (!activeStaff?.staffKey) {
     return (
@@ -694,26 +958,34 @@ export default function OrdersClient() {
         >
           {loading ? (
             <p style={{ color: COLORS.textSecondary }}>Loading orders...</p>
-          ) : orders.length === 0 ? (
-            <p style={{ color: COLORS.textSecondary }}>No orders.</p>
           ) : innerTab === "qr" ? (
-            orders.map((o) =>
-              renderOrderCard(o, {
-                isQr: true,
-                primaryActionLabel: "Accept",
-                onPrimary: () => handleAcceptQROrder(o),
-                showSecondary: true,
-                onSecondary: () => handleDeclineQROrder(o),
-                secondaryLabel: "Decline",
-              })
+            orders.length === 0 ? (
+              <p style={{ color: COLORS.textSecondary }}>No orders.</p>
+            ) : (
+              orders.map((o) =>
+                renderOrderCard(o, {
+                  isQr: true,
+                  primaryActionLabel: "Accept",
+                  onPrimary: () => handleAcceptQROrder(o),
+                  showSecondary: true,
+                  onSecondary: () => handleDeclineQROrder(o),
+                  secondaryLabel: "Decline",
+                })
+              )
             )
+          ) : pendingItems.length === 0 ? (
+            <p style={{ color: COLORS.textSecondary }}>No pending orders.</p>
           ) : (
-            orders.map((o) =>
-              renderOrderCard(o, {
-                isQr: false,
-                primaryActionLabel: "Done",
-                onPrimary: () => router.push(`/pos/register?qrOrderId=${o.id}`),
-              })
+            pendingItems.map((item) =>
+              item.kind === "order"
+                ? renderOrderCard(item.order, {
+                    isQr: false,
+                    primaryActionLabel: "Done",
+                    onPrimary: () => router.push(`/pos/register?qrOrderId=${item.order.id}`),
+                    expandedId: expandedPendingId,
+                    onExpand: setExpandedPendingId,
+                  })
+                : renderTransactionCard(item.transaction)
             )
           )}
         </div>

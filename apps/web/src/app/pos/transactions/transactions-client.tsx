@@ -74,10 +74,13 @@ export default function TransactionsClient() {
   
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nextCursor, setNextCursor] = useState<number | null>(null);
   const [hasMore, setHasMore] = useState(false);
+  /** Cursor stack for "Previous page": each entry is the cursor that would load that page. */
+  const [prevCursors, setPrevCursors] = useState<(number | null)[]>([]);
+  /** Cursor used to load the current page (null = first page). Used when going Next to push onto prevCursors. */
+  const [cursorUsedForCurrentPage, setCursorUsedForCurrentPage] = useState<number | null>(null);
 
   // Refund modal state
   const [refundingTransaction, setRefundingTransaction] = useState<Transaction | null>(null);
@@ -133,22 +136,18 @@ export default function TransactionsClient() {
     }
   }
 
-  async function loadTransactions(append = false) {
+  async function loadTransactions(cursor: number | null = null) {
     if (!activeStaff?.staffKey) {
       setError("No active staff session. Please login from the Register page first.");
       return;
     }
 
-    if (append) {
-      setLoadingMore(true);
-    } else {
-      setLoading(true);
-    }
+    setLoading(true);
     setError(null);
     
     try {
-      const cursor = append && nextCursor ? `&cursor=${nextCursor}` : "";
-      const res = await fetch(`/api/pos/transactions/list?limit=30${cursor}`, { 
+      const cursorParam = cursor != null ? `&cursor=${cursor}` : "";
+      const res = await fetch(`/api/pos/transactions/list?limit=30${cursorParam}`, { 
         cache: "no-store",
         headers: {
           "x-staff-key": activeStaff.staffKey,
@@ -157,13 +156,10 @@ export default function TransactionsClient() {
       const data = await res.json();
       
       if (res.ok) {
-        if (append) {
-          setTransactions(prev => [...prev, ...(data.items || [])]);
-        } else {
-          setTransactions(data.items || []);
-        }
-        setNextCursor(data.nextCursor);
+        setTransactions(data.items || []);
+        setNextCursor(data.nextCursor ?? null);
         setHasMore(data.hasMore ?? false);
+        setCursorUsedForCurrentPage(cursor);
       } else {
         setError(data.error || data.message || "Failed to load transactions");
       }
@@ -171,8 +167,20 @@ export default function TransactionsClient() {
       setError(e?.message ?? String(e));
     } finally {
       setLoading(false);
-      setLoadingMore(false);
     }
+  }
+
+  function goToNextPage() {
+    if (!hasMore || nextCursor == null) return;
+    setPrevCursors((prev) => [...prev, cursorUsedForCurrentPage]);
+    loadTransactions(nextCursor);
+  }
+
+  function goToPrevPage() {
+    if (prevCursors.length === 0) return;
+    const prevCursor = prevCursors[prevCursors.length - 1];
+    setPrevCursors((prev) => prev.slice(0, -1));
+    loadTransactions(prevCursor);
   }
 
   function getDateKey(dateStr: string): string {
@@ -995,6 +1003,59 @@ export default function TransactionsClient() {
               )}
             </tbody>
           </table>
+          {/* Pagination: 30 per page, Prev / Next */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "12px 16px",
+              borderTop: "1px solid #3a3a3a",
+              background: "#1a1a1a",
+              gap: 16,
+            }}
+          >
+            <span style={{ fontSize: 13, color: "#888" }}>
+              {transactions.length} transaction{transactions.length !== 1 ? "s" : ""} on this page
+              {prevCursors.length > 0 || hasMore ? " · 30 per page" : ""}
+            </span>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                type="button"
+                onClick={goToPrevPage}
+                disabled={prevCursors.length === 0}
+                style={{
+                  padding: "8px 16px",
+                  fontSize: 14,
+                  fontWeight: "600",
+                  background: prevCursors.length === 0 ? "#2a2a2a" : "#374151",
+                  color: prevCursors.length === 0 ? "#555" : "#e5e7eb",
+                  border: "1px solid #3a3a3a",
+                  borderRadius: 6,
+                  cursor: prevCursors.length === 0 ? "not-allowed" : "pointer",
+                }}
+              >
+                ← Prev
+              </button>
+              <button
+                type="button"
+                onClick={goToNextPage}
+                disabled={!hasMore}
+                style={{
+                  padding: "8px 16px",
+                  fontSize: 14,
+                  fontWeight: "600",
+                  background: !hasMore ? "#2a2a2a" : COLORS.primary,
+                  color: !hasMore ? "#555" : "#fff",
+                  border: "none",
+                  borderRadius: 6,
+                  cursor: !hasMore ? "not-allowed" : "pointer",
+                }}
+              >
+                Next →
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* Right-side reporting panel */}

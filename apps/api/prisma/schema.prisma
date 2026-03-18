@@ -45,6 +45,8 @@ model StoreConfig {
   splitPaymentEnabled     Boolean  @default(true)
   paymentMethodOrder      String?
   stickerPrintCategoryIds String?  // JSON array of category cloud ids; when set, only lines in these categories print stickers
+  businessName            String?  // Receipt header; shown at top of receipt
+  address                 String?  // Receipt header; each comma becomes a new line
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
   store                   Store    @relation(fields: [storeId], references: [id])
@@ -344,6 +346,7 @@ model Transaction {
   createdAt         DateTime              @default(now())
   createdBy         String?
   updatedAt         DateTime              @updatedAt
+  prepCompletedAt    DateTime?             // When kitchen/bar marked order done (prep time = prepCompletedAt - createdAt)
   voidedAt          DateTime?
   voidedBy          String?
   voidReason        String?

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { api, type DeviceInfo } from "@/lib/api";
 import { COLORS } from "@/lib/theme";
+import { getDevMode, canUseDangerousDevTools } from "@/lib/devMode";
 
 function formatLastSeen(iso: string | null): string {
   if (!iso) return "Never";
@@ -26,6 +27,14 @@ export default function DevicesPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [newDeviceKey, setNewDeviceKey] = useState<string | null>(null);
   const [commandLoading, setCommandLoading] = useState<string | null>(null);
+  const [devMode, setDevMode] = useState(false);
+  const [resetCacheModal, setResetCacheModal] = useState<{ deviceId: string; name: string } | null>(null);
+  const [resetConfirmPhrase, setResetConfirmPhrase] = useState("");
+  const [resetCacheLoading, setResetCacheLoading] = useState(false);
+
+  useEffect(() => {
+    setDevMode(getDevMode());
+  }, []);
 
   function load() {
     api
@@ -89,6 +98,38 @@ export default function DevicesPage() {
     }
   }
 
+  const RESET_CACHE_PHRASE = "CLEAR TEST DATA";
+  const canUseDangerous = canUseDangerousDevTools();
+
+  async function handleResetDeviceCache() {
+    if (!resetCacheModal) return;
+    if (resetConfirmPhrase.trim().toUpperCase() !== RESET_CACHE_PHRASE) {
+      setError(`Type exactly: ${RESET_CACHE_PHRASE}`);
+      return;
+    }
+    setError("");
+    setResetCacheLoading(true);
+    try {
+      await api.createDeviceCommand(resetCacheModal.deviceId, "FORCE_SYNC");
+      await api.logDevAction({
+        actionType: "RESET_DEVICE_CACHE",
+        scope: `device ${resetCacheModal.name}`,
+        deviceId: resetCacheModal.deviceId,
+        result: "SUCCESS",
+      }).catch(() => {});
+      setSuccess("Reset Device Cache command sent. Device will re-sync; no transactions are deleted.");
+      setResetCacheModal(null);
+      setResetConfirmPhrase("");
+      load();
+      setTimeout(() => setSuccess(""), 5000);
+    } catch (err: unknown) {
+      const b = (err as { body?: { message?: string } })?.body;
+      setError(b?.message ?? (err instanceof Error ? err.message : "Failed"));
+    } finally {
+      setResetCacheLoading(false);
+    }
+  }
+
   const panelStyle = { background: COLORS.bgPanel, borderColor: COLORS.borderLight };
 
   return (
@@ -100,6 +141,14 @@ export default function DevicesPage() {
         <code className="rounded bg-white/10 px-1">DEVICE_KEY=...</code>, and ensure <code className="rounded bg-white/10 px-1">CLOUD_URL</code> is set.
       </p>
 
+      {devMode && (
+        <div
+          className="mb-4 rounded border border-amber-500/50 bg-amber-500/10 p-3 text-sm text-amber-200"
+          role="alert"
+        >
+          Dev tools do not remove official live sales records.
+        </div>
+      )}
       {success && (
         <div className="mb-4 rounded border border-green-500/50 bg-green-500/10 p-3 text-sm text-green-400">
           {success}
@@ -211,6 +260,17 @@ export default function DevicesPage() {
                     {commandLoading === d.id ? "…" : cmd.replace(/_/g, " ")}
                   </button>
                 ))}
+                {devMode && (
+                  <button
+                    type="button"
+                    onClick={() => setResetCacheModal({ deviceId: d.id, name: d.name })}
+                    disabled={!canUseDangerous}
+                    className="rounded border border-amber-500/50 px-2 py-1 text-xs text-amber-400 hover:bg-amber-500/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                    title={!canUseDangerous ? "Dangerous dev tools are disabled in production." : "Force device to re-sync; does not delete any transactions."}
+                  >
+                    Reset Device Cache
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => handleDelete(d.id)}
@@ -236,6 +296,63 @@ export default function DevicesPage() {
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {resetCacheModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          onClick={() => !resetCacheLoading && setResetCacheModal(null)}
+        >
+          <div
+            className="max-w-md rounded-lg border p-6 shadow-xl"
+            style={{ background: COLORS.bgPanel, borderColor: COLORS.borderLight }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="mb-2 text-lg font-semibold text-white">Confirm: Reset Device Cache</h3>
+            <p className="mb-2 text-sm text-white/80">Device: {resetCacheModal.name}</p>
+            <p className="mb-2 text-sm text-white/80">This will:</p>
+            <ul className="mb-2 list-inside list-disc text-sm text-white/70">
+              <li>Send a command to the device to re-sync with the cloud</li>
+              <li>Clear local sync state / cache on the device so it refetches</li>
+            </ul>
+            <p className="mb-4 text-sm text-white/80">This will NOT:</p>
+            <ul className="mb-4 list-inside list-disc text-sm text-white/70">
+              <li>Delete any live production transactions</li>
+              <li>Remove fiscal/BIR-relevant sales history</li>
+            </ul>
+            <div className="mb-4">
+              <label className="mb-1 block text-sm text-white/80">Type to confirm: {RESET_CACHE_PHRASE}</label>
+              <input
+                type="text"
+                value={resetConfirmPhrase}
+                onChange={(e) => setResetConfirmPhrase(e.target.value)}
+                placeholder={RESET_CACHE_PHRASE}
+                className="w-full rounded border px-3 py-2 text-sm text-white placeholder:text-white/40"
+                style={{ background: COLORS.bgDark, borderColor: COLORS.borderLight }}
+                autoComplete="off"
+              />
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={handleResetDeviceCache}
+                disabled={resetCacheLoading || resetConfirmPhrase.trim().toUpperCase() !== RESET_CACHE_PHRASE}
+                className="rounded border border-amber-500/50 px-4 py-2 text-sm font-medium text-amber-400 hover:bg-amber-500/10 disabled:opacity-50"
+              >
+                {resetCacheLoading ? "…" : "Reset Device Cache"}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setResetCacheModal(null); setResetConfirmPhrase(""); setError(""); }}
+                disabled={resetCacheLoading}
+                className="rounded border px-4 py-2 text-sm text-white/70"
+                style={{ borderColor: COLORS.borderLight }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

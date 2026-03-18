@@ -1005,6 +1005,32 @@ export const api = {
     });
   },
 
+  /** Store config (receipt header: business name & address). Use same API as POS (store-config). */
+  getStoreConfig(): Promise<{
+    storeId: string;
+    businessName: string | null;
+    address: string | null;
+    enabledPaymentMethods?: string[];
+    splitPaymentEnabled?: boolean;
+    stickerPrintCategoryIds?: string[] | null;
+  }> {
+    return apiFetch("/store-config");
+  },
+  putStoreConfig(body: { businessName?: string | null; address?: string | null }): Promise<{
+    storeId: string;
+    businessName: string | null;
+    address: string | null;
+  }> {
+    const headers: Record<string, string> = {};
+    const adminKey = process.env.NEXT_PUBLIC_STORE_CONFIG_ADMIN_KEY;
+    if (adminKey) headers["x-store-config-admin-key"] = adminKey;
+    return apiFetch("/store-config", {
+      method: "PUT",
+      headers: Object.keys(headers).length ? headers : undefined,
+      body: JSON.stringify(body),
+    });
+  },
+
   // Staff (POS cashiers/managers) - source of truth for names and PINs; syncs to POS
   getStaff(): Promise<{ staff: CloudStaffRow[] }> {
     return apiFetch("/admin/staff");
@@ -1104,6 +1130,23 @@ export const api = {
   },
   deleteDevice(id: string): Promise<{ ok: boolean }> {
     return apiFetch(`/admin/devices/${id}`, { method: "DELETE" });
+  },
+
+  // Dev mode: verify password and clear admin cache (no transaction deletion)
+  verifyPassword(password: string): Promise<{ ok: boolean }> {
+    return apiFetch("/admin/dev/verify-password", { method: "POST", body: JSON.stringify({ password }) });
+  },
+  logDevAction(body: {
+    actionType: string;
+    scope?: string;
+    deviceId?: string;
+    affectedCount?: number;
+    result: "SUCCESS" | "FAILURE";
+  }): Promise<{ ok: boolean }> {
+    return apiFetch("/admin/dev/log-action", { method: "POST", body: JSON.stringify(body) });
+  },
+  clearAdminCache(password: string): Promise<{ ok: boolean; message?: string }> {
+    return apiFetch("/admin/dev/clear-admin-cache", { method: "POST", body: JSON.stringify({ password }) });
   },
 
   async uploadIngredientImage(id: string, file: File): Promise<{ imageUrl: string }> {

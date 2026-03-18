@@ -29,6 +29,10 @@ const SECTIONS = [
       { href: "/settings/devices", label: "Devices Used" },
     ],
   },
+  {
+    group: "Dev",
+    items: [{ href: "/settings/dev", label: "Dev" }],
+  },
 ];
 
 export function SettingsNav() {

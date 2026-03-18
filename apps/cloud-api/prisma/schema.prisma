@@ -620,6 +620,23 @@ model DeviceCommand {
   @@index([deviceId, status])
 }
 
+// Audit log for dev-mode actions (no production transaction deletion)
+model DevActionLog {
+  id            String   @id @default(cuid())
+  adminId       String
+  adminEmail    String
+  deviceId      String?
+  actionType    String   // e.g. CLEAR_ADMIN_CACHE, RESET_DEVICE_CACHE
+  scope         String?  // e.g. "local cache", "device abc"
+  affectedCount Int?
+  result        String   // SUCCESS | FAILURE
+  isProduction   Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  @@index([adminId, createdAt])
+  @@index([createdAt])
+}
+
 model IngredientCategory {
   id        String   @id @default(cuid())
   name      String   @unique

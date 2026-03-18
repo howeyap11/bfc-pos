@@ -1,9 +1,18 @@
 // apps/api/src/routes/storeConfig.ts
 import fp from "fastify-plugin";
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
 import { requireStaffHook } from "../plugins/staffGuard.js";
 
 const STORE_ID = "store_1";
+
+/** Allow PUT if either staff auth or cloud admin key (for Settings > Business Details). */
+async function allowStaffOrStoreConfigAdmin(req: FastifyRequest, reply: FastifyReply) {
+  const adminKey = process.env.STORE_CONFIG_ADMIN_KEY;
+  const incoming = (req.headers["x-store-config-admin-key"] as string) ?? "";
+  const keyMatch = typeof adminKey === "string" && adminKey.length > 0 && incoming.trim() === adminKey.trim();
+  if (keyMatch) return;
+  await requireStaffHook(req, reply);
+}
 
 const storeConfigRoutesImpl: FastifyPluginAsync = async (app) => {
   // GET /store-config - Get store configuration (public, no auth required)
@@ -20,6 +29,8 @@ const storeConfigRoutesImpl: FastifyPluginAsync = async (app) => {
           splitPaymentEnabled: true,
           paymentMethodOrder: null,
           stickerPrintCategoryIds: [] as string[],
+          businessName: null as string | null,
+          address: null as string | null,
         };
       }
 
@@ -35,6 +46,8 @@ const storeConfigRoutesImpl: FastifyPluginAsync = async (app) => {
         splitPaymentEnabled: config.splitPaymentEnabled ?? true,
         paymentMethodOrder,
         stickerPrintCategoryIds,
+        businessName: config.businessName ?? null,
+        address: config.address ?? null,
       };
     } catch (err) {
       app.log.error({ err }, "[StoreConfig] Error loading config");
@@ -42,11 +55,11 @@ const storeConfigRoutesImpl: FastifyPluginAsync = async (app) => {
     }
   });
 
-  // PUT /store-config - Update store configuration (protected by staff auth)
+  // PUT /store-config - Update store configuration (staff auth or cloud admin key)
   app.put(
     "/store-config",
     {
-      preHandler: requireStaffHook,
+      preHandler: allowStaffOrStoreConfigAdmin,
     },
     async (req, reply) => {
       const body = req.body as {
@@ -54,9 +67,11 @@ const storeConfigRoutesImpl: FastifyPluginAsync = async (app) => {
         splitPaymentEnabled?: boolean;
         paymentMethodOrder?: string[] | null;
         stickerPrintCategoryIds?: string[] | null;
+        businessName?: string | null;
+        address?: string | null;
       };
 
-      const updateData: any = {};
+      const updateData: Record<string, unknown> = {};
 
       if (body.enabledPaymentMethods !== undefined) {
         updateData.enabledPaymentMethods = JSON.stringify(body.enabledPaymentMethods);
@@ -76,6 +91,14 @@ const storeConfigRoutesImpl: FastifyPluginAsync = async (app) => {
           : null;
       }
 
+      if (body.businessName !== undefined) {
+        updateData.businessName = body.businessName?.trim() || null;
+      }
+
+      if (body.address !== undefined) {
+        updateData.address = body.address?.trim() || null;
+      }
+
       const config = await app.prisma.storeConfig.upsert({
         where: { storeId: STORE_ID },
         update: updateData,
@@ -87,6 +110,8 @@ const storeConfigRoutesImpl: FastifyPluginAsync = async (app) => {
           stickerPrintCategoryIds: Array.isArray(body.stickerPrintCategoryIds)
             ? JSON.stringify(body.stickerPrintCategoryIds)
             : null,
+          businessName: body.businessName?.trim() || null,
+          address: body.address?.trim() || null,
         },
       });
 
@@ -100,6 +125,8 @@ const storeConfigRoutesImpl: FastifyPluginAsync = async (app) => {
         splitPaymentEnabled: config.splitPaymentEnabled,
         paymentMethodOrder: config.paymentMethodOrder ? JSON.parse(config.paymentMethodOrder) : null,
         stickerPrintCategoryIds,
+        businessName: config.businessName ?? null,
+        address: config.address ?? null,
       };
     }
   );

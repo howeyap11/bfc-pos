@@ -1,4 +1,1 @@
--- Add-on group metadata (from cloud AddOnGroup) for POS grouping
-ALTER TABLE "CloudAddOn" ADD COLUMN "addOnGroupCloudId" TEXT;
-ALTER TABLE "CloudAddOn" ADD COLUMN "addOnGroupName" TEXT;
-ALTER TABLE "CloudAddOn" ADD COLUMN "addOnGroupSortOrder" INTEGER NOT NULL DEFAULT 0;
+-- No-op: content merged into 20260327000000_add_cloud_addons_substitutes (CloudAddOn must be created before altering it).

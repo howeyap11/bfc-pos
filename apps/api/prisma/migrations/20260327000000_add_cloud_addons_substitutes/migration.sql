@@ -56,3 +56,8 @@ CREATE UNIQUE INDEX "CloudMenuItemSubstitute_storeId_menuItemCloudId_substituteC
 CREATE INDEX "CloudMenuItemSubstitute_storeId_idx" ON "CloudMenuItemSubstitute"("storeId");
 CREATE INDEX "CloudMenuItemSubstitute_menuItemCloudId_idx" ON "CloudMenuItemSubstitute"("menuItemCloudId");
 CREATE INDEX "CloudMenuItemSubstitute_substituteCloudId_idx" ON "CloudMenuItemSubstitute"("substituteCloudId");
+
+-- Add-on group metadata (from cloud AddOnGroup) for POS grouping (merged from 20260319120000_cloud_addon_group_meta)
+ALTER TABLE "CloudAddOn" ADD COLUMN "addOnGroupCloudId" TEXT;
+ALTER TABLE "CloudAddOn" ADD COLUMN "addOnGroupName" TEXT;
+ALTER TABLE "CloudAddOn" ADD COLUMN "addOnGroupSortOrder" INTEGER NOT NULL DEFAULT 0;
