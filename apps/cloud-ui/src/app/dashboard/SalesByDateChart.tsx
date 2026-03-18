@@ -24,6 +24,19 @@ function formatPesos(cents: number): string {
   return `₱${(cents / 100).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+/** Format bucket date (ISO UTC) once in local time for display. */
+function formatBucketLabelLocal(isoUtc: string, granularity: "hourly" | "daily" | "monthly"): string {
+  const d = new Date(isoUtc);
+  if (Number.isNaN(d.getTime())) return isoUtc;
+  if (granularity === "hourly") {
+    return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+  }
+  if (granularity === "daily") {
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  }
+  return d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+}
+
 export function SalesByDateChart({
   buckets,
   startDate,
@@ -32,7 +45,11 @@ export function SalesByDateChart({
   onGranularityChange,
   loading,
 }: SalesByDateChartProps) {
-  const data = buckets.map((b) => ({ ...b, amount: b.amountCents / 100 }));
+  const data = buckets.map((b) => ({
+    ...b,
+    amount: b.amountCents / 100,
+    displayLabel: formatBucketLabelLocal(b.date, granularity),
+  }));
   const rangeLabel = formatDateRangeLabel(startDate, endDate);
 
   if (loading) {
@@ -86,7 +103,7 @@ export function SalesByDateChart({
               </linearGradient>
             </defs>
             <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-            <XAxis dataKey="label" tick={{ fontSize: 12 }} stroke="#6b7280" />
+            <XAxis dataKey="displayLabel" tick={{ fontSize: 12 }} stroke="#6b7280" />
             <YAxis
               tick={{ fontSize: 12 }}
               stroke="#6b7280"
@@ -94,7 +111,7 @@ export function SalesByDateChart({
             />
             <Tooltip
               formatter={(value: unknown) => [formatPesos(Math.round(Number(value ?? 0) * 100)), "Sales"]}
-              labelFormatter={(label) => `Bucket: ${label}`}
+              labelFormatter={(label) => (label != null ? String(label) : "")}
               contentStyle={{ borderRadius: 8, border: "1px solid #e5e7eb" }}
             />
             <Area

@@ -140,9 +140,12 @@ function lineItemDisplayParts(optionsJson: string | null | undefined): { primary
         const temp = (o.baseType ?? "").charAt(0) + (o.baseType ?? "").slice(1).toLowerCase();
         primary.push(`${temp} ${o.sizeLabel}`);
       } else if (o.type === "milk" && o.choice) {
-        const label =
-          o.choice === "OAT" ? "Oat milk" : o.choice === "SOY" ? "Soy milk" : o.choice === "ALMOND" ? "Almond milk" : "Full cream";
-        secondary.push(label);
+        const c = (o.choice ?? "").toUpperCase().replace(/\s+/g, "_");
+        if (c !== "FULL_CREAM") {
+          const label =
+            o.choice === "OAT" ? "Oat milk" : o.choice === "SOY" ? "Soy milk" : o.choice === "ALMOND" ? "Almond milk" : "Full cream";
+          secondary.push(label);
+        }
       } else if (o.type === "shots" && o.qty != null) {
         secondary.push(`${o.qty} shot${o.qty !== 1 ? "s" : ""}`);
       } else if (!o.type && o.name) {
@@ -157,6 +160,54 @@ function lineItemDisplayParts(optionsJson: string | null | undefined): { primary
 
 function formatPesos(cents: number): string {
   return `Php ${(cents / 100).toFixed(2)}`;
+}
+
+/** Receipt line layout for 80mm paper: fixed width and price column so prices stay aligned. */
+const RECEIPT_LINE_WIDTH = 48;
+const RECEIPT_PRICE_COLUMN_WIDTH = 12;
+const RECEIPT_TEXT_WIDTH = RECEIPT_LINE_WIDTH - RECEIPT_PRICE_COLUMN_WIDTH;
+
+/** Wrap text to maxCharsPerLine for receipt; no truncation. Breaks at space when possible. */
+function wrapReceiptText(text: string, maxCharsPerLine: number, maxLines = 15): string[] {
+  const t = text.trim();
+  if (!t) return [];
+  const out: string[] = [];
+  let rest = t;
+  while (out.length < maxLines && rest.length > 0) {
+    if (rest.length <= maxCharsPerLine) {
+      out.push(rest);
+      break;
+    }
+    let breakAt = rest.lastIndexOf(" ", maxCharsPerLine);
+    if (breakAt <= 0) breakAt = maxCharsPerLine;
+    out.push(rest.slice(0, breakAt).trim());
+    rest = rest.slice(breakAt).trim();
+  }
+  if (rest.length > 0 && out.length < maxLines) out.push(rest);
+  return out;
+}
+
+/** Wrap add-ons in a single parenthesis: one "(" on first line, one ")" on last line; break at comma boundaries. */
+function wrapReceiptAddons(addonsStr: string, maxCharsPerLine: number): string[] {
+  const t = addonsStr.trim();
+  if (!t) return [];
+  const inner = t.startsWith("(") && t.endsWith(")") ? t.slice(1, -1).trim() : t;
+  if (!inner) return [];
+  const parts = inner.split(", ").filter(Boolean);
+  if (parts.length === 0) return [];
+  const out: string[] = [];
+  let line = "(" + parts[0];
+  for (let i = 1; i < parts.length; i++) {
+    const segment = ", " + parts[i];
+    if (line.length + segment.length <= maxCharsPerLine) {
+      line += segment;
+    } else {
+      out.push(line);
+      line = "  " + parts[i];
+    }
+  }
+  out.push(line + ")");
+  return out;
 }
 
 /** Category-based: when stickerPrintCategoryIds is set, print if line has size/temp or line's category is in the list. When unset or empty, print no stickers. */
@@ -192,7 +243,7 @@ function parseOptionsJson(optionsJson: string | null | undefined): ParsedOpt[] {
   }
 }
 
-/** Soft-wrap text into up to maxLines lines of ~maxCharsPerLine; truncate last line with "..." if over. */
+/** Soft-wrap text into up to maxLines lines of ~maxCharsPerLine. Breaks at space when possible; else breaks mid-word so the word continues on the next line. Truncates with "..." only if still over after maxLines. */
 function wrapStickerText(text: string, maxLines: number, maxCharsPerLine: number): string[] {
   const t = text.trim();
   if (!t) return [];
@@ -351,7 +402,7 @@ function getStickerLineLabel(line: { name: string; optionsJson?: string | null; 
   }
   if (addOnNames.length > 0) {
     const addOnsLabel = "Add-ons: " + addOnNames.join(", ");
-    const addOnLines = wrapStickerText(addOnsLabel, 3, 24);
+    const addOnLines = wrapStickerText(addOnsLabel, 10, 35);
     for (const ln of addOnLines) lines.push(ln);
   }
 
@@ -410,16 +461,29 @@ export function buildReceiptEscPos(tx: TransactionForPrint): Buffer {
   lines.push("RECEIPT #" + tx.transactionNo);
   lines.push(new Date(tx.createdAt).toLocaleString());
   if (tx.createdBy) lines.push("Cashier: " + tx.createdBy);
-  lines.push("--------------------------------");
+  const sep = "-".repeat(RECEIPT_LINE_WIDTH);
+  lines.push(sep);
   for (const item of tx.lineItems) {
     const { primary, secondary } = lineItemDisplayParts(item.optionsJson);
-    const mods = [primary, ...secondary].filter(Boolean).join(" ");
-    const left = `${item.qty} x ${item.name}${mods ? " (" + mods + ")" : ""}`;
-    const right = formatPesos(item.lineTotal);
-    const pad = 32 - left.length - right.length;
-    lines.push(left + (pad > 0 ? " ".repeat(pad) : " ") + right);
+    const secondaryDedup = secondary.filter(
+      (s) => s !== primary && !primary.endsWith(" " + s)
+    );
+    const mods = [primary, ...secondaryDedup].filter(Boolean);
+    const mainText = `${item.qty} x ${item.name}`.trim();
+    const addonsStr = mods.length > 0 ? "(" + mods.join(", ") + ")" : "";
+    const priceStr = formatPesos(item.lineTotal);
+    const firstLineText = addonsStr && mainText.length + 1 + addonsStr.length <= RECEIPT_TEXT_WIDTH
+      ? mainText + " " + addonsStr
+      : mainText;
+    const paddedFirst = firstLineText.padEnd(RECEIPT_TEXT_WIDTH);
+    lines.push(paddedFirst + priceStr.padStart(RECEIPT_PRICE_COLUMN_WIDTH));
+    if (addonsStr && firstLineText === mainText) {
+      for (const line of wrapReceiptAddons(addonsStr, RECEIPT_TEXT_WIDTH)) {
+        lines.push(line);
+      }
+    }
   }
-  lines.push("--------------------------------");
+  lines.push(sep);
   lines.push("TOTAL: " + formatPesos(tx.totalCents));
   lines.push("Payment: " + paymentMethod);
   lines.push("");
@@ -452,6 +516,8 @@ const TSPL_GAP_AFTER_TEMP = -10;
 const TSPL_MODIFIER_STEP = 38;
 /** Transaction type: bottom-right, inside printable area with margin (dots from edges). */
 const TSPL_TRANSACTION_TYPE_MARGIN_DOTS = 120;
+/** Item title longer than this uses smaller font (1,2) so it fits on the sticker; else (2,2). */
+const TSPL_ITEM_TITLE_LONG_CHARS = 14;
 
 function tsplHeader(widthMm: number, heightMm: number): string {
   const w = Math.max(1, Math.round(widthMm));
@@ -501,8 +567,9 @@ function buildOneLabelTspl(
     if (i < top) {
       x = TSPL_BLOCK_BASE_X - topRowCumulativeOffset(i, roles);
       const role = roles[i];
-      const fontX = role === "item" ? 2 : 1;
-      const fontY = role === "item" ? 2 : role === "temp" ? 2 : 1;
+      const isLongItem = role === "item" && content.length > TSPL_ITEM_TITLE_LONG_CHARS;
+      const fontX = role === "item" ? (isLongItem ? 1 : 2) : 1;
+      const fontY = role === "item" ? (isLongItem ? 2 : 2) : role === "temp" ? 2 : 1;
       out.push(`TEXT ${x},${mainY},"3",${TSPL_ROTATION_90},${fontX},${fontY},"${escaped}"`);
     } else {
       const modifierIndex = i - top;

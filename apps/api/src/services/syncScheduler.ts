@@ -69,9 +69,9 @@ export async function runTransactionSyncFlush(app: FastifyInstance): Promise<voi
 }
 
 export function startSyncScheduler(app: FastifyInstance): void {
-  // Catalog sync every 5 min
-  setInterval(() => runCatalogSync(app), 5 * 60 * 1000);
+  // Catalog sync every 1 min (emergency menu changes)
+  setInterval(() => runCatalogSync(app), 1 * 60 * 1000);
   // Transaction flush every 30 s
   setInterval(() => runTransactionSyncFlush(app), 30 * 1000);
-  app.log.info("Sync scheduler started: catalog every 5min, transaction every 30s");
+  app.log.info("Sync scheduler started: catalog every 1min, transaction every 30s");
 }

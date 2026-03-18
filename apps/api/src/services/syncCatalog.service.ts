@@ -449,6 +449,35 @@ export async function syncCatalogFromCloud(
         }
       }
 
+      if (itemIdsInBatch.length > 0) {
+        await tx.cloudMenuItemDrinkModeDefault.deleteMany({
+          where: { storeId, menuItemCloudId: { in: itemIdsInBatch } },
+        });
+      }
+      for (const i of data.items) {
+        const dmds = i.drinkModeDefaults ?? [];
+        for (const d of dmds) {
+          const mode = (d.mode || "").toUpperCase();
+          if (!mode || !d.defaultOptionId) continue;
+          await tx.cloudMenuItemDrinkModeDefault.upsert({
+            where: {
+              storeId_menuItemCloudId_mode: {
+                storeId,
+                menuItemCloudId: i.id,
+                mode,
+              },
+            },
+            create: {
+              storeId,
+              menuItemCloudId: i.id,
+              mode,
+              defaultOptionCloudId: d.defaultOptionId,
+            },
+            update: { defaultOptionCloudId: d.defaultOptionId },
+          });
+        }
+      }
+
       const validCategories = (data.categories ?? []).filter((c) => !c.deletedAt);
       const validCategoryIds = validCategories.map((c) => c.id);
       await tx.cloudCategory.deleteMany({
@@ -644,6 +673,8 @@ export async function syncCatalogFromCloud(
       // Sync add-ons from groups (flatten options to CloudAddOn for POS consumption)
       const addOnGroups = data.addOnGroups ?? [];
       for (const g of addOnGroups) {
+        const gSort = g.sortOrder ?? 0;
+        const gName = (g.name ?? "").trim() || "Add-ons";
         for (const o of g.options ?? []) {
           await tx.cloudAddOn.upsert({
             where: { cloudId: o.id },
@@ -653,11 +684,17 @@ export async function syncCatalogFromCloud(
               name: o.name,
               priceCents: o.priceCents ?? 0,
               sortOrder: o.sortOrder ?? 0,
+              addOnGroupCloudId: g.id,
+              addOnGroupName: gName,
+              addOnGroupSortOrder: gSort,
             },
             update: {
               name: o.name,
               priceCents: o.priceCents ?? 0,
               sortOrder: o.sortOrder ?? 0,
+              addOnGroupCloudId: g.id,
+              addOnGroupName: gName,
+              addOnGroupSortOrder: gSort,
             },
           });
         }
@@ -728,6 +765,21 @@ export async function syncCatalogFromCloud(
               priceCents: p.priceCents,
             })),
           });
+          // Set CloudSubstitute.priceCents from synced prices so POS and transaction pricing get a single upcharge value (cloud does not send priceCents on substitute object)
+          const minPriceBySub = new Map<string, number>();
+          for (const p of validRows) {
+            const cur = minPriceBySub.get(p.substituteId);
+            minPriceBySub.set(p.substituteId, cur === undefined ? p.priceCents : Math.min(cur, p.priceCents));
+          }
+          for (const subId of validSubstituteCloudIds) {
+            const priceCents = minPriceBySub.get(subId);
+            if (priceCents !== undefined) {
+              await tx.cloudSubstitute.updateMany({
+                where: { cloudId: subId, storeId },
+                data: { priceCents },
+              });
+            }
+          }
         }
         await tx.cloudSubstituteRecipeConsumption.deleteMany({ where: { storeId } });
         const recipeConsumptions = data.substituteRecipeConsumptions ?? [];

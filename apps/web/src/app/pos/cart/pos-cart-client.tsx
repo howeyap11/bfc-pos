@@ -133,6 +133,25 @@ export default function PosCartClient() {
     }
   }
 
+  // Silent catalog refresh every 30s: only updates menu state; does not touch loading, cart, or transaction
+  function refreshMenuSilent() {
+    fetch("/api/menu", { cache: "no-store" })
+      .then((res) => res.json())
+      .then((data) => {
+        if (!Array.isArray(data)) return;
+        setMenu(data);
+        setSelectedCategory((prev) =>
+          data.some((c: { id: string }) => c.id === prev) ? prev : (data[0]?.id ?? null)
+        );
+      })
+      .catch(() => {});
+  }
+
+  useEffect(() => {
+    const interval = setInterval(refreshMenuSilent, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
   async function openItemSelector(itemId: string) {
     try {
       const res = await fetch(`/api/items/${itemId}`, { cache: "no-store" });

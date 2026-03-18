@@ -114,10 +114,10 @@ export function DashboardContent() {
   const kpis = summary?.kpis;
 
   return (
-    <div className="min-h-screen bg-teal-50/60">
-      <div className="mx-auto max-w-7xl p-6">
+    <div className="flex min-h-0 flex-1 flex-col bg-teal-50/60">
+      <div className="mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col p-6">
         {/* 1. Top summary cards */}
-        <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <div className="mb-6 grid shrink-0 grid-cols-2 gap-4 sm:grid-cols-4">
           <SummaryCard
             title="Total Net Sales"
             value={kpis ? formatPesos(kpis.totalNetSalesCents) : "—"}
@@ -169,7 +169,7 @@ export function DashboardContent() {
         </div>
 
         {/* 2. Greeting + date filter + last synced */}
-        <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="mb-6 flex shrink-0 flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <h2 className="text-lg font-semibold text-teal-900">
             {getGreeting()}, {storeName}!
           </h2>
@@ -186,7 +186,7 @@ export function DashboardContent() {
         </div>
 
         {error && (
-          <div className="mb-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+          <div className="mb-6 shrink-0 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
             {error}
             <button
               type="button"
@@ -199,7 +199,7 @@ export function DashboardContent() {
         )}
 
         {/* 3. Sales by Date chart + 4. Payment Types card */}
-        <div className="mb-8 grid gap-6 lg:grid-cols-3">
+        <div className="mb-8 grid min-h-0 shrink-0 gap-6 lg:grid-cols-3">
           <div className="lg:col-span-2">
             <SalesByDateChart
               buckets={buckets}
@@ -220,8 +220,8 @@ export function DashboardContent() {
           </div>
         </div>
 
-        {/* 5. Four donut charts */}
-        <div className="mb-8 grid gap-6 sm:grid-cols-2 xl:grid-cols-4">
+        {/* 5. Four donut charts - fixed min height so they don't get cramped */}
+        <div className="mb-8 grid min-h-[320px] shrink-0 gap-6 sm:grid-cols-2 xl:grid-cols-4">
           <DonutChartCard
             title="Sales by Category"
             data={salesByCategory.map((r) => ({ name: r.category, value: r.amountCents }))}
@@ -253,17 +253,19 @@ export function DashboardContent() {
           />
         </div>
 
-        {/* 6. List of Items Sold table */}
-        <ItemsSoldTable
-          startDate={startDate}
-          endDate={endDate}
-          initialRows={itemsSold}
-          initialTotal={itemsSoldTotal}
-          initialPage={1}
-          initialPageSize={10}
-          initialSortBy="amount"
-          initialOrder="desc"
-        />
+        {/* 6. List of Items Sold table - scrolls independently below charts */}
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <ItemsSoldTable
+            startDate={startDate}
+            endDate={endDate}
+            initialRows={itemsSold}
+            initialTotal={itemsSoldTotal}
+            initialPage={1}
+            initialPageSize={10}
+            initialSortBy="amount"
+            initialOrder="desc"
+          />
+        </div>
       </div>
     </div>
   );

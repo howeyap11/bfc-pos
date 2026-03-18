@@ -29,8 +29,15 @@ export async function deviceCommandsRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
-  /** Force sync catalog + transactions */
+  /** Force sync catalog + transactions (admin-only, used inside PIN-gated UI) */
   app.post("/device/commands/sync", { preHandler: [requireStaffHook, adminGuard] }, async (req, reply) => {
+    const result = await executeLocalCommand(app, "FORCE_SYNC");
+    if (!result.ok) reply.code(500);
+    return result;
+  });
+
+  /** Force catalog sync only – staff session required, no admin PIN. For emergency menu updates without unlocking admin. */
+  app.post("/device/commands/sync-catalog", { preHandler: [requireStaffHook] }, async (req, reply) => {
     const result = await executeLocalCommand(app, "FORCE_SYNC");
     if (!result.ok) reply.code(500);
     return result;

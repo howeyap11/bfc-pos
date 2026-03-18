@@ -830,14 +830,17 @@ model CloudMenuSizeAvailability {
 }
 
 model CloudAddOn {
-  id         String   @id @default(cuid())
-  cloudId    String   @unique
-  storeId    String   @default("store_1")
-  name       String
-  priceCents Int      @default(0)
-  sortOrder  Int      @default(0)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id                  String   @id @default(cuid())
+  cloudId             String   @unique
+  storeId             String   @default("store_1")
+  name                String
+  priceCents          Int      @default(0)
+  sortOrder           Int      @default(0)
+  addOnGroupCloudId   String?
+  addOnGroupName      String?
+  addOnGroupSortOrder Int      @default(0)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   @@index([storeId])
 }
@@ -979,6 +982,20 @@ model CloudMenuItemDrinkSizeConfig {
   @@unique([storeId, menuItemCloudId, mode, optionCloudId])
   @@index([storeId])
   @@index([menuItemCloudId])
+}
+
+/// Synced from cloud MenuItemDrinkModeDefault — disambiguates mode when defaultSizeOptionId matches multiple modes
+model CloudMenuItemDrinkModeDefault {
+  id                    String   @id @default(cuid())
+  storeId               String   @default("store_1")
+  menuItemCloudId       String
+  mode                  String
+  defaultOptionCloudId  String
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@unique([storeId, menuItemCloudId, mode])
+  @@index([storeId, menuItemCloudId])
 }
 
 model CloudIngredient {

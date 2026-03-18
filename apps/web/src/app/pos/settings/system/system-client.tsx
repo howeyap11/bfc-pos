@@ -134,6 +134,26 @@ export default function SystemClient() {
 
   const busy = status?.commandState === "updating" || status?.commandState === "restarting" || status?.commandState === "syncing";
 
+  /** Force catalog sync – no admin PIN required (staff session only). Used above PIN gate for emergency menu updates. */
+  async function handleForceCatalogSync() {
+    setError(null);
+    setActionLoading("sync");
+    try {
+      const staff = typeof window !== "undefined" ? localStorage.getItem("bfc_active_staff") : null;
+      const staffKey = staff ? (JSON.parse(staff) as { staffKey?: string }).staffKey : null;
+      const headers: Record<string, string> = { "content-type": "application/json" };
+      if (staffKey) headers["x-staff-key"] = staffKey;
+      const res = await fetch("/api/device/commands/sync-catalog", { method: "POST", headers });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || data.error || "Failed");
+      if (isAuthenticated) await loadStatus();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
   async function getStaffHeaders(): Promise<Record<string, string>> {
     const staff = typeof window !== "undefined" ? localStorage.getItem("bfc_active_staff") : null;
     const staffKey = staff ? (JSON.parse(staff) as { staffKey?: string }).staffKey : null;
@@ -181,13 +201,54 @@ export default function SystemClient() {
       <div
         style={{
           display: "flex",
+          flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
           minHeight: "60vh",
           padding: 24,
           background: COLORS.bgDarkest,
+          gap: 24,
         }}
       >
+        {/* Force catalog sync – outside PIN gate for emergency menu updates */}
+        <div
+          style={{
+            background: COLORS.bgDark,
+            padding: 24,
+            borderRadius: 12,
+            border: `1px solid ${COLORS.borderLight}`,
+            minWidth: 350,
+          }}
+        >
+          <h2 style={{ marginTop: 0, marginBottom: 8, fontSize: 16, fontWeight: 600, color: COLORS.textPrimary }}>
+            Catalog sync
+          </h2>
+          <p style={{ margin: "0 0 16px 0", color: COLORS.textSecondary, fontSize: 14 }}>
+            Pull latest menu from cloud without entering admin PIN.
+          </p>
+          {error && (
+            <div style={{ marginBottom: 12, fontSize: 14, color: COLORS.error }}>{error}</div>
+          )}
+          <button
+            type="button"
+            onClick={handleForceCatalogSync}
+            disabled={!!actionLoading}
+            style={{
+              width: "100%",
+              padding: 12,
+              fontSize: 15,
+              fontWeight: "600",
+              background: actionLoading ? COLORS.bgDark : COLORS.primary,
+              color: "#fff",
+              border: "none",
+              borderRadius: 6,
+              cursor: actionLoading ? "not-allowed" : "pointer",
+            }}
+          >
+            {actionLoading === "sync" ? "Syncing…" : "Force catalog sync"}
+          </button>
+        </div>
+
         <div
           style={{
             background: COLORS.bgDark,
@@ -198,7 +259,7 @@ export default function SystemClient() {
           }}
         >
           <h2 style={{ marginTop: 0, marginBottom: 20, textAlign: "center", color: COLORS.textPrimary }}>
-            System Access
+            Admin PIN
           </h2>
           <p style={{ margin: "0 0 20px 0", color: COLORS.textSecondary, fontSize: 14 }}>
             Enter Admin PIN to access system controls.
@@ -263,6 +324,7 @@ export default function SystemClient() {
             </Link>
           </div>
         </div>
+
         {keyboard.isOpen && (
           <OnScreenKeyboard
             isOpen={keyboard.isOpen}
@@ -485,13 +547,6 @@ export default function SystemClient() {
               style={btnStyle(!!actionLoading && actionLoading !== "poll")}
             >
               {actionLoading === "poll" ? "Checking…" : "Check for updates"}
-            </button>
-            <button
-              onClick={() => handleAction("sync", "/api/device/commands/sync")}
-              disabled={busy || !!actionLoading}
-              style={btnStyle(!!actionLoading && actionLoading !== "sync")}
-            >
-              {actionLoading === "sync" ? "Syncing…" : "Force sync catalog"}
             </button>
             <button
               onClick={() => handleAction("update", "/api/device/commands/update")}

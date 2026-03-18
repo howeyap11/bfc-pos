@@ -266,9 +266,14 @@ app.get("/items/:id", async (req) => {
     }
 
     // Per-item drink sizes by mode (only show sizes enabled for this item)
-    const drinkConfigs = await app.prisma.cloudMenuItemDrinkSizeConfig.findMany({
-      where: { menuItemCloudId: cloud.cloudId, storeId },
-    });
+    const [drinkConfigs, drinkModeDefaultRows] = await Promise.all([
+      app.prisma.cloudMenuItemDrinkSizeConfig.findMany({
+        where: { menuItemCloudId: cloud.cloudId, storeId },
+      }),
+      app.prisma.cloudMenuItemDrinkModeDefault.findMany({
+        where: { menuItemCloudId: cloud.cloudId, storeId },
+      }),
+    ]);
     const optionIdsFromConfigs = [...new Set(drinkConfigs.map((c) => c.optionCloudId))];
     const [sizeOptions, sizePrices] = await Promise.all([
       app.prisma.cloudMenuOption.findMany({
@@ -299,16 +304,13 @@ app.get("/items/:id", async (req) => {
     }
     const hasSizes = drinkConfigs.length > 0 || cloud.hasSizes;
 
-    // [DEBUG] Temporary - remove after verifying size UI
-    if (process.env.NODE_ENV !== "production" && drinkConfigs.length > 0) {
-      const hot = sizesByMode.HOT?.length ?? 0;
-      const iced = sizesByMode.ICED?.length ?? 0;
-      const conc = sizesByMode.CONCENTRATED?.length ?? 0;
-      app.log.info(
-        { itemId: cloud.cloudId, drinkConfigs: drinkConfigs.length, hasSizes, hot, iced, conc },
-        "[items/:id] sizesByMode counts"
-      );
-    }
+    const drinkModeDefaultsPayload =
+      drinkModeDefaultRows.length > 0
+        ? drinkModeDefaultRows.map((r) => ({
+            mode: r.mode,
+            defaultOptionId: r.defaultOptionCloudId,
+          }))
+        : undefined;
 
     const itemOptionGroups = links.map((link) => {
       const g = groupMap.get(link.groupCloudId);
@@ -377,23 +379,68 @@ app.get("/items/:id", async (req) => {
         where: { menuItemCloudId: cloud.cloudId, storeId },
       }),
       app.prisma.cloudAddOn.findMany({ where: { storeId }, orderBy: { sortOrder: "asc" } }),
-      app.prisma.cloudSubstitute.findMany({ where: { storeId }, include: { prices: true }, orderBy: { sortOrder: "asc" } }),
+      app.prisma.cloudSubstitute.findMany({
+        where: { storeId },
+        include: { prices: { include: { size: true } } },
+        orderBy: { sortOrder: "asc" },
+      }),
     ]);
     const addOnIds = new Set(addOnLinks.map((l) => l.addOnCloudId));
     const substituteIds = new Set(substituteLinks.map((l) => l.substituteCloudId));
-    const itemAddOns = addOns.filter((a) => addOnIds.has(a.cloudId)).map((a) => ({ id: a.cloudId, name: a.name, priceCents: a.priceCents }));
+    const linkedAddOns = addOns.filter((a) => addOnIds.has(a.cloudId));
+    const itemAddOns = linkedAddOns.map((a) => ({ id: a.cloudId, name: a.name, priceCents: a.priceCents }));
+    type ARow = (typeof linkedAddOns)[number];
+    const byGroupKey = new Map<
+      string,
+      { groupSort: number; groupName: string; rows: ARow[] }
+    >();
+    for (const a of linkedAddOns) {
+      const gkey = a.addOnGroupCloudId?.trim() || "_ungrouped";
+      const gname = (a.addOnGroupName?.trim() || "Add-ons") || "Add-ons";
+      const gsort = a.addOnGroupSortOrder ?? 9999;
+      let slot = byGroupKey.get(gkey);
+      if (!slot) {
+        slot = { groupSort: gsort, groupName: gname, rows: [] };
+        byGroupKey.set(gkey, slot);
+      }
+      slot.rows.push(a);
+    }
+    const addOnGroupsSorted = [...byGroupKey.entries()].sort(([, A], [, B]) => {
+      if (A.groupSort !== B.groupSort) return A.groupSort - B.groupSort;
+      return A.groupName.localeCompare(B.groupName);
+    });
+    const addOnGroupsPayload =
+      addOnGroupsSorted.length > 0
+        ? addOnGroupsSorted.map(([gkey, v]) => ({
+            id: gkey === "_ungrouped" ? "ungrouped" : gkey,
+            name: v.groupName,
+            addOns: [...v.rows]
+              .sort((x, y) => (x.sortOrder ?? 0) - (y.sortOrder ?? 0) || x.name.localeCompare(y.name))
+              .map((a) => ({ id: a.cloudId, name: a.name, priceCents: a.priceCents })),
+          }))
+        : undefined;
     const itemSubstitutes = substitutes.filter((s) => substituteIds.has(s.cloudId)).map((s) => {
       const sub = s as {
         cloudId: string;
         name: string;
         priceCents: number;
-        prices?: Array<{ sizeCloudId: string; mode: string; priceCents: number }>;
+        prices?: Array<{
+          sizeCloudId: string;
+          mode: string;
+          priceCents: number;
+          size?: { label: string } | null;
+        }>;
       };
       return {
         id: sub.cloudId,
         name: sub.name,
         priceCents: sub.priceCents,
-        prices: (sub.prices ?? []).map((p) => ({ sizeCloudId: p.sizeCloudId, mode: p.mode, priceCents: p.priceCents })),
+        prices: (sub.prices ?? []).map((p) => ({
+          sizeCloudId: p.sizeCloudId,
+          sizeLabel: p.size?.label ?? null,
+          mode: p.mode,
+          priceCents: p.priceCents,
+        })),
       };
     });
     const defaultSubId = (cloud as { defaultSubstituteCloudId?: string | null }).defaultSubstituteCloudId ?? null;
@@ -421,6 +468,7 @@ app.get("/items/:id", async (req) => {
       defaultSubstituteCloudId: defaultSubId,
       substitutes: itemSubstitutes.length > 0 ? itemSubstitutes : undefined,
       addOns: itemAddOns.length > 0 ? itemAddOns : undefined,
+      addOnGroups: addOnGroupsPayload && addOnGroupsPayload.length > 0 ? addOnGroupsPayload : undefined,
       supportsShots,
       defaultShots,
       defaultShots12oz: defaultShots,
@@ -430,6 +478,7 @@ app.get("/items/:id", async (req) => {
       itemOptionGroups,
       hasSizes: hasSizes || undefined,
       sizesByMode: hasSizes ? sizesByMode : undefined,
+      drinkModeDefaults: drinkModeDefaultsPayload,
       recipeLines: recipeLines.length > 0 || recipeLineSizes.length > 0
         ? { base: recipeLines.map((r) => ({ ingredientCloudId: r.ingredientCloudId, qtyPerItem: r.qtyPerItem.toString(), unitCode: r.unitCode })), bySize: recipeLineSizes.map((r) => ({ ingredientCloudId: r.ingredientCloudId, baseType: r.baseType, sizeCode: r.sizeCode, qtyPerItem: r.qtyPerItem.toString(), unitCode: r.unitCode })) }
         : undefined,

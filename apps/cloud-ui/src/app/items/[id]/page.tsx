@@ -8,12 +8,25 @@ import ItemForm from "@/components/ItemForm";
 
 const TOAST_KEY = "items_toast";
 
+function buildMenuReturnUrl(categoryId: string, subCategoryId: string, includeDeleted?: boolean): string {
+  const params = new URLSearchParams();
+  if (categoryId) params.set("categoryId", categoryId);
+  if (subCategoryId) params.set("subCategoryId", subCategoryId);
+  if (includeDeleted) params.set("includeDeleted", "1");
+  const q = params.toString();
+  return q ? `/menu?${q}` : "/menu";
+}
+
 function EditItemContent() {
   const params = useParams();
   const router = useRouter();
   const searchParams = useSearchParams();
   const id = params.id as string;
   const includeDeleted = searchParams.get("includeDeleted") === "1";
+  const categoryId = searchParams.get("categoryId") ?? "";
+  const subCategoryId = searchParams.get("subCategoryId") ?? "";
+  const returnUrl = buildMenuReturnUrl(categoryId, subCategoryId, false);
+  const returnUrlWithDeleted = buildMenuReturnUrl(categoryId, subCategoryId, true);
   const [item, setItem] = useState<MenuItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -31,7 +44,7 @@ function EditItemContent() {
     try {
       await api.deleteItem(id);
       if (typeof sessionStorage !== "undefined") sessionStorage.setItem(TOAST_KEY, "Item deleted");
-      router.replace("/menu");
+      router.replace(returnUrlWithDeleted);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete");
     }
@@ -42,7 +55,7 @@ function EditItemContent() {
     try {
       await api.restoreItem(id);
       if (typeof sessionStorage !== "undefined") sessionStorage.setItem(TOAST_KEY, "Item restored");
-      router.replace("/menu");
+      router.replace(returnUrl);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to restore");
     }
@@ -60,7 +73,7 @@ function EditItemContent() {
     return (
       <div className="mx-auto max-w-6xl px-4 py-6">
         <div className="mb-4">
-          <Link href="/menu?includeDeleted=1" className="text-gray-500 hover:text-gray-700">
+          <Link href={returnUrlWithDeleted} className="text-gray-500 hover:text-gray-700">
             ← Menu
           </Link>
         </div>
@@ -79,7 +92,7 @@ function EditItemContent() {
               Restore item
             </button>
             <Link
-              href="/menu?includeDeleted=1"
+              href={returnUrlWithDeleted}
               className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
             >
               Back to Menu
@@ -93,7 +106,7 @@ function EditItemContent() {
   return (
     <div className="mx-auto max-w-6xl px-4 py-6">
       <div className="mb-4 flex items-center justify-between">
-        <Link href="/menu" className="text-gray-500 hover:text-gray-700">
+        <Link href={returnUrl} className="text-gray-500 hover:text-gray-700">
           ← Menu
         </Link>
       </div>
@@ -103,6 +116,7 @@ function EditItemContent() {
         itemId={id}
         existingItem={item}
         onSuccess={handleSuccess}
+        onCancel={() => router.replace(returnUrl)}
         showDelete
         onDelete={handleDelete}
       />

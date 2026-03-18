@@ -230,14 +230,41 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     cloudItems.forEach((c) => {
       if (c.defaultSubstituteCloudId) substituteIds.add(c.defaultSubstituteCloudId);
     });
-    const substitutePrices =
+    const substituteRows =
       substituteIds.size > 0
         ? await app.prisma.cloudSubstitute.findMany({
             where: { cloudId: { in: [...substituteIds] }, storeId: STORE_ID },
             select: { cloudId: true, priceCents: true },
           })
         : [];
-    const substitutePriceMap = new Map(substitutePrices.map((s) => [s.cloudId, s.priceCents]));
+    const substitutePriceMap = new Map(substituteRows.map((s) => [s.cloudId, s.priceCents]));
+
+    // Per-size/mode milk prices (e.g. 70 regular, 180 1-liter) for correct upcharge
+    const substitutePriceRows =
+      substituteIds.size > 0
+        ? await app.prisma.cloudSubstitutePrice.findMany({
+            where: { substituteCloudId: { in: [...substituteIds] }, storeId: STORE_ID },
+            select: { substituteCloudId: true, sizeCloudId: true, mode: true, priceCents: true },
+          })
+        : [];
+    const substitutePriceBySizeMap = new Map<string, number>();
+    for (const p of substitutePriceRows) {
+      const modeNorm = (p.mode ?? "").toUpperCase();
+      substitutePriceBySizeMap.set(`${p.substituteCloudId}|${p.sizeCloudId}|${modeNorm}`, p.priceCents);
+    }
+    const sizeCloudIdsSet = new Set(substitutePriceRows.map((p) => p.sizeCloudId));
+    // Map size label -> sizeCloudId so we can resolve price when line sends sizeLabel (e.g. "1-Liter") but option ids don't match
+    const sizeLabelToCloudId = new Map<string, string>();
+    if (sizeCloudIdsSet.size > 0) {
+      const menuSizes = await app.prisma.cloudMenuSize.findMany({
+        where: { cloudId: { in: [...sizeCloudIdsSet] }, storeId: STORE_ID },
+        select: { cloudId: true, label: true },
+      });
+      for (const s of menuSizes) {
+        const labelNorm = (s.label ?? "").trim().toLowerCase();
+        if (labelNorm) sizeLabelToCloudId.set(labelNorm, s.cloudId);
+      }
+    }
 
     const dbOptions = await app.prisma.option.findMany({
       where: { id: { in: optionIds } },
@@ -340,12 +367,36 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
 
       const qty = Math.max(1, Math.trunc(it.qty || 1));
       const optIds = it.optionIds ?? [];
-      const deltas = optIds.map((oid) => optionMap.get(oid)?.priceDelta ?? cloudOptionMap.get(oid)?.priceDelta ?? 0);
+      const shotsQty = it.shotsQty ?? 0;
+      const hasSizeSelection = !!(it.baseType && it.sizeLabel);
+      const deltas = optIds.map((oid) => {
+        const o = optionMap.get(oid);
+        const co = cloudOptionMap.get(oid);
+        const addOn = addOnMap.get(oid);
+        if (o) {
+          if (hasSizeSelection && (o.group?.name ?? "").toLowerCase().includes("size")) return 0;
+          const name = (o.name ?? "").toLowerCase();
+          if (name.includes("shot") || name.includes("espresso shot")) return 0;
+          return o.priceDelta ?? 0;
+        }
+        if (co) {
+          if (hasSizeSelection && co.groupName.toLowerCase().includes("size")) return 0;
+          if (co.groupName.toLowerCase().includes("shot")) return 0;
+          const name = (co.name ?? "").toLowerCase();
+          if (name.includes("shot") || name.includes("espresso shot")) return 0;
+          return co.priceDelta ?? 0;
+        }
+        if (addOn) {
+          const name = (addOn.name ?? "").toLowerCase();
+          if (name.includes("shot") || name.includes("espresso shot")) return 0;
+          return addOn.priceDelta ?? 0;
+        }
+        return 0;
+      });
       let modifiersCents = sum(deltas);
 
       // Add espresso shots upcharge (server-side recalculation for money safety)
       // Resolve included shots: per size+temp from CloudMenuItemSizePrice, else item defaultShots
-      const shotsQty = it.shotsQty ?? 0;
       const cloudItem = cloudItemMap.get(it.itemId);
       let includedShots: number | null = cloudItem?.defaultShots ?? null;
       if (it.baseType && it.sizeLabel) {
@@ -363,15 +414,29 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       );
       modifiersCents += shotsUpchargeCents;
 
-      // Milk upcharge: from cloud substitute prices when selectedSubstituteCloudId present, else legacy MilkType
+      // Milk upcharge: per-size/mode when available (e.g. 70 regular, 180 1-liter), else flat substitute price
       const effectiveDefaultMilk = it.defaultMilk ?? dbItem.defaultMilk;
       let milkUpchargeCents = 0;
       if (it.selectedSubstituteCloudId) {
         const cloudItem = cloudItemMap.get(it.itemId);
         const defaultSubId = cloudItem?.defaultSubstituteCloudId ?? null;
-        const selectedPrice = substitutePriceMap.get(it.selectedSubstituteCloudId) ?? 0;
-        const defaultPrice = defaultSubId ? substitutePriceMap.get(defaultSubId) ?? 0 : 0;
-        milkUpchargeCents = Math.max(0, selectedPrice - defaultPrice);
+        let selectedPrice = substitutePriceMap.get(it.selectedSubstituteCloudId) ?? 0;
+        let defaultPrice = defaultSubId != null ? substitutePriceMap.get(defaultSubId) ?? 0 : 0;
+        let sizeCloudId = optIds.find((id) => sizeCloudIdsSet.has(id)) ?? null;
+        const mode = (it.baseType ?? "").toUpperCase();
+        if (!sizeCloudId && it.sizeLabel && mode) {
+          const fromLabel = sizeLabelToCloudId.get(it.sizeLabel.trim().toLowerCase());
+          if (fromLabel) sizeCloudId = fromLabel;
+        }
+        if (sizeCloudId && mode) {
+          const keySelected = `${it.selectedSubstituteCloudId}|${sizeCloudId}|${mode}`;
+          const keyDefault = defaultSubId != null ? `${defaultSubId}|${sizeCloudId}|${mode}` : null;
+          if (substitutePriceBySizeMap.has(keySelected)) selectedPrice = substitutePriceBySizeMap.get(keySelected)!;
+          if (keyDefault != null && substitutePriceBySizeMap.has(keyDefault)) defaultPrice = substitutePriceBySizeMap.get(keyDefault)!;
+        }
+        // Default milk is included in base price; only charge the increment for a non-default milk
+        const defaultPriceForDelta = it.selectedSubstituteCloudId === defaultSubId ? selectedPrice : 0;
+        milkUpchargeCents = Math.max(0, selectedPrice - defaultPriceForDelta);
       } else {
         milkUpchargeCents = calculateMilkUpcharge(it.milkChoice as MilkType | undefined, effectiveDefaultMilk);
       }
@@ -386,8 +451,11 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       // Base unit price: if line has size selection and per-size price exists, use it; otherwise fall back to item basePrice.
       let unitPrice = dbItem.basePrice;
       if (it.baseType && it.sizeLabel) {
+        const sizeLabelNorm = it.sizeLabel.trim().toLowerCase();
+        const sizeCodeResolved = sizeLabelToCloudId.get(sizeLabelNorm) ?? it.sizeLabel;
         const key = `${it.itemId}|${it.baseType}|${it.sizeLabel}`;
-        const sizedPrice = sizePriceMap.get(key);
+        const keyByCode = `${it.itemId}|${it.baseType}|${sizeCodeResolved}`;
+        const sizedPrice = sizePriceMap.get(key) ?? sizePriceMap.get(keyByCode);
         if (typeof sizedPrice === "number" && sizedPrice >= 0) {
           unitPrice = sizedPrice;
         }

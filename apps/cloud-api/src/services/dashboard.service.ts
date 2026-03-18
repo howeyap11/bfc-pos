@@ -123,37 +123,50 @@ export async function getSalesByDate(
     const d = new Date(t.createdAt);
     let key: string;
     if (granularity === "hourly") {
-      key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}T${String(d.getHours()).padStart(2, "0")}:00`;
+      key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}T${String(d.getUTCHours()).padStart(2, "0")}:00`;
     } else if (granularity === "daily") {
-      key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
     } else {
-      key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
     }
     buckets.set(key, (buckets.get(key) ?? 0) + t.totalCents);
   }
 
   const sorted = Array.from(buckets.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  return sorted.map(([label, amountCents]) => ({
-    label: formatBucketLabel(label, granularity),
-    date: label,
+  return sorted.map(([key, amountCents]) => ({
+    label: formatBucketLabel(key, granularity),
+    date: toIsoUtc(key, granularity),
     amountCents,
   }));
 }
 
+/** Return an ISO UTC string for the bucket so the frontend can parse and format in local time. */
+function toIsoUtc(key: string, granularity: string): string {
+  if (granularity === "hourly") {
+    return `${key}:00.000Z`;
+  }
+  if (granularity === "daily") {
+    return `${key}T12:00:00.000Z`;
+  }
+  const [y, m] = key.split("-").map(Number);
+  return `${y}-${String(m).padStart(2, "0")}-01T12:00:00.000Z`;
+}
+
+/** Format bucket key (UTC) for server-side fallback; frontend should prefer formatting from date (ISO UTC). */
 function formatBucketLabel(key: string, granularity: string): string {
   if (granularity === "hourly") {
     const [datePart, timePart] = key.split("T");
     const [y, m, d] = datePart.split("-").map(Number);
     const hour = timePart ? parseInt(timePart.slice(0, 2), 10) : 0;
-    const d2 = new Date(y, m - 1, d, hour);
-    return d2.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+    const d2 = new Date(Date.UTC(y, m - 1, d, hour));
+    return d2.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "UTC" });
   }
   if (granularity === "daily") {
     const [y, m, d] = key.split("-").map(Number);
-    return new Date(y, m - 1, d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
   }
   const [y, m] = key.split("-").map(Number);
-  return new Date(y, m - 1).toLocaleDateString("en-US", { month: "short", year: "numeric" });
+  return new Date(Date.UTC(y, m - 1)).toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
 }
 
 export async function getPaymentTypeTotals(

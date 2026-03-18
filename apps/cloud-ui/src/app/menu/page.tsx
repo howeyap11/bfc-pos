@@ -112,10 +112,19 @@ function MenuPageContent() {
   }, [includeDeleted]);
 
   useEffect(() => {
-    if (safeCategories.length > 0 && !selectedCategoryId) {
-      setSelectedCategoryId(safeCategories[0]!.id);
+    const urlCategoryId = searchParams.get("categoryId");
+    const urlSubCategoryId = searchParams.get("subCategoryId");
+    if (safeCategories.length > 0) {
+      if (urlCategoryId && safeCategories.some((c) => c.id === urlCategoryId)) {
+        setSelectedCategoryId(urlCategoryId);
+      } else if (!urlCategoryId && !selectedCategoryId) {
+        setSelectedCategoryId(safeCategories[0]!.id);
+      }
+      if (urlSubCategoryId) {
+        setSelectedSubCategoryId(urlSubCategoryId);
+      }
     }
-  }, [safeCategories.length, selectedCategoryId]);
+  }, [searchParams, safeCategories]);
 
   function selectCategory(id: string) {
     setSelectedCategoryId(id);
@@ -319,6 +328,10 @@ function MenuPageContent() {
                 url.pathname = "/menu";
                 if (v) url.searchParams.set("includeDeleted", "1");
                 else url.searchParams.delete("includeDeleted");
+                const cat = searchParams.get("categoryId");
+                const sub = searchParams.get("subCategoryId");
+                if (cat) url.searchParams.set("categoryId", cat);
+                if (sub) url.searchParams.set("subCategoryId", sub);
                 router.replace(url.pathname + url.search, { scroll: false });
               }}
               className="rounded"
@@ -567,8 +580,8 @@ function MenuPageContent() {
                           <Link
                             href={
                               item.deletedAt
-                                ? `/items/${item.id}?includeDeleted=1`
-                                : `/items/${item.id}`
+                                ? `/items/${item.id}?includeDeleted=1&categoryId=${currentCategory?.id ?? ""}&subCategoryId=${selectedSubCategoryId ?? ""}`
+                                : `/items/${item.id}?categoryId=${currentCategory?.id ?? ""}&subCategoryId=${selectedSubCategoryId ?? ""}`
                             }
                             className="text-xs text-amber-400 hover:underline"
                           >

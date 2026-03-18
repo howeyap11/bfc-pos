@@ -19,6 +19,7 @@ import {
   resolveIncludedShotsBySizeName,
   resolveChargeableExtraShots,
 } from "@/lib/shotHelpers";
+import { resolveInitialHasSizesModeAndSize } from "@/lib/posItemInitialSize";
 
 /**
  * POS Register Client Component
@@ -68,8 +69,21 @@ type Item = {
   defaultEspressoShots?: number;
 };
 
-type SubstituteOption = { id: string; name: string; priceCents: number };
+type SubstitutePriceBySize = {
+  sizeCloudId: string;
+  sizeLabel?: string | null;
+  mode: string;
+  priceCents: number;
+};
+type SubstituteOption = {
+  id: string;
+  name: string;
+  priceCents: number;
+  /** Per-size/mode prices from cloud (70 regular, 180 1-liter, etc.). Used when size is known. */
+  prices?: SubstitutePriceBySize[];
+};
 type AddOnOption = { id: string; name: string; priceCents: number };
+type AddOnGroupSection = { id: string; name: string; addOns: AddOnOption[] };
 
 type ItemDetail = {
   id: string;
@@ -81,6 +95,8 @@ type ItemDetail = {
   defaultSubstituteCloudId?: string | null;
   substitutes?: SubstituteOption[];
   addOns?: AddOnOption[];
+  /** Cloud add-on groups (named sections); when absent, UI chunks flat addOns */
+  addOnGroups?: AddOnGroupSection[];
   supportsShots?: boolean;
   isEspressoDrink?: boolean;
   shotsPricingMode?: ShotsPricingMode | null;
@@ -1542,7 +1558,7 @@ function CartLineItem({
           {/* Customer name (sticker) */}
           {item.customerName && (
             <div style={{ fontSize: 11, color: "#a5b4fc", marginLeft: 26, marginTop: 4 }}>
-              Cup: {item.customerName}
+              Name: {item.customerName}
             </div>
           )}
 
@@ -1633,6 +1649,8 @@ export default function PosRegisterClient() {
   const [configCustomerName, setConfigCustomerName] = useState<string>("");
   const [configBaseType, setConfigBaseType] = useState<"HOT" | "ICED" | "CONCENTRATED" | null>(null);
   const [configSizeOption, setConfigSizeOption] = useState<{ id: string; name: string } | null>(null);
+  /** Collapsible add-on groups: group id -> expanded. First group expanded by default. */
+  const [expandedAddOnGroups, setExpandedAddOnGroups] = useState<Record<string, boolean>>({});
 
   // Cart item editing
   const [editingCartItem, setEditingCartItem] = useState<CartItem | null>(null);
@@ -2025,6 +2043,24 @@ export default function PosRegisterClient() {
     }
   }
 
+  // Silent catalog refresh every 30s: only updates menu state; does not touch loading, cart, or transaction
+  function refreshMenuSilent() {
+    fetchJson("/api/menu", { cache: "no-store" })
+      .then((data: unknown) => {
+        if (!Array.isArray(data)) return;
+        setMenu(data);
+        setSelectedCategory((prev) =>
+          data.some((c: { id: string }) => c.id === prev) ? prev : (data[0]?.id ?? null)
+        );
+      })
+      .catch(() => {});
+  }
+
+  useEffect(() => {
+    const interval = setInterval(refreshMenuSilent, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
   // Safe JSON fetch helper
   async function fetchJson(url: string, init?: RequestInit) {
     const staffKeyHeader = init?.headers ? (init.headers as any)["x-staff-key"] : undefined;
@@ -2088,9 +2124,6 @@ export default function PosRegisterClient() {
   }
 
   async function openItemConfig(itemId: string) {
-    // #region agent log
-    fetch('http://127.0.0.1:7330/ingest/e360f4f2-ab8d-4cc6-b94b-f45235f7b95a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f13644'},body:JSON.stringify({sessionId:'f13644',location:'pos-register-client.tsx:openItemConfig:entry',message:'openItemConfig called',data:{itemId,prevConfiguringId:configuringItem?.id},hypothesisId:'H5',timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     // Defensive guard
     if (!itemId) {
       console.warn("[openItemConfig] No itemId provided");
@@ -2112,9 +2145,6 @@ export default function PosRegisterClient() {
       const hotLen = sm?.HOT?.length ?? 0;
       const icedLen = sm?.ICED?.length ?? 0;
       const concLen = sm?.CONCENTRATED?.length ?? 0;
-      // #region agent log
-      fetch('http://127.0.0.1:7330/ingest/e360f4f2-ab8d-4cc6-b94b-f45235f7b95a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f13644'},body:JSON.stringify({sessionId:'f13644',location:'pos-register-client.tsx:openItemConfig:afterFetch',message:'item fetched',data:{itemId:item.id,hasSizes,hasSizesByMode:!!sm,HOT:hotLen,ICED:icedLen,CONCENTRATED:concLen},hypothesisId:'H1',timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
 
       setConfiguringItem(item);
 
@@ -2123,22 +2153,39 @@ export default function PosRegisterClient() {
         console.log("[openItemConfig] itemId:", item.id, "hasSizes:", true, "HOT:", hotLen, "ICED:", icedLen, "CONCENTRATED:", concLen);
       }
 
-      // For hasSizes + sizesByMode: init mode and size
+      // For hasSizes + sizesByMode: init mode/size from backend default when valid, else first available
       let firstMode: "HOT" | "ICED" | "CONCENTRATED" | null = null;
       let firstSize: { id: string; name: string } | null = null;
       if (hasSizes && sm) {
-        firstMode = (["HOT", "ICED", "CONCENTRATED"] as const).find((m) => sm[m]?.length) ?? null;
-        firstSize = firstMode && sm[firstMode]?.[0] ? { id: sm[firstMode]![0].id, name: sm[firstMode]![0].name } : null;
+        const defaultOptionName = (() => {
+          if (!item.itemOptionGroups) return null;
+          for (const { group } of item.itemOptionGroups) {
+            const byItemDefault =
+              item.defaultSizeOptionId &&
+              group.options.find((o) => o.id === item.defaultSizeOptionId);
+            const byGroupDefault =
+              group.defaultOptionId &&
+              group.options.find((o) => o.id === group.defaultOptionId);
+            const opt = byItemDefault ?? byGroupDefault;
+            if (opt?.name) return opt.name;
+          }
+          return null;
+        })();
+        const init = resolveInitialHasSizesModeAndSize({
+          defaultSizeOptionId: item.defaultSizeOptionId ?? null,
+          defaultSizeOptionName: defaultOptionName ?? undefined,
+          sizesByMode: sm,
+          drinkModeDefaults: (item as { drinkModeDefaults?: Array<{ mode: string; defaultOptionId: string }> })
+            .drinkModeDefaults,
+        });
+        firstMode = init.mode;
+        firstSize = init.size;
         setConfigBaseType(firstMode);
         setConfigSizeOption(firstSize);
       } else {
         setConfigBaseType(null);
         setConfigSizeOption(null);
       }
-      // #region agent log
-      fetch('http://127.0.0.1:7330/ingest/e360f4f2-ab8d-4cc6-b94b-f45235f7b95a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f13644'},body:JSON.stringify({sessionId:'f13644',location:'pos-register-client.tsx:openItemConfig:initMode',message:'init mode and size',data:{firstMode,firstSizeId:firstSize?.id},hypothesisId:'H3',timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
-
       // Pre-select defaults
       const defaults: Record<string, string[]> = {};
       item.itemOptionGroups?.forEach(({ group }) => {
@@ -2146,24 +2193,40 @@ export default function PosRegisterClient() {
         
         // Override defaults for Temperature and Size
         if (groupNameLower.includes("temperature")) {
-          // Default to ICED
-          const icedOption = group.options.find((o) => o.name.toLowerCase().includes("iced"));
-          if (icedOption) {
-            defaults[group.id] = [icedOption.id];
+          if (hasSizes && firstMode) {
+            const needle =
+              firstMode === "CONCENTRATED"
+                ? "concentrated"
+                : firstMode === "ICED"
+                  ? "iced"
+                  : "hot";
+            const modeOpt =
+              group.options.find((o) => o.name.toLowerCase().includes(needle)) ??
+              group.options.find((o) => o.isDefault) ??
+              group.options[0];
+            if (modeOpt) defaults[group.id] = [modeOpt.id];
           } else {
-            // Fallback to first option if ICED not found
-            const defaultOpts = group.options.filter((o) => o.isDefault).map((o) => o.id);
-            if (defaultOpts.length > 0) defaults[group.id] = defaultOpts;
+            const icedOption = group.options.find((o) => o.name.toLowerCase().includes("iced"));
+            if (icedOption) {
+              defaults[group.id] = [icedOption.id];
+            } else {
+              const defaultOpts = group.options.filter((o) => o.isDefault).map((o) => o.id);
+              if (defaultOpts.length > 0) defaults[group.id] = defaultOpts;
+            }
           }
         } else if (groupNameLower.includes("size")) {
-          // Default to 16oz
-          const size16oz = group.options.find((o) => o.name.toLowerCase().includes("16") || o.name.toLowerCase().includes("16oz"));
-          if (size16oz) {
-            defaults[group.id] = [size16oz.id];
+          const defId = item.defaultSizeOptionId;
+          const byBackend = defId ? group.options.find((o) => o.id === defId) : null;
+          if (byBackend) {
+            defaults[group.id] = [byBackend.id];
           } else {
-            // Fallback to first option if 16oz not found
-            const defaultOpts = group.options.filter((o) => o.isDefault).map((o) => o.id);
-            if (defaultOpts.length > 0) defaults[group.id] = defaultOpts;
+            const size16oz = group.options.find((o) => o.name.toLowerCase().includes("16") || o.name.toLowerCase().includes("16oz"));
+            if (size16oz) {
+              defaults[group.id] = [size16oz.id];
+            } else {
+              const defaultOpts = group.options.filter((o) => o.isDefault).map((o) => o.id);
+              if (defaultOpts.length > 0) defaults[group.id] = defaultOpts;
+            }
           }
         } else {
           // For other groups, use database defaults
@@ -2183,25 +2246,76 @@ export default function PosRegisterClient() {
         setSelectedSubstituteId(null);
       }
       
-      // Initial shots from backend: included shots for selected size (and temp when available)
-      const sizeGroupId = Object.keys(defaults).find((gid) => {
-        const group = item.itemOptionGroups?.find((ig) => ig.group.id === gid);
-        return group?.group.name.toLowerCase().includes("size");
-      });
-      const selectedSizeId = sizeGroupId ? defaults[sizeGroupId]?.[0] : undefined;
-      const sizeGroup = sizeGroupId ? item.itemOptionGroups?.find((ig) => ig.group.id === sizeGroupId) : undefined;
-      const sizeOption = selectedSizeId ? sizeGroup?.group.options.find((o) => o.id === selectedSizeId) : undefined;
-      const initialShots = resolveIncludedShotsBySizeName({
-        item,
-        selectedSizeId,
-        sizeName: sizeOption?.name,
-      });
+      // Initial shots: align with resolved size (hasSizes: mode + size; else option-group size)
+      let initialShots: number;
+      if (hasSizes && sm && firstMode && firstSize) {
+        initialShots = resolveIncludedShots({
+          item,
+          selectedSizeId: firstSize.id,
+          selectedTemp: firstMode,
+        });
+      } else {
+        const sizeGroupId = Object.keys(defaults).find((gid) => {
+          const group = item.itemOptionGroups?.find((ig) => ig.group.id === gid);
+          return group?.group.name.toLowerCase().includes("size");
+        });
+        const selectedSizeId = sizeGroupId ? defaults[sizeGroupId]?.[0] : undefined;
+        const sizeGroup = sizeGroupId ? item.itemOptionGroups?.find((ig) => ig.group.id === sizeGroupId) : undefined;
+        const sizeOption = selectedSizeId ? sizeGroup?.group.options.find((o) => o.id === selectedSizeId) : undefined;
+        let tempFromDefaults: "HOT" | "ICED" | "CONCENTRATED" | null = null;
+        for (const [gid, ids] of Object.entries(defaults)) {
+          const g = item.itemOptionGroups?.find((ig) => ig.group.id === gid);
+          const gn = (g?.group.name ?? "").toLowerCase();
+          if (!gn.includes("temperature") && gn !== "hot" && gn !== "iced" && gn !== "concentrated") continue;
+          const opt = g?.group.options.find((o) => o.id === ids[0]);
+          const name = (opt?.name ?? "").toUpperCase();
+          if (name.includes("ICED")) {
+            tempFromDefaults = "ICED";
+            break;
+          }
+          if (name.includes("HOT")) {
+            tempFromDefaults = "HOT";
+            break;
+          }
+          if (name.includes("CONCENTRATED")) {
+            tempFromDefaults = "CONCENTRATED";
+            break;
+          }
+        }
+        initialShots =
+          tempFromDefaults && selectedSizeId
+            ? resolveIncludedShots({ item, selectedSizeId, selectedTemp: tempFromDefaults })
+            : resolveIncludedShotsBySizeName({
+                item,
+                selectedSizeId,
+                sizeName: sizeOption?.name,
+              });
+      }
       setConfigShotsQty(initialShots);
       setShotsTouchedByUser(false); // Reset touch tracking
       const txTypes = transactionTypes.length > 0 ? transactionTypes : DEFAULT_TRANSACTION_TYPES;
       setConfigTransactionType(txTypes[0] ?? null);
       setConfigNote("");
       setConfigCustomerName("");
+      
+      // Collapsible add-on groups: first expanded, rest collapsed
+      if (item.addOnGroups && item.addOnGroups.length > 0) {
+        const initial: Record<string, boolean> = {};
+        item.addOnGroups.forEach((g, i) => {
+          initial[g.id] = i === 0;
+        });
+        setExpandedAddOnGroups(initial);
+      } else if (item.addOns && item.addOns.length > 0) {
+        const ADDON_GROUP_SIZE = 6;
+        const numChunks = Math.ceil(item.addOns.length / ADDON_GROUP_SIZE);
+        const initial: Record<string, boolean> = {};
+        for (let i = 0; i < numChunks; i++) {
+          initial[`addons-${i}`] = i === 0;
+        }
+        setExpandedAddOnGroups(initial);
+      } else {
+        setExpandedAddOnGroups({});
+      }
       
       // Switch to CUSTOMIZE view
       setRegisterView("CUSTOMIZE");
@@ -2212,9 +2326,6 @@ export default function PosRegisterClient() {
   }
   
   function closeItemConfig() {
-    // #region agent log
-    fetch('http://127.0.0.1:7330/ingest/e360f4f2-ab8d-4cc6-b94b-f45235f7b95a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f13644'},body:JSON.stringify({sessionId:'f13644',location:'pos-register-client.tsx:closeItemConfig',message:'closeItemConfig called',data:{wasItemId:configuringItem?.id},hypothesisId:'H5',timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     setConfiguringItem(null);
     setSelectedOptions({});
     setConfigBaseType(null);
@@ -2227,6 +2338,7 @@ export default function PosRegisterClient() {
     setConfigTransactionType(txTypes[0] ?? null);
     setConfigNote("");
     setConfigCustomerName("");
+    setExpandedAddOnGroups({});
     
     // Switch back to BROWSE view
     setRegisterView("BROWSE");
@@ -2252,8 +2364,8 @@ export default function PosRegisterClient() {
         }
       }
       
-      // Auto-update shots if size changed and user hasn't manually touched shots
-      if (!shotsTouchedByUser && configuringItem) {
+      // On size change: always sync selected shots to the new size's default (when item supports shots)
+      if (configuringItem?.supportsShots) {
         const group = configuringItem.itemOptionGroups?.find((ig) => ig.group.id === groupId);
         if (group && group.group.name.toLowerCase().includes("size")) {
           const sizeOption = group.group.options.find((o) => o.id === optionId);
@@ -2327,6 +2439,40 @@ export default function PosRegisterClient() {
     return 0;
   }
 
+  /** Resolve substitute price for a size/mode when available (e.g. 70 regular, 180 1-liter). Matches by sizeCloudId first, then by sizeLabel so 1-liter/concentrated get correct price. */
+  function getSubstitutePriceCents(
+    sub: SubstituteOption | undefined | null,
+    sizeCloudId: string | undefined,
+    mode: "HOT" | "ICED" | "CONCENTRATED" | undefined,
+    sizeLabel?: string | null
+  ): number {
+    if (!sub) return 0;
+    let result: number;
+    if (mode && sub.prices && sub.prices.length > 0) {
+      const modeNorm = mode.toUpperCase();
+      const matchMode = (p: SubstitutePriceBySize) =>
+        p.mode === modeNorm || p.mode === modeNorm.toLowerCase();
+      let bySize = sizeCloudId
+        ? sub.prices.find((p) => p.sizeCloudId === sizeCloudId && matchMode(p))
+        : null;
+      if (bySize == null && sizeLabel != null && String(sizeLabel).trim() !== "") {
+        const labelNorm = String(sizeLabel).trim().toLowerCase();
+        bySize = sub.prices.find(
+          (p) => p.sizeLabel != null && String(p.sizeLabel).trim().toLowerCase() === labelNorm && matchMode(p)
+        ) ?? null;
+      }
+      if (bySize != null) {
+        result = bySize.priceCents;
+      } else {
+        const byModeOnly = sub.prices.find(matchMode);
+        result = byModeOnly != null ? byModeOnly.priceCents : (sub.priceCents ?? 0);
+      }
+    } else {
+      result = sub.priceCents ?? 0;
+    }
+    return result;
+  }
+
   function addToCart() {
     if (!configuringItem) return;
 
@@ -2370,7 +2516,14 @@ export default function PosRegisterClient() {
       if (selectedSubstituteForQuickAdd) {
         const defaultId = configuringItem.defaultSubstituteCloudId ?? configuringItem.substitutes?.[0]?.id;
         const defaultSub = defaultId ? configuringItem.substitutes?.find((s) => s.id === defaultId) : configuringItem.substitutes?.[0];
-        optionTotalCentsHasSizes += (selectedSubstituteForQuickAdd?.priceCents ?? 0) - (defaultSub?.priceCents ?? 0);
+        const sizeId = configSizeOption?.id;
+        const mode = configBaseType ?? undefined;
+        const sizeLabel = configSizeOption?.name;
+        const selectedPrice = getSubstitutePriceCents(selectedSubstituteForQuickAdd, sizeId, mode, sizeLabel);
+        // Default milk is included in base price; only charge the increment for a non-default milk
+        const defaultPriceForDelta = selectedSubstituteId === defaultId ? selectedPrice : 0;
+        const delta = selectedPrice - defaultPriceForDelta;
+        optionTotalCentsHasSizes += delta;
       }
       const includedShotsHasSizes = resolveIncludedShots({
         item: configuringItem,
@@ -2459,17 +2612,7 @@ export default function PosRegisterClient() {
       });
     }
 
-    // Add milk price delta only when item has cloud substitutes; use selected substitute by id
-    let milkPriceDelta = 0;
-    if (configuringItem.substitutes && configuringItem.substitutes.length > 0 && selectedSubstituteId) {
-      const selectedSub = configuringItem.substitutes.find((s) => s.id === selectedSubstituteId);
-      const defaultId = configuringItem.defaultSubstituteCloudId ?? configuringItem.substitutes[0]?.id;
-      const defaultSub = defaultId ? configuringItem.substitutes.find((s) => s.id === defaultId) : configuringItem.substitutes[0];
-      milkPriceDelta = selectedSub ? selectedSub.priceCents - (defaultSub?.priceCents ?? 0) : 0;
-    }
-    optionTotalCents += milkPriceDelta;
-
-    // Derive baseType/sizeLabel from selectedOptions (for display and for included-shots lookup)
+    // Derive baseType/sizeLabel from selectedOptions (for display, included-shots, and per-size milk price)
     let derivedBaseType: "HOT" | "ICED" | "CONCENTRATED" | undefined;
     let derivedSizeLabel: string | undefined;
     const selectedSize = opts.find(o =>
@@ -2490,6 +2633,20 @@ export default function PosRegisterClient() {
         derivedSizeLabel = n;
       }
     }
+
+    // Add milk price delta (per-size when available: e.g. 70 regular, 180 1-liter)
+    let milkPriceDelta = 0;
+    if (configuringItem.substitutes && configuringItem.substitutes.length > 0 && selectedSubstituteId) {
+      const selectedSub = configuringItem.substitutes.find((s) => s.id === selectedSubstituteId);
+      const defaultId = configuringItem.defaultSubstituteCloudId ?? configuringItem.substitutes[0]?.id;
+      const defaultSub = defaultId ? configuringItem.substitutes.find((s) => s.id === defaultId) : configuringItem.substitutes[0];
+      const sizeId = selectedSize?.id;
+      const sizeLabel = selectedSize?.name;
+      const selectedPrice = getSubstitutePriceCents(selectedSub ?? undefined, sizeId, derivedBaseType, sizeLabel);
+      const defaultPriceForDelta = selectedSubstituteId === defaultId ? selectedPrice : 0;
+      milkPriceDelta = selectedPrice - defaultPriceForDelta;
+    }
+    optionTotalCents += milkPriceDelta;
 
     // Included shots from backend (size+temp when available), then shot upcharge
     const includedShotsNoSizes = derivedBaseType && selectedSize?.id
@@ -3641,7 +3798,7 @@ export default function PosRegisterClient() {
                                 onClick={() => {
                                   setConfigBaseType(mode);
                                   setConfigSizeOption({ id: s.id, name: s.name });
-                                  if (!shotsTouchedByUser && configuringItem) {
+                                  if (configuringItem?.supportsShots) {
                                     const newIncluded = resolveIncludedShots({
                                       item: configuringItem,
                                       selectedSizeId: s.id,
@@ -4022,46 +4179,99 @@ export default function PosRegisterClient() {
               </div>
               )}
 
-              {/* Add-ons (cloud-synced) */}
-              {configuringItem.addOns && configuringItem.addOns.length > 0 && (
-                <div style={{ marginBottom: 20 }}>
-                  <h3 style={{ fontSize: 16, marginBottom: 10, color: "#ddd", fontWeight: "600" }}>Add-ons</h3>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                    {configuringItem.addOns.map((addon) => {
-                      const addonGroupId = "addons";
-                      const current = selectedOptions[addonGroupId] ?? [];
-                      const isSelected = current.includes(addon.id);
+              {/* Add-ons (cloud-synced), collapsible per group */}
+              {configuringItem.addOns && configuringItem.addOns.length > 0 && (() => {
+                const ADDON_GROUP_SIZE = 6;
+                const addons = configuringItem.addOns;
+                const chunks: Array<{ groupId: string; label: string; addons: AddOnOption[] }> =
+                  configuringItem.addOnGroups && configuringItem.addOnGroups.length > 0
+                    ? configuringItem.addOnGroups.map((g) => ({
+                        groupId: g.id,
+                        label: g.name,
+                        addons: g.addOns,
+                      }))
+                    : (() => {
+                        const out: Array<{ groupId: string; label: string; addons: AddOnOption[] }> = [];
+                        for (let i = 0; i < addons.length; i += ADDON_GROUP_SIZE) {
+                          const slice = addons.slice(i, i + ADDON_GROUP_SIZE);
+                          const groupId = `addons-${out.length}`;
+                          const label = out.length === 0 ? "Add-ons" : `Add-ons (${out.length + 1})`;
+                          out.push({ groupId, label, addons: slice });
+                        }
+                        return out;
+                      })();
+                const addonGroupId = "addons";
+                const selectedIds = selectedOptions[addonGroupId] ?? [];
+                return (
+                  <div style={{ marginBottom: 20 }}>
+                    {chunks.map(({ groupId, label, addons: groupAddons }) => {
+                      const isExpanded = expandedAddOnGroups[groupId] !== false;
+                      const selectedInGroup = groupAddons.filter((a) => selectedIds.includes(a.id)).length;
+                      const summary = selectedInGroup > 0 ? ` (${selectedInGroup})` : "";
                       return (
-                        <button
-                          key={addon.id}
-                          onClick={() => {
-                            setSelectedOptions((prev) => {
-                              const cur = prev[addonGroupId] ?? [];
-                              if (cur.includes(addon.id)) {
-                                return { ...prev, [addonGroupId]: cur.filter((id) => id !== addon.id) };
-                              }
-                              return { ...prev, [addonGroupId]: [...cur, addon.id] };
-                            });
-                          }}
-                          style={{
-                            padding: "10px 16px",
-                            border: `2px solid ${isSelected ? COLORS.primary : "#444"}`,
-                            borderRadius: 6,
-                            cursor: "pointer",
-                            background: isSelected ? COLORS.primary : "#2a2a2a",
-                            color: "#fff",
-                            fontWeight: isSelected ? "bold" : "normal",
-                            fontSize: 14,
-                          }}
-                        >
-                          {addon.name}
-                          {addon.priceCents > 0 && ` (+${formatPesos(addon.priceCents)})`}
-                        </button>
+                        <div key={groupId} style={{ marginBottom: 12 }}>
+                          <button
+                            type="button"
+                            onClick={() => setExpandedAddOnGroups((prev) => ({ ...prev, [groupId]: !prev[groupId] }))}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 8,
+                              width: "100%",
+                              padding: "10px 12px",
+                              border: "1px solid #444",
+                              borderRadius: 6,
+                              background: "#2a2a2a",
+                              color: "#ddd",
+                              fontSize: 16,
+                              fontWeight: "600",
+                              cursor: "pointer",
+                              textAlign: "left",
+                            }}
+                          >
+                            <span style={{ fontSize: 12, transition: "transform 0.2s" }}>{isExpanded ? "▾" : "▸"}</span>
+                            {label}{summary}
+                          </button>
+                          {isExpanded && (
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8, marginLeft: 4 }}>
+                              {groupAddons.map((addon) => {
+                                const isSelected = selectedIds.includes(addon.id);
+                                return (
+                                  <button
+                                    key={addon.id}
+                                    onClick={() => {
+                                      setSelectedOptions((prev) => {
+                                        const cur = prev[addonGroupId] ?? [];
+                                        if (cur.includes(addon.id)) {
+                                          return { ...prev, [addonGroupId]: cur.filter((id) => id !== addon.id) };
+                                        }
+                                        return { ...prev, [addonGroupId]: [...cur, addon.id] };
+                                      });
+                                    }}
+                                    style={{
+                                      padding: "10px 16px",
+                                      border: `2px solid ${isSelected ? COLORS.primary : "#444"}`,
+                                      borderRadius: 6,
+                                      cursor: "pointer",
+                                      background: isSelected ? COLORS.primary : "#2a2a2a",
+                                      color: "#fff",
+                                      fontWeight: isSelected ? "bold" : "normal",
+                                      fontSize: 14,
+                                    }}
+                                  >
+                                    {addon.name}
+                                    {addon.priceCents > 0 && ` (+${formatPesos(addon.priceCents)})`}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
                       );
                     })}
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* Other Option Groups (not temperature/size/sauce/syrup/foam) */}
               {configuringItem.itemOptionGroups
@@ -4216,9 +4426,22 @@ export default function PosRegisterClient() {
                 // Base unit price: for hasSizes use selected size price (it SETS base, not adds); else basePrice + option deltas
                 let baseUnitPrice = configuringItem.basePrice;
                 let optionsTotal = 0;
+                const isTempOrSizeGroup = (gName: string) => {
+                  const n = gName.toLowerCase();
+                  return n.includes("temperature") || n.includes("temp") || n.includes("size") || n === "hot" || n === "iced" || n === "concentrated";
+                };
                 if (configuringItem.hasSizes && configuringItem.sizesByMode && configBaseType && configSizeOption) {
                   const sizeEntry = configuringItem.sizesByMode[configBaseType]?.find((s) => s.id === configSizeOption.id);
                   baseUnitPrice = sizeEntry?.priceCents ?? configuringItem.basePrice;
+                  // Options (sweetness, etc.) — exclude temp/size; add-ons are summed separately below
+                  optionsTotal = configuringItem.itemOptionGroups.reduce((sum, { group }) => {
+                    if (isTempOrSizeGroup(group.name)) return sum;
+                    const selected = selectedOptions[group.id] || [];
+                    return sum + selected.reduce((optSum, optId) => {
+                      const opt = group.options.find((o) => o.id === optId);
+                      return optSum + (opt?.priceDelta || 0);
+                    }, 0);
+                  }, 0);
                 } else {
                   optionsTotal = configuringItem.itemOptionGroups.reduce((sum, { group }) => {
                     const selected = selectedOptions[group.id] || [];
@@ -4228,6 +4451,15 @@ export default function PosRegisterClient() {
                     }, 0);
                   }, 0);
                 }
+                // Add-ons (cloud-synced) — include in breakdown so total matches cart
+                let addOnsTotal = 0;
+                if (configuringItem.addOns && configuringItem.addOns.length > 0) {
+                  const selectedAddonIds = selectedOptions["addons"] ?? [];
+                  selectedAddonIds.forEach((addonId) => {
+                    const addon = configuringItem.addOns!.find((a) => a.id === addonId);
+                    if (addon) addOnsTotal += addon.priceCents;
+                  });
+                }
 
                 const milkDelta =
                   configuringItem.substitutes && configuringItem.substitutes.length > 0 && selectedSubstituteId
@@ -4235,7 +4467,30 @@ export default function PosRegisterClient() {
                         const selectedSub = configuringItem.substitutes.find((s) => s.id === selectedSubstituteId);
                         const defaultId = configuringItem.defaultSubstituteCloudId ?? configuringItem.substitutes[0]?.id;
                         const defaultSub = defaultId ? configuringItem.substitutes.find((s) => s.id === defaultId) : configuringItem.substitutes[0];
-                        return (selectedSub?.priceCents ?? 0) - (defaultSub?.priceCents ?? 0);
+                        const sizeId = (configuringItem.hasSizes && configSizeOption) ? configSizeOption.id : (() => {
+                          const sizeGroup = configuringItem.itemOptionGroups?.find((ig) => ig.group.name.toLowerCase().includes("size") || ig.group.name.toUpperCase().includes("OZ"));
+                          const sizeOptId = sizeGroup ? selectedOptions[sizeGroup.group.id]?.[0] : null;
+                          return sizeOptId ?? undefined;
+                        })();
+                        const mode = configBaseType ?? (() => {
+                          const g = configuringItem.itemOptionGroups?.find((ig) => ["HOT", "ICED", "CONCENTRATED"].includes(ig.group.name.toUpperCase()));
+                          const optId = g ? selectedOptions[g.group.id]?.[0] : null;
+                          const opt = g?.group.options.find((o) => o.id === optId);
+                          const n = (opt?.name ?? "").toUpperCase();
+                          if (n.includes("ICED")) return "ICED" as const;
+                          if (n.includes("HOT")) return "HOT" as const;
+                          if (n.includes("CONCENTRATED")) return "CONCENTRATED" as const;
+                          return undefined;
+                        })();
+                        const sizeLabelBreakdown = (configuringItem.hasSizes && configSizeOption) ? configSizeOption.name : (() => {
+                          const sizeGroup = configuringItem.itemOptionGroups?.find((ig) => ig.group.name.toLowerCase().includes("size") || ig.group.name.toUpperCase().includes("OZ"));
+                          const sizeOptId = sizeGroup ? selectedOptions[sizeGroup.group.id]?.[0] : null;
+                          const sizeOpt = sizeGroup?.group.options.find((o) => o.id === sizeOptId);
+                          return sizeOpt?.name ?? undefined;
+                        })();
+                        const selectedPrice = getSubstitutePriceCents(selectedSub ?? undefined, sizeId, mode, sizeLabelBreakdown);
+                        const defaultPriceForDelta = selectedSubstituteId === defaultId ? selectedPrice : 0;
+                        return selectedPrice - defaultPriceForDelta;
                       })()
                     : 0;
 
@@ -4252,8 +4507,8 @@ export default function PosRegisterClient() {
                 
                 const surcharge = configTransactionType?.priceDeltaCents ?? 0;
                 
-                // Size price replaces base; add only extras (options, milk, shots)
-                const unitPrice = baseUnitPrice + optionsTotal + milkDelta + shotsDelta;
+                // Size price replaces base; add only extras (options, add-ons, milk, shots)
+                const unitPrice = baseUnitPrice + optionsTotal + addOnsTotal + milkDelta + shotsDelta;
                 const lineTotal = (unitPrice + surcharge) * configQty;
 
                 return (
@@ -4276,6 +4531,12 @@ export default function PosRegisterClient() {
                         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, color: "#aaa" }}>
                           <span>Options:</span>
                           <span style={{ color: "#fff" }}>+{formatPesos(optionsTotal)}</span>
+                        </div>
+                      )}
+                      {addOnsTotal > 0 && (
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, color: "#aaa" }}>
+                          <span>Add-ons:</span>
+                          <span style={{ color: "#fff" }}>+{formatPesos(addOnsTotal)}</span>
                         </div>
                       )}
                       {milkDelta > 0 && (() => {

@@ -244,6 +244,29 @@ export default function SettingsClient() {
     }
   }
 
+  /** Force catalog sync – no admin PIN required (staff session only). Used above PIN gate for emergency menu updates. */
+  async function handleForceCatalogSync() {
+    setError(null);
+    setSuccess(null);
+    setActionLoading("sync");
+    try {
+      const headers = await getStaffHeaders();
+      const res = await fetch("/api/device/commands/sync-catalog", {
+        method: "POST",
+        headers: { "content-type": "application/json", ...headers },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || data.error || "Failed");
+      setSuccess("Catalog sync started.");
+      setTimeout(() => setSuccess(null), 3000);
+      await loadStatus();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
   async function handleForceFullResync() {
     if (
       !window.confirm(
@@ -338,13 +361,56 @@ export default function SettingsClient() {
       <div
         style={{
           display: "flex",
+          flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
           minHeight: "60vh",
           padding: 24,
           background: COLORS.bgDarkest,
+          gap: 24,
         }}
       >
+        {/* Force catalog sync – outside PIN gate for emergency menu updates */}
+        <div
+          style={{
+            background: COLORS.bgDark,
+            padding: 24,
+            borderRadius: 12,
+            border: `1px solid ${COLORS.borderLight}`,
+            minWidth: 350,
+          }}
+        >
+          <h2 style={{ marginTop: 0, marginBottom: 8, fontSize: 16, fontWeight: 600, color: COLORS.textPrimary }}>
+            Catalog sync
+          </h2>
+          <p style={{ margin: "0 0 16px 0", color: COLORS.textSecondary, fontSize: 14 }}>
+            Pull latest menu from cloud without entering admin PIN.
+          </p>
+          {(error || success) && (
+            <div style={{ marginBottom: 12, fontSize: 14, color: error ? COLORS.error : COLORS.success }}>
+              {error || success}
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={handleForceCatalogSync}
+            disabled={!!actionLoading}
+            style={{
+              width: "100%",
+              padding: 12,
+              fontSize: 15,
+              fontWeight: "600",
+              background: actionLoading ? COLORS.bgDark : COLORS.primary,
+              color: "#fff",
+              border: "none",
+              borderRadius: 6,
+              cursor: actionLoading ? "not-allowed" : "pointer",
+            }}
+          >
+            {actionLoading === "sync" ? "Syncing…" : "Force catalog sync"}
+          </button>
+        </div>
+
         <div
           style={{
             background: COLORS.bgDark,
@@ -891,13 +957,6 @@ export default function SettingsClient() {
               style={btnStyle(!!actionLoading && actionLoading !== "resync")}
             >
               {actionLoading === "resync" ? "Resyncing…" : "Force full catalog resync"}
-            </button>
-            <button
-              onClick={() => handleAction("sync", "/api/device/commands/sync")}
-              disabled={busy || !!actionLoading}
-              style={btnStyle(!!actionLoading && actionLoading !== "sync")}
-            >
-              {actionLoading === "sync" ? "Syncing…" : "Force sync catalog"}
             </button>
             <button
               onClick={() => handleAction("update", "/api/device/commands/update")}
