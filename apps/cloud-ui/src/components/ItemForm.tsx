@@ -967,11 +967,13 @@ export default function ItemForm({
                   const v = e.target.checked;
                   if (v && hasSizes) {
                     setSizeShotsByMode((prev) => {
-                      const next: DrinkSizesByModePayload["sizeShotsByMode"] = { ...prev };
+                      const safePrev = prev ?? {};
+                      const next: DrinkSizesByModePayload["sizeShotsByMode"] = { ...safePrev };
                       for (const m of DRINK_MODES) {
                         const ids = drinkSizesByMode[m]?.enabledOptionIds ?? [];
                         if (ids.length > 0) {
-                          next[m] = { ...next[m] };
+                          const safeMode = next[m] ?? {};
+                          next[m] = { ...safeMode };
                           for (const optId of ids) {
                             if (next[m]![optId] == null) next[m]![optId] = defaultShots;
                           }
@@ -1019,10 +1021,17 @@ export default function ItemForm({
                                 label=""
                                 value={value}
                                 onChange={(n) => {
-                                  setSizeShotsByMode((prev) => ({
-                                    ...prev,
-                                    [modeKey]: { ...prev[modeKey], [optId]: n },
-                                  }));
+                                  setSizeShotsByMode((prev) => {
+                                    const safePrev = prev ?? {};
+                                    const safeMode = safePrev[modeKey] ?? {};
+                                    return {
+                                      ...safePrev,
+                                      [modeKey]: {
+                                        ...safeMode,
+                                        [optId]: n,
+                                      },
+                                    };
+                                  });
                                 }}
                                 min={0}
                                 max={20}

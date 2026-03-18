@@ -447,7 +447,7 @@ const TSPL_TOP_ROW_STEP = 38;
 /** Extra gap (dots) after item title row so it does not touch temp+size. */
 const TSPL_GAP_AFTER_ITEM = 14;
 /** Extra gap (dots) after temp+size row so it does not touch first modifier (shots). */
-const TSPL_GAP_AFTER_TEMP = 14;
+const TSPL_GAP_AFTER_TEMP = -10;
 /** Step between modifier rows (shots, milk, ice, etc.). */
 const TSPL_MODIFIER_STEP = 38;
 /** Transaction type: bottom-right, inside printable area with margin (dots from edges). */
