@@ -1,12 +1,17 @@
 /**
- * Direct local receipt (ESC/POS) and sticker (TSPL) printing using Windows printer names.
- * Jobs are sent via the Windows `print` command (child_process exec). Receipt: ESC/POS buffer; sticker: TSPL text.
+ * Direct local receipt (ESC/POS) and sticker (TSPL) printing using Windows printer queue names.
+ * Jobs are spooled as Win32 RAW (WritePrinter) via apps/api/scripts/send-raw-to-printer.ps1 — not the `print` command,
+ * which does not reliably deliver binary ESC/POS or TSPL to thermal drivers.
  * Config from printer-config.json via getPrinterConfig(); queue names from printerDiscovery (Windows enumeration).
  */
 
 import fs from "fs";
-import { exec } from "child_process";
+import { execFile } from "child_process";
+import { promisify } from "util";
 import path from "path";
+import { fileURLToPath } from "url";
+import os from "os";
+import crypto from "crypto";
 import { getPrinterConfig } from "./printerConfig.service";
 import { enumerateWindowsPrinters, type PrinterEnumerationResult } from "./printerDiscovery.service";
 import {
@@ -15,27 +20,85 @@ import {
   trimPrinterName,
 } from "./printerResolve.service";
 
-function runPrint(filePath: string, printerName: string) {
-  return new Promise<void>((resolve, reject) => {
-    exec(`print /d:"${printerName}" "${filePath}"`, (err) => {
-      if (err) reject(err);
-      else resolve();
-    });
-  });
+const execFileAsync = promisify(execFile);
+
+/** apps/api root (works from src/… with tsx or dist/… with node). */
+function apiPackageRoot(): string {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 }
 
-// ESC/POS receipt: write binary then Windows print
+function rawPrintScriptPath(): string {
+  return path.join(apiPackageRoot(), "scripts", "send-raw-to-printer.ps1");
+}
+
+function writeTempPrintFile(data: Buffer, ext: string): string {
+  const name = `bfc-print-${process.pid}-${Date.now()}-${crypto.randomBytes(6).toString("hex")}${ext}`;
+  const full = path.join(os.tmpdir(), name);
+  fs.writeFileSync(full, data);
+  return full;
+}
+
+async function sendRawFileToWindowsPrinter(filePath: string, printerName: string): Promise<void> {
+  if (process.platform !== "win32") {
+    throw new Error("RAW printing is only supported on Windows.");
+  }
+  const script = rawPrintScriptPath();
+  if (!fs.existsSync(script)) {
+    throw new Error(`RAW print script missing: ${script}`);
+  }
+  console.log("[BFC_PRINTER] send-raw (WritePrinter)", { printerName, filePath, script });
+  try {
+    await execFileAsync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        script,
+        "-PrinterName",
+        printerName,
+        "-Path",
+        filePath,
+      ],
+      { windowsHide: true, maxBuffer: 10 * 1024 * 1024 }
+    );
+  } catch (e: unknown) {
+    const err = e as { stderr?: Buffer; stdout?: Buffer; message?: string };
+    const stderr = err.stderr ? String(err.stderr).trim() : "";
+    const stdout = err.stdout ? String(err.stdout).trim() : "";
+    const msg = [err.message, stderr, stdout].filter(Boolean).join(" — ");
+    throw new Error(msg || "RAW print failed");
+  }
+}
+
+// ESC/POS receipt → temp file → Win32 RAW job
 export async function printReceiptESC(data: Buffer, printerName: string) {
-  const file = path.join(process.cwd(), "receipt.bin");
-  fs.writeFileSync(file, data);
-  await runPrint(file, printerName);
+  const file = writeTempPrintFile(data, ".bin");
+  try {
+    await sendRawFileToWindowsPrinter(file, printerName);
+  } finally {
+    try {
+      fs.unlinkSync(file);
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
-// TSPL sticker: write UTF-8 text then Windows print
+// TSPL sticker bytes → temp file → Win32 RAW job
 export async function printStickerTSPL(tspl: string, printerName: string) {
-  const file = path.join(process.cwd(), "sticker.txt");
-  fs.writeFileSync(file, tspl, "utf8");
-  await runPrint(file, printerName);
+  const file = writeTempPrintFile(Buffer.from(tspl, "utf8"), ".raw");
+  try {
+    await sendRawFileToWindowsPrinter(file, printerName);
+  } finally {
+    try {
+      fs.unlinkSync(file);
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 // ESC/POS
