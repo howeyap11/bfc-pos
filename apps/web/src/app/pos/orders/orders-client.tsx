@@ -91,28 +91,37 @@ function getTimerColor(minutes: number): string {
   return "#ffffff";
 }
 
-function groupItemsByPrepArea(items: OrderLineItem[]): { KITCHEN: OrderLineItem[]; BAR: OrderLineItem[] } {
-  const kitchen: OrderLineItem[] = [];
-  const bar: OrderLineItem[] = [];
+/** Group order items by category name (use category name, not Kitchen/Bar). */
+function groupItemsByCategory(items: OrderLineItem[]): [string, OrderLineItem[]][] {
+  const map = new Map<string, OrderLineItem[]>();
+  const order: string[] = [];
   for (const li of items) {
-    const prepArea = li.item?.category?.prepArea;
-    if (prepArea === "KITCHEN") kitchen.push(li);
-    else bar.push(li);
+    const name = (li.item?.category?.name ?? "").trim() || "Other";
+    if (!map.has(name)) {
+      map.set(name, []);
+      order.push(name);
+    }
+    map.get(name)!.push(li);
   }
-  return { KITCHEN: kitchen, BAR: bar };
+  return order.map((name) => [name, map.get(name)!]);
 }
 
-function groupTransactionLinesByPrepArea(
+/** Group transaction line items by category name. */
+function groupTransactionLinesByCategory(
   lineItems: PendingTransactionLineItem[]
-): { KITCHEN: PendingTransactionLineItem[]; BAR: PendingTransactionLineItem[] } {
-  const kitchen: PendingTransactionLineItem[] = [];
-  const bar: PendingTransactionLineItem[] = [];
+): [string, PendingTransactionLineItem[]][] {
+  const map = new Map<string, PendingTransactionLineItem[]>();
+  const order: string[] = [];
   for (const li of lineItems) {
-    const prepArea = li.item?.category?.prepArea;
-    if (prepArea === "KITCHEN") kitchen.push(li);
-    else bar.push(li);
+    const name =
+      (li.item?.category?.name ?? li.categoryName ?? "").trim() || "Other";
+    if (!map.has(name)) {
+      map.set(name, []);
+      order.push(name);
+    }
+    map.get(name)!.push(li);
   }
-  return { KITCHEN: kitchen, BAR: bar };
+  return order.map((name) => [name, map.get(name)!]);
 }
 
 function parseStoredCart(): CartItem[] {
@@ -453,7 +462,7 @@ export default function OrdersClient() {
     const timerColor = getTimerColor(minutes);
     const isExpanded = opts.expandedId != null ? opts.expandedId === o.id : expandedOrderId === o.id;
     const onCardClick = opts.onExpand ?? (() => setExpandedOrderId(o.id));
-    const { KITCHEN: kitchenItems, BAR: barItems } = groupItemsByPrepArea(o.items);
+    const categoryGroups = groupItemsByCategory(o.items);
     const isLoading = opts.isQr && (acceptingId === o.id || decliningId === o.id);
 
     const header = (
@@ -481,13 +490,13 @@ export default function OrdersClient() {
           )}
           {isExpanded ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 16, marginBottom: 16 }}>
-            {kitchenItems.length > 0 && (
-              <div>
+            {categoryGroups.map(([categoryName, items]) => (
+              <div key={categoryName}>
                 <h4 style={{ margin: "0 0 8px 0", fontSize: 12, fontWeight: "700", color: COLORS.textSecondary, textTransform: "uppercase" }}>
-                  Kitchen
+                  {categoryName}
                 </h4>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
-                  {kitchenItems.map((li) => (
+                  {items.map((li) => (
                     <div
                       key={li.id}
                       style={{
@@ -517,59 +526,16 @@ export default function OrdersClient() {
                   ))}
                 </div>
               </div>
-            )}
-            {barItems.length > 0 && (
-              <div>
-                <h4 style={{ margin: "0 0 8px 0", fontSize: 12, fontWeight: "700", color: COLORS.textSecondary, textTransform: "uppercase" }}>
-                  Bar
-                </h4>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
-                  {barItems.map((li) => (
-                    <div
-                      key={li.id}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 10,
-                        background: "#2a2a2a",
-                        padding: "10px 14px",
-                        borderRadius: 10,
-                        minWidth: 180,
-                      }}
-                    >
-                      {li.item?.imageUrl && (
-                        <img src={li.item.imageUrl} alt="" style={{ width: 44, height: 44, borderRadius: 8, objectFit: "cover" }} />
-                      )}
-                      <div>
-                        <span style={{ fontWeight: "600", color: COLORS.textPrimary }}>
-                          x{li.qty} {li.item?.name ?? "Item"}
-                        </span>
-                        {li.options.length > 0 && (
-                          <div style={{ fontSize: 12, color: COLORS.textSecondary }}>
-                            {li.options.map((x) => x.option?.name).filter(Boolean).join(", ")}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+            ))}
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {kitchenItems.length > 0 && (
-              <div style={{ fontSize: 18, color: "#fff", fontWeight: "600", lineHeight: 1.4 }}>
-                <span style={{ color: COLORS.textSecondary, fontSize: 12, textTransform: "uppercase", fontWeight: "700" }}>Kitchen </span>
-                {kitchenItems.map((li) => `x${li.qty} ${li.item?.name ?? "Item"}`).join(", ")}
+            {categoryGroups.map(([categoryName, items]) => (
+              <div key={categoryName} style={{ fontSize: 18, color: "#fff", fontWeight: "600", lineHeight: 1.4 }}>
+                <span style={{ color: COLORS.textSecondary, fontSize: 12, textTransform: "uppercase", fontWeight: "700" }}>{categoryName} </span>
+                {items.map((li) => `x${li.qty} ${li.item?.name ?? "Item"}`).join(", ")}
               </div>
-            )}
-            {barItems.length > 0 && (
-              <div style={{ fontSize: 18, color: "#fff", fontWeight: "600", lineHeight: 1.4 }}>
-                <span style={{ color: COLORS.textSecondary, fontSize: 12, textTransform: "uppercase", fontWeight: "700" }}>Bar </span>
-                {barItems.map((li) => `x${li.qty} ${li.item?.name ?? "Item"}`).join(", ")}
-              </div>
-            )}
+            ))}
           </div>
         )}
         </div>
@@ -626,13 +592,11 @@ export default function OrdersClient() {
           {header}
           {isExpanded ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 16, marginBottom: 16 }}>
-            {kitchenItems.length > 0 && (
-              <div>
-                <h4 style={{ margin: "0 0 8px 0", fontSize: 12, fontWeight: "700", color: COLORS.textSecondary, textTransform: "uppercase" }}>
-                  Kitchen
-                </h4>
+            {categoryGroups.map(([categoryName, items]) => (
+              <div key={categoryName}>
+                <h4 style={{ margin: "0 0 8px 0", fontSize: 12, fontWeight: "700", color: COLORS.textSecondary, textTransform: "uppercase" }}>{categoryName}</h4>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
-                  {kitchenItems.map((li) => (
+                  {items.map((li) => (
                     <div key={li.id} style={{ display: "flex", alignItems: "center", gap: 10, background: "#2a2a2a", padding: "10px 14px", borderRadius: 10, minWidth: 180 }}>
                       {li.item?.imageUrl && <img src={li.item.imageUrl} alt="" style={{ width: 44, height: 44, borderRadius: 8, objectFit: "cover" }} />}
                       <div>
@@ -643,28 +607,16 @@ export default function OrdersClient() {
                   ))}
                 </div>
               </div>
-            )}
-            {barItems.length > 0 && (
-              <div>
-                <h4 style={{ margin: "0 0 8px 0", fontSize: 12, fontWeight: "700", color: COLORS.textSecondary, textTransform: "uppercase" }}>Bar</h4>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
-                  {barItems.map((li) => (
-                    <div key={li.id} style={{ display: "flex", alignItems: "center", gap: 10, background: "#2a2a2a", padding: "10px 14px", borderRadius: 10, minWidth: 180 }}>
-                      {li.item?.imageUrl && <img src={li.item.imageUrl} alt="" style={{ width: 44, height: 44, borderRadius: 8, objectFit: "cover" }} />}
-                      <div>
-                        <span style={{ fontWeight: "600", color: COLORS.textPrimary }}>x{li.qty} {li.item?.name ?? "Item"}</span>
-                        {li.options.length > 0 && <div style={{ fontSize: 12, color: COLORS.textSecondary }}>{li.options.map((x) => x.option?.name).filter(Boolean).join(", ")}</div>}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+            ))}
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {kitchenItems.length > 0 && <div style={{ fontSize: 18, color: "#fff", fontWeight: "600", lineHeight: 1.4 }}><span style={{ color: COLORS.textSecondary, fontSize: 12, textTransform: "uppercase", fontWeight: "700" }}>Kitchen </span>{kitchenItems.map((li) => `x${li.qty} ${li.item?.name ?? "Item"}`).join(", ")}</div>}
-            {barItems.length > 0 && <div style={{ fontSize: 18, color: "#fff", fontWeight: "600", lineHeight: 1.4 }}><span style={{ color: COLORS.textSecondary, fontSize: 12, textTransform: "uppercase", fontWeight: "700" }}>Bar </span>{barItems.map((li) => `x${li.qty} ${li.item?.name ?? "Item"}`).join(", ")}</div>}
+            {categoryGroups.map(([categoryName, items]) => (
+              <div key={categoryName} style={{ fontSize: 18, color: "#fff", fontWeight: "600", lineHeight: 1.4 }}>
+                <span style={{ color: COLORS.textSecondary, fontSize: 12, textTransform: "uppercase", fontWeight: "700" }}>{categoryName} </span>
+                {items.map((li) => `x${li.qty} ${li.item?.name ?? "Item"}`).join(", ")}
+              </div>
+            ))}
           </div>
         )}
         </div>
@@ -714,7 +666,7 @@ export default function OrdersClient() {
     const minutes = getMinutesElapsed(tx.createdAt);
     const timerColor = getTimerColor(minutes);
     const isExpanded = expandedPendingId === tx.id;
-    const { KITCHEN: kitchenLines, BAR: barLines } = groupTransactionLinesByPrepArea(tx.lineItems);
+    const categoryGroupsTx = groupTransactionLinesByCategory(tx.lineItems);
     const isLoading = completingTransactionId === tx.id;
 
     const header = (
@@ -783,33 +735,21 @@ export default function OrdersClient() {
           )}
           {isExpanded ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 16, marginBottom: 16 }}>
-              {kitchenLines.length > 0 && (
-                <div>
-                  <h4 style={{ margin: "0 0 8px 0", fontSize: 12, fontWeight: "700", color: COLORS.textSecondary, textTransform: "uppercase" }}>Kitchen</h4>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>{kitchenLines.map(renderTxLine)}</div>
+              {categoryGroupsTx.map(([categoryName, lines]) => (
+                <div key={categoryName}>
+                  <h4 style={{ margin: "0 0 8px 0", fontSize: 12, fontWeight: "700", color: COLORS.textSecondary, textTransform: "uppercase" }}>{categoryName}</h4>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>{lines.map(renderTxLine)}</div>
                 </div>
-              )}
-              {barLines.length > 0 && (
-                <div>
-                  <h4 style={{ margin: "0 0 8px 0", fontSize: 12, fontWeight: "700", color: COLORS.textSecondary, textTransform: "uppercase" }}>Bar</h4>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>{barLines.map(renderTxLine)}</div>
-                </div>
-              )}
+              ))}
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {kitchenLines.length > 0 && (
-                <div style={{ fontSize: 15, color: "#fff", fontWeight: "600", lineHeight: 1.4 }}>
-                  <span style={{ color: COLORS.textSecondary, fontSize: 12, textTransform: "uppercase", fontWeight: "700" }}>Kitchen </span>
-                  {kitchenLines.map((li) => li.displayLabel).join(", ")}
+              {categoryGroupsTx.map(([categoryName, lines]) => (
+                <div key={categoryName} style={{ fontSize: 15, color: "#fff", fontWeight: "600", lineHeight: 1.4 }}>
+                  <span style={{ color: COLORS.textSecondary, fontSize: 12, textTransform: "uppercase", fontWeight: "700" }}>{categoryName} </span>
+                  {lines.map((li) => li.displayLabel).join(", ")}
                 </div>
-              )}
-              {barLines.length > 0 && (
-                <div style={{ fontSize: 15, color: "#fff", fontWeight: "600", lineHeight: 1.4 }}>
-                  <span style={{ color: COLORS.textSecondary, fontSize: 12, textTransform: "uppercase", fontWeight: "700" }}>Bar </span>
-                  {barLines.map((li) => li.displayLabel).join(", ")}
-                </div>
-              )}
+              ))}
             </div>
           )}
         </div>

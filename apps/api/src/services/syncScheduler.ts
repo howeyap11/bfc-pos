@@ -26,7 +26,9 @@ export function getSyncStatus(): {
 export async function runCatalogSync(app: FastifyInstance): Promise<void> {
   if (catalogInFlight) return;
   catalogInFlight = true;
+  app.log.info("runCatalogSync: started");
   try {
+    app.log.info("runCatalogSync: calling syncCatalogFromCloud");
     const outcome = await syncCatalogFromCloud(app.prisma, "default");
     lastCatalogSyncAt = Date.now();
     if (outcome.ok) {
@@ -50,6 +52,7 @@ export async function runCatalogSync(app: FastifyInstance): Promise<void> {
 
 export async function runTransactionSyncFlush(app: FastifyInstance): Promise<void> {
   if (transactionFlushInFlight) return;
+  if (catalogInFlight) return;
   transactionFlushInFlight = true;
   try {
     const { processed, succeeded, failed } = await processTransactionSyncOutbox(
@@ -69,6 +72,7 @@ export async function runTransactionSyncFlush(app: FastifyInstance): Promise<voi
 }
 
 export function startSyncScheduler(app: FastifyInstance): void {
+  app.log.info("Cloud sync scheduler starting: catalog every 5min, transaction every 30s");
   // Catalog sync every 5 min
   setInterval(() => runCatalogSync(app), 5 * 60 * 1000);
   // Transaction flush every 30 s

@@ -6,15 +6,20 @@
 import type { FastifyInstance } from "fastify";
 import {
   importVouchers,
-  getAvailableCount,
+  getVoucherStats,
   SnapResiboImportStoreNotFoundError,
   SNAPRESIBO_DEFAULT_STORE_ID,
 } from "../services/snapResiboVoucher.service";
 
 export async function snapResiboRoutes(app: FastifyInstance) {
   app.get("/snapresibo/vouchers/count", async () => {
-    const count = await getAvailableCount(app.prisma, SNAPRESIBO_DEFAULT_STORE_ID);
-    return { count };
+    const stats = await getVoucherStats(app.prisma, SNAPRESIBO_DEFAULT_STORE_ID);
+    return {
+      count: stats.remaining,
+      remaining: stats.remaining,
+      used: stats.used,
+      total: stats.total,
+    };
   });
 
   app.post("/snapresibo/vouchers/import", async (req, reply) => {

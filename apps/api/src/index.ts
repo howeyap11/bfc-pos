@@ -39,8 +39,7 @@ import { storeConfigRoutes } from "./routes/storeConfig";
 import { systemPrintersRoutes } from "./routes/systemPrinters";
 import { snapResiboRoutes } from "./routes/snapResibo";
 import { ensureItemForCloudId } from "./services/catalogCache.service";
-import { syncCatalogFromCloud } from "./services/syncCatalog.service.js";
-import { startSyncScheduler, runTransactionSyncFlush } from "./services/syncScheduler.js";
+import { startSyncScheduler, runCatalogSync } from "./services/syncScheduler.js";
 import { startDeviceCommandPolling } from "./services/deviceCommandPolling.service.js";
 import { getCommandState } from "./services/commandState.service.js";
 import { getSyncStatus } from "./services/syncScheduler.js";
@@ -728,22 +727,26 @@ try {
   };
   app.log.info({ syncEnv }, "Sync env status (use DEVICE_KEY for device polling; CLOUD_KEY is not used)");
 
-  startSyncScheduler(app);
   startDeviceCommandPolling(app);
 
-  syncCatalogFromCloud(app.prisma, "default")
-    .then((outcome) => {
-      if (outcome.ok) {
-        app.log.info({ result: outcome.result }, "Catalog sync completed on startup");
-      } else {
-        app.log.warn({ error: outcome.error, code: outcome.code }, "Catalog sync skipped on startup");
-      }
+  // Cloud sync: initial catalog sync runs first; scheduler starts only after it settles (then/catch).
+  // No CLOUD_KEY check — CLOUD_URL is enough for sync; DEVICE_KEY is for device polling only.
+  // If initial sync hangs, scheduler never starts — look for "Cloud sync startup enabled" or "failed" and "Sync scheduler started".
+  // Skipped branch: none today; if added, log "Cloud sync startup skipped" with reason (e.g. missing env / disabled flag).
+  app.log.info(
+    { syncEnv, reason: "scheduler will start after initial catalog sync completes" },
+    "Cloud sync startup: starting initial catalog sync"
+  );
+  app.log.info("runCatalogSync(app) invoked (promise pending); next log: runCatalogSync: started");
+  runCatalogSync(app)
+    .then(() => {
+      startSyncScheduler(app);
+      app.log.info({ syncEnv }, "Cloud sync startup enabled; scheduler started");
     })
     .catch((err) => {
-      app.log.warn({ err }, "Catalog sync failed on startup");
+      app.log.warn({ err, syncEnv, reason: "initial catalog sync failed" }, "Cloud sync startup failed; starting scheduler anyway");
+      startSyncScheduler(app);
     });
-
-  setTimeout(() => runTransactionSyncFlush(app).catch(() => {}), 5000);
 } catch (err) {
   console.error("[boot] startup failed:", err);
   process.exit(1);

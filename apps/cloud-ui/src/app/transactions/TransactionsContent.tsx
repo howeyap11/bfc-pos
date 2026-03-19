@@ -326,6 +326,16 @@ export function TransactionsContent() {
                                 </span>
                               )}
                             </div>
+                            {tx.isTest && (
+                              <div className="mt-1.5">
+                                <span
+                                  className="inline-block rounded px-2 py-0.5 text-xs font-medium text-amber-200"
+                                  style={{ background: "rgba(234, 179, 8, 0.25)", border: "1px solid rgba(234, 179, 8, 0.5)" }}
+                                >
+                                  Test
+                                </span>
+                              </div>
+                            )}
                           </td>
                           <td className="px-4 py-3 text-sm text-white align-top">{formatTime(tx.createdAt)}</td>
                           <td className="px-4 py-3 font-mono text-sm font-semibold text-white align-top">#{tx.transactionNo}</td>
@@ -333,12 +343,21 @@ export function TransactionsContent() {
                           <td className="px-4 py-3 align-top" style={{ minWidth: 200 }}>
                             <div className="flex flex-col gap-1">
                               {tx.lineItems && tx.lineItems.length > 0 ? (
-                                tx.lineItems.map((line, idx) => (
-                                  <div key={idx} className="text-sm text-white flex justify-between gap-2">
-                                    <span className="font-medium">{line.displayLabel ?? `${line.qty}× ${line.name}`}</span>
-                                    <span className="text-green-400 shrink-0">{formatPesos(line.lineTotal)}</span>
-                                  </div>
-                                ))
+                                tx.lineItems.map((line, idx) => {
+                                  const itemOnly =
+                                    line.displayLabel != null
+                                      ? line.displayLabel.replace(/\s*x\d+$/i, "").trim() || line.name
+                                      : line.name;
+                                  const mainLabel = `${line.qty}× ${itemOnly}`;
+                                  return (
+                                    <div key={idx} className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 text-sm text-white">
+                                      <div className="min-w-0">
+                                        <div className="min-w-0 break-words font-medium">{mainLabel}</div>
+                                      </div>
+                                      <span className="shrink-0 self-start text-right text-green-400 whitespace-nowrap">{formatPesos(line.lineTotal)}</span>
+                                    </div>
+                                  );
+                                })
                               ) : (
                                 <span className="text-sm text-white/60">—</span>
                               )}

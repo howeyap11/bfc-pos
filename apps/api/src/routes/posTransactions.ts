@@ -15,9 +15,8 @@ import { ensureItemForCloudId } from "../services/catalogCache.service";
 import { uploadTransactionToCloud } from "../services/transactionSync.service";
 import { printReceiptToDevice, printStickersToDevice, formatTransactionLineLabel } from "../services/print.service";
 import {
-  allocateOneForPaidItem,
-  allocateOneForReward,
-  type AllocateResult,
+  allocateVouchersForTransaction,
+  getVouchersForTransaction,
 } from "../services/snapResiboVoucher.service";
 
 const STORE_ID = "store_1";
@@ -423,7 +422,23 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     }
 
     // Build line snapshots + totals (it.itemId is cloudId); only regular items
-    const lineSnapshots = regularItems.map((it) => {
+    type LineSnapshotCreate = {
+      itemId: string | null;
+      name: string;
+      qty: number;
+      unitPrice: number;
+      modifiersCents: number;
+      lineTotal: number;
+      note: string | null;
+      specialInstructions: string | null;
+      customerName: string | null;
+      optionsJson: string;
+      isDrink: boolean | null;
+      serveVessel: string | null;
+      categoryName?: string;
+      subCategoryName?: string;
+    };
+    const lineSnapshots: LineSnapshotCreate[] = regularItems.map((it) => {
       const dbItem = itemMap.get(it.itemId);
       if (!dbItem) throw new Error(`Invalid itemId: ${it.itemId}`);
 
@@ -722,6 +737,42 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         where: { id: transaction.id },
         data: { status: "PAID", createdBy: staff?.name ?? undefined },
       });
+      // SnapResibo: allocate at most one voucher once at finalization; print/reprint will reuse it
+      const storeConfigSnap = await app.prisma.storeConfig.findUnique({
+        where: { storeId: STORE_ID },
+        select: {
+          snapResiboEnabled: true,
+          snapResiboPriceCents: true,
+          snapResiboRewardMinimumCents: true,
+        },
+      });
+      if (storeConfigSnap?.snapResiboEnabled) {
+        const hasPaidSnapResiboLine = transaction.lineItems.some(
+          (li) => li.name.trim().toLowerCase() === "snapresibo qr" && li.lineTotal > 0
+        );
+        const qualifiesReward =
+          (storeConfigSnap.snapResiboRewardMinimumCents ?? 0) > 0 &&
+          transaction.totalCents >= (storeConfigSnap.snapResiboRewardMinimumCents ?? 0);
+        const pricePhp = Math.floor((storeConfigSnap.snapResiboPriceCents ?? 0) / 100);
+        try {
+          const { error } = await allocateVouchersForTransaction(app.prisma, {
+            storeId: STORE_ID,
+            transactionId: transaction.id,
+            receiptNo: transaction.transactionNo,
+            hasPaidSnapResiboLine,
+            qualifiesReward,
+            pricePhp,
+          });
+          if (error) {
+            app.log.warn(
+              { transactionId: transaction.id, error },
+              "SnapResibo voucher allocation at finalization failed"
+            );
+          }
+        } catch (err) {
+          app.log.warn({ err, transactionId: transaction.id }, "SnapResibo allocation at finalization threw");
+        }
+      }
       // Sync to cloud (best effort, non-blocking)
       const paymentsList = allPayments.map((p) => ({ method: p.method, amountCents: p.amountCents }));
       const lineItemsList = transaction.lineItems.map((l) => ({ name: l.name, qty: l.qty, lineTotal: l.lineTotal }));
@@ -995,11 +1046,12 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     return updatedTransaction;
   });
 
-  // Receipt view (enrich lineItems with categoryCloudId for sticker decision on client)
+  // Receipt view (enrich lineItems with categoryCloudId for sticker decision on client; include business name/address for receipt header; include linked SnapResibo voucher when enabled so UI can display same voucher without allocating)
   app.get("/pos/transactions/:id/receipt", async (req, reply) => {
     const { id } = req.params as { id: string };
 
-    const transaction = await app.prisma.transaction.findUnique({
+    const [transaction, storeConfig] = await Promise.all([
+      app.prisma.transaction.findUnique({
       where: { id },
       include: {
         lineItems: {
@@ -1016,7 +1068,12 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
           },
         },
       },
-    });
+    }),
+      app.prisma.storeConfig.findUnique({
+        where: { storeId: STORE_ID },
+        select: { businessName: true, address: true, snapResiboEnabled: true, snapResiboPriceCents: true },
+      }),
+    ]);
     if (!transaction) {
       reply.code(404);
       return { error: "TRANSACTION_NOT_FOUND" };
@@ -1082,10 +1139,35 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         displayLabel,
       };
     });
-    return { ...transaction, lineItems: lineItemsWithCategory };
+    const receiptHeader =
+      storeConfig && (storeConfig.businessName || storeConfig.address)
+        ? {
+            businessName: storeConfig.businessName ?? null,
+            address: storeConfig.address ?? null,
+          }
+        : undefined;
+
+    let snapResiboVouchers: Array<{ voucherId: string; pricePhp: number }> = [];
+    if (storeConfig?.snapResiboEnabled) {
+      const linked = await getVouchersForTransaction(app.prisma, id);
+      if (linked.length > 0) {
+        const pricePhp = Math.floor((storeConfig.snapResiboPriceCents ?? 0) / 100);
+        snapResiboVouchers = linked.slice(0, 1).map((v) => ({
+          voucherId: v.voucherId,
+          pricePhp: v.source === "PAID_ITEM" ? pricePhp : 0,
+        }));
+      }
+    }
+
+    return {
+      ...transaction,
+      lineItems: lineItemsWithCategory,
+      ...(receiptHeader && { businessName: receiptHeader.businessName, address: receiptHeader.address }),
+      ...(snapResiboVouchers.length > 0 && { snapResiboVouchers }),
+    };
   });
 
-  // Direct print receipt (local printer, no browser). When SnapResibo enabled, allocates vouchers and appends QR(s) to receipt.
+  // Direct print receipt (local printer, no browser). SnapResibo: uses voucher already linked at finalization; never allocates here.
   app.post("/pos/transactions/:id/print-receipt", async (req, reply) => {
     const { id } = req.params as { id: string };
     const transaction = await app.prisma.transaction.findUnique({
@@ -1122,7 +1204,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
           : String(transaction.createdAt),
     };
 
-    let snapResiboVouchers: AllocateResult[] = [];
+    let vouchersForPrint: Array<{ voucherId: string; pricePhp: number }> = [];
     let snapResiboError: string | null = null;
 
     if (storeConfig?.snapResiboEnabled) {
@@ -1132,38 +1214,21 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       );
       const qualifiesReward =
         (storeConfig.snapResiboRewardMinimumCents ?? 0) > 0 &&
-        transaction.totalCents >= storeConfig.snapResiboRewardMinimumCents;
+        transaction.totalCents >= (storeConfig.snapResiboRewardMinimumCents ?? 0);
+      const expectsVoucher = hasPaidSnapResiboLine || qualifiesReward;
 
-      try {
-        if (hasPaidSnapResiboLine) {
-          const v = await allocateOneForPaidItem(app.prisma, {
-            storeId: STORE_ID,
-            transactionId: transaction.id,
-            receiptNo: transaction.transactionNo,
-            pricePhp,
-          });
-          if (v) snapResiboVouchers.push(v);
-          else snapResiboError = "NO_AVAILABLE_VOUCHERS";
-        }
-        if (qualifiesReward) {
-          const v = await allocateOneForReward(app.prisma, {
-            storeId: STORE_ID,
-            transactionId: transaction.id,
-            receiptNo: transaction.transactionNo,
-          });
-          if (v) snapResiboVouchers.push(v);
-          else if (!snapResiboError) snapResiboError = "NO_AVAILABLE_VOUCHERS";
-        }
-      } catch (e) {
-        app.log.error({ err: e, transactionId: id }, "SnapResibo allocation failed");
-        snapResiboError = "ALLOCATION_FAILED";
+      const linked = await getVouchersForTransaction(app.prisma, transaction.id);
+      if (linked.length > 0) {
+        // V1: max one voucher per transaction; use first linked only (reprint must show same voucher)
+        const one = linked.slice(0, 1);
+        vouchersForPrint = one.map((v) => ({
+          voucherId: v.voucherId,
+          pricePhp: v.source === "PAID_ITEM" ? pricePhp : 0,
+        }));
+      } else if (expectsVoucher) {
+        snapResiboError = "NO_VOUCHER_LINKED";
       }
     }
-
-    const vouchersForPrint = snapResiboVouchers.map((v) => ({
-      voucherId: v!.voucherId,
-      pricePhp: v!.pricePhp,
-    }));
 
     try {
       await printReceiptToDevice(txForPrint, receiptHeader, vouchersForPrint.length > 0 ? vouchersForPrint : undefined);
@@ -1246,24 +1311,6 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
           : String(transaction.createdAt),
       lineItems: enrichedLineItems,
     };
-    // #region agent log
-    fetch("http://127.0.0.1:7330/ingest/e360f4f2-ab8d-4cc6-b94b-f45235f7b95a", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "162728" },
-      body: JSON.stringify({
-        sessionId: "162728",
-        location: "posTransactions.ts:print-stickers",
-        message: "txForPrint serviceType and first line note",
-        data: {
-          serviceType: txForPrint.serviceType,
-          firstLineNote: enrichedLineItems[0]?.note,
-          firstLineName: enrichedLineItems[0]?.name,
-          hypothesisId: "H2-H4",
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
     try {
       const result = await printStickersToDevice(txForPrint, { stickerPrintCategoryIds });
       if (result.printed === 0) {

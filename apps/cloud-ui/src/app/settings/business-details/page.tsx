@@ -41,7 +41,11 @@ export default function BusinessDetailsPage() {
           : bodyErr && typeof bodyErr === "object" && "error" in bodyErr
             ? String((bodyErr as { error: unknown }).error)
             : null;
-      setError(serverMsg || "Failed to save");
+      // Don't show the old POS_BACKEND/STORE_CONFIG_ADMIN_KEY message; business details save in cloud-api now.
+      const isOldProxyMessage =
+        typeof serverMsg === "string" &&
+        (serverMsg.includes("POS_BACKEND") || serverMsg.includes("STORE_CONFIG_ADMIN_KEY") || serverMsg.includes("business details from Cloud Admin"));
+      setError(isOldProxyMessage ? "Failed to save. Please try again." : (serverMsg || "Failed to save"));
     } finally {
       setSaving(false);
     }

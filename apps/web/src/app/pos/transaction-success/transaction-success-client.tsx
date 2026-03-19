@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { COLORS } from "@/lib/theme";
-import type { ReceiptTransaction } from "@/lib/printHelpers";
+import { type ReceiptTransaction, getLineItemMainLabel } from "@/lib/printHelpers";
 import { extractSizeTemp, formatSizeTempLine } from "@/lib/lineItemDisplay";
 
 /** Format line item for display: size/temp from either shape, then milk, shots, etc. from optionsJson */
@@ -580,28 +580,29 @@ export default function TransactionSuccessClient() {
                   </svg>
                 </div>
 
-                {/* Item Details */}
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: "500", fontSize: 14, marginBottom: 4 }}>
-                    {item.displayLabel ?? `${item.name} ×${item.qty}`}
+                {/* Item Details + Price: 2-column so price stays top-right; add-ons below main label in left column only */}
+                <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", alignItems: "start", gap: "8px 12px", flex: 1, minWidth: 0 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: "500", fontSize: 14, wordBreak: "break-word" }}>
+                      {getLineItemMainLabel(item)}
+                    </div>
+                    {hasMods && (
+                      <div style={{ fontSize: 12, color: "#374151", marginTop: 2 }}>
+                        {primary && <div>+ {primary}</div>}
+                        {secondary.map((s, i) => (
+                          <div key={i}>+ {s}</div>
+                        ))}
+                      </div>
+                    )}
+                    {item.note && (
+                      <div style={{ fontSize: 12, color: "#6b7280", fontStyle: "italic", marginTop: 2 }}>
+                        {item.note}
+                      </div>
+                    )}
                   </div>
-                  {hasMods && (
-                    <div style={{ fontSize: 12, color: "#374151", marginBottom: 4 }}>
-                      {primary && <span style={{ fontWeight: "600" }}>{primary}</span>}
-                      {primary && secondary.length > 0 && " · "}
-                      {secondary.join(" · ")}
-                    </div>
-                  )}
-                  {item.note && (
-                    <div style={{ fontSize: 12, color: "#6b7280", fontStyle: "italic" }}>
-                      {item.note}
-                    </div>
-                  )}
-                </div>
-
-                {/* Price */}
-                <div style={{ fontWeight: "600", fontSize: 14 }}>
-                  {formatPesos(item.lineTotal)}
+                  <div style={{ fontWeight: "600", fontSize: 14, whiteSpace: "nowrap", flexShrink: 0, alignSelf: "start" }}>
+                    {formatPesos(item.lineTotal)}
+                  </div>
                 </div>
               </div>
             );

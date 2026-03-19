@@ -3063,6 +3063,7 @@ export async function adminRoutes(app: FastifyInstance) {
         Source: t.source,
         "Service Type": t.serviceType,
         "Payment Method": primaryMethod,
+        Test: (t.isTest ?? false) ? "Yes" : "No",
         Subtotal: (t.subtotalCents / 100).toFixed(2),
         Discount: (t.discountCents / 100).toFixed(2),
         Total: (t.totalCents / 100).toFixed(2),
@@ -3128,6 +3129,7 @@ export async function adminRoutes(app: FastifyInstance) {
         createdAt: t.createdAt.toISOString(),
         voidedAt: t.voidedAt?.toISOString() ?? null,
         voidReason: t.voidReason,
+        isTest: t.isTest ?? false,
         payments,
         lineItems,
       };

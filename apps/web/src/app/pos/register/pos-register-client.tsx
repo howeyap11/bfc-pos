@@ -13,7 +13,7 @@ import {
   type CartSnapshotItem,
 } from "@/lib/customerDisplaySnapshot";
 import { extractSizeTemp } from "@/lib/lineItemDisplay";
-import { lineItemDisplayParts } from "@/lib/printHelpers";
+import { lineItemDisplayParts, getLineItemMainLabel } from "@/lib/printHelpers";
 import {
   resolveIncludedShots,
   resolveIncludedShotsBySizeName,
@@ -5250,22 +5250,34 @@ export default function PosRegisterClient() {
             <h3 style={{ color: "#ddd" }}>Items:</h3>
             {currentTransaction.lineItems.map((line) => {
               const { primary, secondary } = lineItemDisplayParts(line);
-              const mods = [primary, ...secondary].filter(Boolean).join(" · ");
-              const lineLabel = line.displayLabel ?? `${line.qty}× ${line.name}`;
+              const mods = [primary, ...secondary].filter(Boolean);
+              const mainLabel = getLineItemMainLabel(line);
               return (
                 <div
                   key={line.id}
-                  style={{ padding: 10, marginBottom: 8, border: "1px solid #444", borderRadius: 4, background: "#1a1a1a" }}
+                  style={{
+                    padding: 10,
+                    marginBottom: 8,
+                    border: "1px solid #444",
+                    borderRadius: 4,
+                    background: "#1a1a1a",
+                    display: "grid",
+                    gridTemplateColumns: "minmax(0, 1fr) auto",
+                    alignItems: "start",
+                    gap: "8px 12px",
+                  }}
                 >
-                  <div>
-                    <strong style={{ color: "#fff" }}>
-                      {lineLabel}
-                    </strong>
-                    {mods && (
-                      <div style={{ fontSize: 13, color: "#aaa" }}>{mods}</div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: "600", color: "#fff", wordBreak: "break-word" }}>{mainLabel}</div>
+                    {mods.length > 0 && (
+                      <div style={{ fontSize: 13, color: "#aaa", marginTop: 2 }}>
+                        {mods.map((m, i) => (
+                          <div key={i}>+ {m}</div>
+                        ))}
+                      </div>
                     )}
                   </div>
-                  <div style={{ textAlign: "right", color: "#4ade80", fontWeight: "600" }}>
+                  <div style={{ color: "#4ade80", fontWeight: "600", whiteSpace: "nowrap", textAlign: "right", alignSelf: "start" }}>
                     {formatPesos(line.lineTotal)}
                   </div>
                 </div>

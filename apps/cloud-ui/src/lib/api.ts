@@ -401,6 +401,7 @@ export type SyncedTransactionRow = {
   createdAt: string;
   voidedAt: string | null;
   voidReason: string | null;
+  isTest?: boolean;
   payments: { method: string; amountCents: number }[];
   lineItems: {
     name: string;

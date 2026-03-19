@@ -174,8 +174,7 @@ export default function DevSettingsPage() {
             <button
               type="button"
               onClick={() => { setDeleteTestModalOpen(true); setError(""); setDeleteTestPhrase(""); setDeleteTestPassword(""); }}
-              disabled={!canUseDangerous}
-              className="rounded border border-red-500/50 px-4 py-2 text-sm font-medium text-red-400 hover:bg-red-500/10 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="rounded border border-red-500/50 px-4 py-2 text-sm font-medium text-red-400 hover:bg-red-500/10"
             >
               Delete All Test Transactions
             </button>

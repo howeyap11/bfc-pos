@@ -27,6 +27,9 @@ export type ReceiptTransaction = {
   createdAt: string;
   lineItems: ReceiptLineItem[];
   payments: Array<{ method: string; amountCents: number; status?: string }>;
+  /** From Settings > Business Details; shown at top of receipt */
+  businessName?: string | null;
+  address?: string | null;
 };
 
 function formatPesos(cents: number): string {
@@ -75,17 +78,53 @@ export function lineItemDisplayParts(item: LineItemDisplayInput): {
   return { primary, secondary };
 }
 
+/** Quantity-first main label: "2× CATEGORY: SUB [Item Name]". Strips trailing " xN" from displayLabel so qty is not duplicated. */
+export function getLineItemMainLabel(line: {
+  displayLabel?: string | null;
+  name: string;
+  qty: number;
+}): string {
+  const itemOnly =
+    line.displayLabel != null
+      ? line.displayLabel.replace(/\s*x\d+$/i, "").trim() || line.name
+      : line.name;
+  return `${line.qty}× ${itemOnly}`;
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 export function buildReceiptHtml(tx: ReceiptTransaction): string {
   const paymentMethod = tx.payments[0]?.method ?? "CASH";
+  const headerLines: string[] = [];
+  if (tx.businessName?.trim()) headerLines.push(`<div style="text-align:center;font-weight:bold;margin-bottom:4px">${escapeHtml(tx.businessName.trim())}</div>`);
+  if (tx.address?.trim()) {
+    const addressLines = tx.address.trim().split(",").map((s) => s.trim()).filter(Boolean);
+    for (const line of addressLines) headerLines.push(`<div style="text-align:center;font-size:11px;color:#555;margin-bottom:2px">${escapeHtml(line)}</div>`);
+  }
+  const headerHtml = headerLines.length > 0 ? `<div style="margin-bottom:8px">${headerLines.join("")}</div>` : "";
+
   const lines = tx.lineItems
     .map((item) => {
       const { primary, secondary } = lineItemDisplayParts(item);
-      const mods = [primary, ...secondary].filter(Boolean).join(" · ");
-      const label = item.displayLabel ?? `${item.qty}× ${item.name}`;
+      const mods = [primary, ...secondary].filter(Boolean);
+      const mainLabel = getLineItemMainLabel(item);
+      const addonsHtml =
+        mods.length > 0
+          ? mods.map((m) => `<div style="font-size:11px;color:#666;margin-top:2px">+ ${escapeHtml(m)}</div>`).join("")
+          : "";
       return `
         <tr>
-          <td style="padding:4px 8px;border-bottom:1px solid #eee">${label}${mods ? ` (${mods})` : ""}</td>
-          <td style="padding:4px 8px;border-bottom:1px solid #eee;text-align:right;white-space:nowrap">${formatPesos(item.lineTotal)}</td>
+          <td style="padding:4px 8px;border-bottom:1px solid #eee;vertical-align:top;min-width:0;word-wrap:break-word">
+            <div style="word-break:break-word">${escapeHtml(mainLabel)}</div>
+            ${addonsHtml}
+          </td>
+          <td style="padding:4px 8px;border-bottom:1px solid #eee;text-align:right;white-space:nowrap;vertical-align:top;width:1%">${formatPesos(item.lineTotal)}</td>
         </tr>`;
     })
     .join("");
@@ -105,6 +144,7 @@ export function buildReceiptHtml(tx: ReceiptTransaction): string {
   </style>
 </head>
 <body>
+  ${headerHtml}
   <div style="text-align:center;margin-bottom:8px"><strong>RECEIPT #${tx.transactionNo}</strong></div>
   <div style="font-size:10px;color:#666;margin-bottom:8px">${new Date(tx.createdAt).toLocaleString()}</div>
   <table>
@@ -180,14 +220,6 @@ export function buildStickerHtml(tx: ReceiptTransaction, opts?: StickerPrintOpti
   ${labels}
 </body>
 </html>`;
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }
 
 /**

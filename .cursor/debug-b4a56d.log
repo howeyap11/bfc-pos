@@ -1,0 +1,18 @@
+{"sessionId":"b4a56d","location":"prisma.ts:init","message":"Prisma init","data":{"isSqlite":true,"appliedTimeout":true,"urlPreview":"file:***?connection_limit=1&connect_timeout=30&socket_timeout=30"},"hypothesisId":"H1","timestamp":1773884005305}
+{"sessionId":"b4a56d","location":"prisma.ts:afterPragma","message":"PRAGMA busy_timeout set","data":{"runId":"post-fix"},"hypothesisId":"H4","timestamp":1773884005537}
+{"sessionId":"b4a56d","location":"syncScheduler.ts:runCatalogSyncStart","message":"catalog sync started","data":{"transactionFlushInFlight":false},"hypothesisId":"H2","timestamp":1773884005581}
+{"sessionId":"b4a56d","location":"syncCatalog.service.ts:beforeSyncStateUpsert","message":"before syncState.upsert","data":{"branchId":"default","t0":1773884005582},"hypothesisId":"H2","timestamp":1773884005582}
+{"sessionId":"b4a56d","location":"syncCatalog.service.ts:syncStateRetry","message":"syncState.upsert retry after timeout","data":{"attempt":1,"nextIn":15000},"hypothesisId":"H4","timestamp":1773884037991}
+{"sessionId":"b4a56d","location":"syncCatalog.service.ts:syncStateCatch","message":"syncState.upsert error","data":{"isTimeout":false,"msgPreview":"\nInvalid `prisma.syncState.upsert()` invocation in\nD:\\Work\\BFC QR Menu\\bfc-qr-ordering\\apps\\api\\src\\services\\syncCatalog"},"hypothesisId":"H4","timestamp":1773884053008}
+{"sessionId":"b4a56d","location":"syncScheduler.ts:runTransactionFlushStart","message":"transaction flush started","data":{},"hypothesisId":"H2","timestamp":1773884083015}
+{"sessionId":"b4a56d","location":"prisma.ts:init","message":"Prisma init","data":{"isSqlite":true,"appliedTimeout":true,"urlPreview":"file:***?connection_limit=1&connect_timeout=30&socket_timeout=30"},"hypothesisId":"H1","timestamp":1773884086941}
+{"sessionId":"b4a56d","location":"prisma.ts:afterPragma","message":"PRAGMA busy_timeout set","data":{"runId":"post-fix"},"hypothesisId":"H4","timestamp":1773884087146}
+{"sessionId":"b4a56d","location":"syncScheduler.ts:runCatalogSyncStart","message":"catalog sync started","data":{"transactionFlushInFlight":false},"hypothesisId":"H2","timestamp":1773884087180}
+{"sessionId":"b4a56d","location":"syncCatalog.service.ts:beforeSyncStateUpsert","message":"before syncState.upsert","data":{"branchId":"default","t0":1773884087182},"hypothesisId":"H2","timestamp":1773884087182}
+{"sessionId":"b4a56d","location":"prisma.ts:afterPragma","message":"PRAGMA busy_timeout set","data":{"runId":"post-fix"},"hypothesisId":"H4","timestamp":1773884106304}
+{"sessionId":"b4a56d","location":"syncCatalog.service.ts:beforeSyncStateUpsert","message":"before syncState.upsert","data":{"branchId":"default","t0":1773884106358},"hypothesisId":"H2","timestamp":1773884106358}
+{"sessionId":"b4a56d","location":"syncScheduler.ts:runCatalogSyncStart","message":"catalog sync started","data":{"transactionFlushInFlight":false},"hypothesisId":"H2","timestamp":1773884106357}
+{"sessionId":"b4a56d","location":"syncScheduler.ts:runCatalogSyncStart","message":"catalog sync started","data":{"transactionFlushInFlight":false},"hypothesisId":"H2","timestamp":1773884110915}
+{"sessionId":"b4a56d","location":"syncCatalog.service.ts:beforeSyncStateUpsert","message":"before syncState.upsert","data":{"branchId":"default","t0":1773884110916},"hypothesisId":"H2","timestamp":1773884110916}
+{"sessionId":"b4a56d","location":"syncCatalog.service.ts:beforeSyncStateUpsert","message":"before syncState.upsert","data":{"branchId":"default","t0":1773884113967},"hypothesisId":"H2","timestamp":1773884113967}
+{"sessionId":"b4a56d","location":"syncCatalog.service.ts:beforeSyncStateUpsert","message":"before syncState.upsert","data":{"branchId":"default","t0":1773884118823},"hypothesisId":"H2","timestamp":1773884118823}

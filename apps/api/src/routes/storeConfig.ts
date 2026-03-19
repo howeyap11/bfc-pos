@@ -12,11 +12,20 @@ function isBusinessDetailsOnly(body: unknown): boolean {
   return keys.length > 0 && keys.every((k) => k === "businessName" || k === "address");
 }
 
-/** Allow PUT if: staff auth, admin key, or body only businessName/address (no auth required). */
+/** Body is only devMode (POS Settings Dev Mode toggle – behind PIN gate, no staff key required). */
+function isDevModeOnly(body: unknown): boolean {
+  if (!body || typeof body !== "object") return false;
+  const keys = Object.keys(body as Record<string, unknown>).filter((k) => (body as Record<string, unknown>)[k] !== undefined);
+  return keys.length > 0 && keys.every((k) => k === "devMode");
+}
+
+/** Allow PUT if: staff auth, admin key, body only businessName/address (no auth), or body only devMode (no auth). */
 async function allowStaffOrStoreConfigAdmin(req: FastifyRequest, reply: FastifyReply) {
   const body = (req as { body?: unknown }).body;
   const onlyBusinessDetails = isBusinessDetailsOnly(body);
   if (onlyBusinessDetails) return;
+  const onlyDevMode = isDevModeOnly(body);
+  if (onlyDevMode) return;
 
   const adminKey = process.env.STORE_CONFIG_ADMIN_KEY;
   const incoming = (req.headers["x-store-config-admin-key"] as string) ?? "";

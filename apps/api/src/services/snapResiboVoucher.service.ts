@@ -1,6 +1,12 @@
 /**
  * SnapResibo voucher allocation and import.
  * Vouchers: AVAILABLE → ISSUED (at receipt) → USED (when redeemed elsewhere).
+ *
+ * BUSINESS RULE (strict):
+ * - Only 1 SnapResibo voucher may ever be issued per transaction.
+ * - Allocation happens ONLY at transaction finalization (when status becomes PAID). Never during print/reprint.
+ * - All print/reprint flows must look up the voucher already linked to the transaction (getVouchersForTransaction)
+ *   and reuse it. If none found, do not allocate; fail gracefully (caller sets snapResiboError).
  */
 
 import type { PrismaClient } from "@prisma/client";
@@ -23,7 +29,90 @@ export async function getAvailableCount(prisma: PrismaClient, storeId: string = 
   });
 }
 
+/** Remaining = AVAILABLE, used = USED, total = all vouchers for the store. For settings UI stats and low-stock warning. */
+export async function getVoucherStats(
+  prisma: PrismaClient,
+  storeId: string = STORE_ID
+): Promise<{ remaining: number; used: number; total: number }> {
+  const [remaining, used, total] = await Promise.all([
+    prisma.snapResiboVoucher.count({ where: { storeId, status: "AVAILABLE" } }),
+    prisma.snapResiboVoucher.count({ where: { storeId, status: "USED" } }),
+    prisma.snapResiboVoucher.count({ where: { storeId } }),
+  ]);
+  return { remaining, used, total };
+}
+
 export type AllocateResult = { voucherId: string; pricePhp: number } | null;
+
+export type VoucherForTransaction = { voucherId: string; source: string | null };
+
+/**
+ * Load already-issued SnapResibo vouchers linked to this transaction. Use for print/reprint; never allocates.
+ */
+export async function getVouchersForTransaction(
+  prisma: PrismaClient,
+  transactionId: string
+): Promise<VoucherForTransaction[]> {
+  const rows = await prisma.snapResiboVoucher.findMany({
+    where: { transactionId, status: "ISSUED" },
+    orderBy: { issuedAt: "asc" },
+    select: { voucherId: true, source: true },
+  });
+  return rows.map((r) => ({ voucherId: r.voucherId, source: r.source }));
+}
+
+export type AllocateForTransactionOpts = {
+  storeId?: string;
+  transactionId: string;
+  receiptNo: number;
+  hasPaidSnapResiboLine: boolean;
+  qualifiesReward: boolean;
+  pricePhp: number;
+};
+
+export type AllocateForTransactionResult = {
+  vouchers: AllocateResult[];
+  error: string | null;
+};
+
+/**
+ * Allocate at most ONE voucher for this transaction, only if it has none yet.
+ * Call once at finalization (when transaction becomes PAID). Idempotent: if transaction
+ * already has a linked voucher, returns it without allocating again.
+ */
+export async function allocateVouchersForTransaction(
+  prisma: PrismaClient,
+  opts: AllocateForTransactionOpts
+): Promise<AllocateForTransactionResult> {
+  const existing = await getVouchersForTransaction(prisma, opts.transactionId);
+  if (existing.length > 0) {
+    const pricePhp = opts.pricePhp;
+    const vouchers: AllocateResult[] = existing.slice(0, 1).map((v) => ({
+      voucherId: v.voucherId,
+      pricePhp: v.source === "PAID_ITEM" ? pricePhp : 0,
+    }));
+    return { vouchers, error: null };
+  }
+  const storeId = opts.storeId ?? STORE_ID;
+  if (opts.hasPaidSnapResiboLine) {
+    const v = await allocateOneForPaidItem(prisma, {
+      storeId,
+      transactionId: opts.transactionId,
+      receiptNo: opts.receiptNo,
+      pricePhp: opts.pricePhp,
+    });
+    return { vouchers: v ? [v] : [], error: v ? null : "NO_AVAILABLE_VOUCHERS" };
+  }
+  if (opts.qualifiesReward) {
+    const v = await allocateOneForReward(prisma, {
+      storeId,
+      transactionId: opts.transactionId,
+      receiptNo: opts.receiptNo,
+    });
+    return { vouchers: v ? [v] : [], error: v ? null : "NO_AVAILABLE_VOUCHERS" };
+  }
+  return { vouchers: [], error: null };
+}
 
 /**
  * Allocate one available voucher for a paid SnapResibo QR item. Marks as ISSUED and links to transaction.

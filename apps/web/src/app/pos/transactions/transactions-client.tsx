@@ -3,7 +3,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { COLORS } from "@/lib/theme";
 import { useOnScreenKeyboard, OnScreenKeyboard } from "@/lib/useOnScreenKeyboard";
-import { lineItemDisplayParts } from "@/lib/printHelpers";
+import { lineItemDisplayParts, getLineItemMainLabel } from "@/lib/printHelpers";
 
 type Transaction = {
   id: string;
@@ -886,48 +886,51 @@ export default function TransactionsClient() {
                               {tx.lineItems.map(line => {
                                 const refunded = isLineRefunded(line);
                                 const { primary, secondary } = lineItemDisplayParts(line);
-                                const mods = [primary, ...secondary].filter(Boolean).join(", ");
-                                const lineLabel = line.displayLabel ?? `${line.qty}× ${line.name}`;
+                                const mods = [primary, ...secondary].filter(Boolean);
+                                const mainLabel = getLineItemMainLabel(line);
                                 return (
-                                  <div 
+                                  <div
                                     key={line.id}
                                     style={{
+                                      display: "grid",
+                                      gridTemplateColumns: "minmax(0, 1fr) auto",
+                                      alignItems: "start",
+                                      gap: "8px 12px",
                                       fontSize: 13,
                                       color: refunded ? "#666" : "#ddd",
                                       textDecoration: refunded ? "line-through" : "none",
                                     }}
                                   >
-                                    <span style={{ fontWeight: "600" }}>
-                                      {lineLabel}
-                                    </span>
-                                    {mods && (
-                                      <span style={{ color: refunded ? "#555" : "#888", fontSize: 11, marginLeft: 4 }}>
-                                        ({mods})
-                                      </span>
-                                    )}
-                                    {line.note && (
-                                      <span style={{ color: refunded ? "#555" : "#fbbf24", fontSize: 11, marginLeft: 4, fontStyle: "italic" }}>
-                                        — {line.note}
-                                      </span>
-                                    )}
-                                    {refunded && (
-                                      <span style={{
-                                        marginLeft: 6,
-                                        padding: "2px 6px",
-                                        borderRadius: 3,
-                                        fontSize: 9,
-                                        fontWeight: "600",
-                                        background: "#7f1d1d",
-                                        color: "#fca5a5",
-                                      }}>
-                                        REFUNDED
-                                      </span>
-                                    )}
-                                    <span style={{ 
-                                      marginLeft: 8, 
-                                      color: refunded ? "#555" : "#4ade80",
-                                      fontWeight: "600"
-                                    }}>
+                                    <div style={{ minWidth: 0 }}>
+                                      <div style={{ fontWeight: "600", wordBreak: "break-word" }}>{mainLabel}</div>
+                                      {mods.length > 0 && (
+                                        <div style={{ color: refunded ? "#555" : "#888", fontSize: 11, marginTop: 2 }}>
+                                          {mods.map((m, i) => (
+                                            <div key={i}>+ {m}</div>
+                                          ))}
+                                        </div>
+                                      )}
+                                      {line.note && (
+                                        <div style={{ color: refunded ? "#555" : "#fbbf24", fontSize: 11, marginTop: 2, fontStyle: "italic" }}>
+                                          — {line.note}
+                                        </div>
+                                      )}
+                                      {refunded && (
+                                        <span style={{
+                                          display: "inline-block",
+                                          marginTop: 4,
+                                          padding: "2px 6px",
+                                          borderRadius: 3,
+                                          fontSize: 9,
+                                          fontWeight: "600",
+                                          background: "#7f1d1d",
+                                          color: "#fca5a5",
+                                        }}>
+                                          REFUNDED
+                                        </span>
+                                      )}
+                                    </div>
+                                    <span style={{ color: refunded ? "#555" : "#4ade80", fontWeight: "600", whiteSpace: "nowrap", flexShrink: 0, alignSelf: "start" }}>
                                       {formatPesos(line.lineTotal)}
                                     </span>
                                   </div>
@@ -1518,30 +1521,35 @@ export default function TransactionsClient() {
                             cursor: refunded ? "not-allowed" : "pointer",
                             width: 18,
                             height: 18,
+                            flexShrink: 0,
                           }}
                         />
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: 14, color: "#fff", fontWeight: "600", marginBottom: 4 }}>
-                            {line.displayLabel ?? `${line.qty}× ${line.name}`}
+                        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", alignItems: "start", gap: "8px 12px", flex: 1, minWidth: 0 }}>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: 14, color: "#fff", fontWeight: "600", wordBreak: "break-word" }}>
+                              {getLineItemMainLabel(line)}
+                            </div>
+                            {mods && (
+                              <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>
+                                {mods.split(" · ").map((m, i) => (
+                                  <div key={i}>+ {m}</div>
+                                ))}
+                              </div>
+                            )}
+                            {line.note && (
+                              <div style={{ fontSize: 12, color: "#fbbf24", fontStyle: "italic", marginTop: 2 }}>
+                                Note: {line.note}
+                              </div>
+                            )}
+                            {refunded && (
+                              <div style={{ fontSize: 11, color: "#ef4444", marginTop: 4, fontWeight: "600" }}>
+                                Already refunded
+                              </div>
+                            )}
                           </div>
-                          {mods && (
-                            <div style={{ fontSize: 12, color: "#888" }}>
-                              {mods}
-                            </div>
-                          )}
-                          {line.note && (
-                            <div style={{ fontSize: 12, color: "#fbbf24", fontStyle: "italic", marginTop: 2 }}>
-                              Note: {line.note}
-                            </div>
-                          )}
-                          {refunded && (
-                            <div style={{ fontSize: 11, color: "#ef4444", marginTop: 4, fontWeight: "600" }}>
-                              Already refunded
-                            </div>
-                          )}
-                        </div>
-                        <div style={{ fontSize: 14, color: "#4ade80", fontWeight: "600" }}>
-                          {formatPesos(line.lineTotal)}
+                          <div style={{ fontSize: 14, color: "#4ade80", fontWeight: "600", whiteSpace: "nowrap", flexShrink: 0, alignSelf: "start" }}>
+                            {formatPesos(line.lineTotal)}
+                          </div>
                         </div>
                       </div>
                     </div>

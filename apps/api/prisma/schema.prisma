@@ -73,6 +73,7 @@ model SnapResiboVoucher {
   @@unique([storeId, voucherId])
   @@index([storeId])
   @@index([storeId, status])
+  @@index([transactionId])
 }
 
 model Staff {

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { COLORS } from "@/lib/theme";
 import { extractSizeTemp, formatSizeTempLine } from "@/lib/lineItemDisplay";
-import { lineItemDisplayParts } from "@/lib/printHelpers";
+import { lineItemDisplayParts, getLineItemMainLabel } from "@/lib/printHelpers";
 
 type Category = {
   id: string;
@@ -799,17 +799,33 @@ export default function PosCartClient() {
                 <h3>Line Items:</h3>
                 {currentTransaction.lineItems.map((line) => {
                   const { primary, secondary } = lineItemDisplayParts(line);
-                  const mods = [primary, ...secondary].filter(Boolean).join(" · ");
+                  const mods = [primary, ...secondary].filter(Boolean);
+                  const mainLabel = getLineItemMainLabel(line);
                   return (
-                    <div key={line.id} style={{ padding: 8, marginBottom: 8, border: "1px solid #eee" }}>
-                      <div>
-                        <strong>
-                          {line.qty}× {line.name}
-                        </strong>
-                        {mods && <div style={{ fontSize: 13, color: "#666" }}>{mods}</div>}
+                    <div
+                      key={line.id}
+                      style={{
+                        padding: 8,
+                        marginBottom: 8,
+                        border: "1px solid #eee",
+                        display: "grid",
+                        gridTemplateColumns: "minmax(0, 1fr) auto",
+                        alignItems: "start",
+                        gap: "8px 12px",
+                      }}
+                    >
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: "600", wordBreak: "break-word" }}>{mainLabel}</div>
+                        {mods.length > 0 && (
+                          <div style={{ fontSize: 13, color: "#666", marginTop: 2 }}>
+                            {mods.map((m, i) => (
+                              <div key={i}>+ {m}</div>
+                            ))}
+                          </div>
+                        )}
+                        {line.note && <div style={{ fontSize: 13, fontStyle: "italic", marginTop: 2 }}>Note: {line.note}</div>}
                       </div>
-                      {line.note && <div style={{ fontSize: 13, fontStyle: "italic" }}>Note: {line.note}</div>}
-                      <div style={{ textAlign: "right" }}>{formatPesos(line.lineTotal)}</div>
+                      <div style={{ whiteSpace: "nowrap", textAlign: "right", alignSelf: "start" }}>{formatPesos(line.lineTotal)}</div>
                     </div>
                   );
                 })}

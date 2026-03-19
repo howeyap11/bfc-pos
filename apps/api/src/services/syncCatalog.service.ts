@@ -250,6 +250,7 @@ export async function syncCatalogFromCloud(
   prisma: PrismaClient,
   branchId = "default"
 ): Promise<{ ok: true; result: SyncCatalogResult } | { ok: false; error: string; code: number }> {
+  console.log("[startup] syncCatalogFromCloud: started");
   if (!CLOUD_URL?.trim()) {
     return { ok: false, error: "CLOUD_URL not configured", code: 503 };
   }
@@ -266,12 +267,48 @@ export async function syncCatalogFromCloud(
         code: 500,
       };
     }
-    const syncState = await prisma.syncState.upsert({
-      where: { branchId },
-      create: { branchId, catalogVersion: 0 },
-      update: {},
-    });
-    sinceVersion = syncState.catalogVersion;
+    let syncState: { catalogVersion: number };
+    const maxAttempts = 3;
+    const retryDelayMs = 15000;
+    let lastAttemptAt = 0;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const now = Date.now();
+      const durationSinceLast = lastAttemptAt > 0 ? now - lastAttemptAt : 0;
+      const isRetry = attempt > 0;
+      const instanceId = (prisma as any)._bfcInstanceId ?? "unknown";
+      console.log("[startup] syncCatalogFromCloud: about to syncState.upsert", { attempt: attempt + 1 });
+      console.warn("[syncState.upsert] write-lock visibility", {
+        timestamp: now,
+        attempt: attempt + 1,
+        durationSinceLastMs: durationSinceLast,
+        isRetry,
+        prismaInstanceId: instanceId,
+      });
+      try {
+        syncState = await prisma.syncState.upsert({
+          where: { branchId },
+          create: { branchId, catalogVersion: 0 },
+          update: {},
+        });
+        console.log("[startup] syncCatalogFromCloud: syncState.upsert done", { catalogVersion: syncState.catalogVersion });
+        break;
+      } catch (upsertErr: unknown) {
+        lastAttemptAt = Date.now();
+        const isP1008 = upsertErr && typeof (upsertErr as any).code === "string" && (upsertErr as any).code === "P1008";
+        const isTimeout = isP1008 || /timeout/i.test(String(upsertErr));
+        if (attempt < maxAttempts - 1 && isTimeout) {
+          try {
+            await prisma.$disconnect();
+            await prisma.$connect();
+            await prisma.$queryRawUnsafe("PRAGMA busy_timeout=30000");
+          } catch (_) {}
+          await new Promise((r) => setTimeout(r, retryDelayMs));
+          continue;
+        }
+        throw upsertErr;
+      }
+    }
+    sinceVersion = syncState!.catalogVersion;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return {

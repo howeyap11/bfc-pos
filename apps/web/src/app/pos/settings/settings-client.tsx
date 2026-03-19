@@ -5,6 +5,7 @@ import { COLORS } from "@/lib/theme";
 import { useOnScreenKeyboard, OnScreenKeyboard } from "@/lib/useOnScreenKeyboard";
 
 const WEB_VERSION = process.env.NEXT_PUBLIC_POS_VERSION ?? "0.1.0";
+const SETTINGS_ADMIN_UNLOCK_KEY = "bfc_settings_admin_unlocked";
 
 type PaymentMethod = "CASH" | "CARD" | "GCASH" | "FOODPANDA" | "GRABFOOD" | "BFCAPP";
 
@@ -39,7 +40,10 @@ const PAYMENT_METHODS: Array<{ value: PaymentMethod; label: string; description:
 
 export default function SettingsClient() {
   const keyboard = useOnScreenKeyboard();
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return sessionStorage.getItem(SETTINGS_ADMIN_UNLOCK_KEY) === "1";
+  });
   const [pinInput, setPinInput] = useState("");
   const [pinError, setPinError] = useState("");
   const [config, setConfig] = useState<StoreConfig | null>(null);
@@ -74,6 +78,8 @@ export default function SettingsClient() {
   const [snapResiboImporting, setSnapResiboImporting] = useState(false);
   const [snapResiboImportResult, setSnapResiboImportResult] = useState<string | null>(null);
   const [snapResiboAvailableCount, setSnapResiboAvailableCount] = useState<number | null>(null);
+  const [snapResiboUsedCount, setSnapResiboUsedCount] = useState<number | null>(null);
+  const [snapResiboTotalCount, setSnapResiboTotalCount] = useState<number | null>(null);
   const [publicSnapResiboEnabled, setPublicSnapResiboEnabled] = useState<boolean | null>(null);
 
   const loadStatus = useCallback(async () => {
@@ -146,10 +152,20 @@ export default function SettingsClient() {
     try {
       const res = await fetch("/api/snapresibo/vouchers/count", { cache: "no-store" });
       const data = await res.json();
-      if (res.ok && typeof data.count === "number") setSnapResiboAvailableCount(data.count);
-      else setSnapResiboAvailableCount(null);
+      if (res.ok) {
+        const remaining = typeof data.remaining === "number" ? data.remaining : data.count;
+        setSnapResiboAvailableCount(typeof remaining === "number" ? remaining : null);
+        setSnapResiboUsedCount(typeof data.used === "number" ? data.used : null);
+        setSnapResiboTotalCount(typeof data.total === "number" ? data.total : null);
+      } else {
+        setSnapResiboAvailableCount(null);
+        setSnapResiboUsedCount(null);
+        setSnapResiboTotalCount(null);
+      }
     } catch {
       setSnapResiboAvailableCount(null);
+      setSnapResiboUsedCount(null);
+      setSnapResiboTotalCount(null);
     }
   }, []);
 
@@ -168,6 +184,10 @@ export default function SettingsClient() {
   useEffect(() => {
     if (isAuthenticated && config?.snapResiboEnabled) loadSnapResiboCount();
   }, [isAuthenticated, config?.snapResiboEnabled, loadSnapResiboCount]);
+
+  useEffect(() => {
+    if (publicSnapResiboEnabled === true) loadSnapResiboCount();
+  }, [publicSnapResiboEnabled, loadSnapResiboCount]);
 
   useEffect(() => {
     if (status?.commandState === "updating") setOverlay("updating");
@@ -215,6 +235,7 @@ export default function SettingsClient() {
       const data = await res.json();
 
       if (res.ok && data.ok) {
+        sessionStorage.setItem(SETTINGS_ADMIN_UNLOCK_KEY, "1");
         setIsAuthenticated(true);
         setPinError("");
         setPinInput("");
@@ -433,7 +454,11 @@ export default function SettingsClient() {
       const data = await res.json();
 
       if (!res.ok) {
-        throw new Error(data.error || "Failed to save config");
+        const msg =
+          res.status === 401
+            ? "Save failed. Sign in at the Register first, then try saving again."
+            : data.error || data.message || "Failed to save config";
+        throw new Error(msg);
       }
 
       setConfig(data);
@@ -598,10 +623,10 @@ export default function SettingsClient() {
             }}
           >
             <h2 style={{ marginTop: 0, marginBottom: 8, fontSize: 16, fontWeight: 600, color: COLORS.textPrimary }}>
-              SnapResibo – Import Vouchers
+              SnapResibo
             </h2>
-            <p style={{ margin: "0 0 16px 0", color: COLORS.textSecondary, fontSize: 14 }}>
-              Upload a CSV file with voucher IDs (one per line or first column). IDs must start with VCHR_ and be at least 10 characters.
+            <p style={{ margin: "0 0 16px 0", color: COLORS.textSecondary, fontSize: 13 }}>
+              Import vouchers from CSV or Excel files.
             </p>
             <input
               type="file"
@@ -618,6 +643,13 @@ export default function SettingsClient() {
             {snapResiboImportResult && (
               <p style={{ fontSize: 14, color: COLORS.primary }}>{snapResiboImportResult}</p>
             )}
+            <p style={{ marginTop: 16, marginBottom: 0, fontSize: 14, color: COLORS.textSecondary }}>
+              {snapResiboAvailableCount !== null ? (
+                <>Remaining vouchers: <strong style={{ color: COLORS.textPrimary }}>{snapResiboAvailableCount}</strong></>
+              ) : (
+                "Remaining vouchers: —"
+              )}
+            </p>
           </div>
         )}
 
@@ -741,7 +773,10 @@ export default function SettingsClient() {
             Settings
           </h1>
           <button
-            onClick={() => setIsAuthenticated(false)}
+            onClick={() => {
+              sessionStorage.removeItem(SETTINGS_ADMIN_UNLOCK_KEY);
+              setIsAuthenticated(false);
+            }}
             style={{
               padding: "8px 16px",
               fontSize: 14,
@@ -817,7 +852,7 @@ export default function SettingsClient() {
           <p style={{ color: COLORS.textSecondary, marginBottom: 16, fontSize: 14 }}>
             When enabled, a SnapResibo category appears in the POS (rightmost). Customers can buy a SnapResibo QR or get one free when the order reaches the reward minimum. Save with the main &quot;Save Changes&quot; button below.
           </p>
-          <label style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, cursor: "pointer" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4, cursor: "pointer" }}>
             <input
               type="checkbox"
               checked={snapResiboEnabled}
@@ -826,12 +861,18 @@ export default function SettingsClient() {
             />
             <span style={{ color: COLORS.textPrimary, fontWeight: 500 }}>Enable SnapResibo</span>
           </label>
+          <p style={{ color: COLORS.textMuted, marginBottom: 16, fontSize: 12 }}>
+            Turns SnapResibo features on or off on this device.
+          </p>
           {snapResiboEnabled && (
             <>
               <div style={{ marginBottom: 12 }}>
                 <label style={{ display: "block", marginBottom: 4, fontSize: 14, color: COLORS.textSecondary }}>
                   SnapResibo price (PHP)
                 </label>
+                <p style={{ margin: "0 0 6px 0", color: COLORS.textMuted, fontSize: 12 }}>
+                  Selling price for the SnapResibo QR item.
+                </p>
                 <input
                   type="number"
                   min={0}
@@ -856,8 +897,11 @@ export default function SettingsClient() {
               </div>
               <div style={{ marginBottom: 12 }}>
                 <label style={{ display: "block", marginBottom: 4, fontSize: 14, color: COLORS.textSecondary }}>
-                  Reward minimum amount (PHP) – order total at or above this gets one free SnapResibo voucher
+                  Reward minimum amount (PHP)
                 </label>
+                <p style={{ margin: "0 0 6px 0", color: COLORS.textMuted, fontSize: 12 }}>
+                  Minimum receipt total required to print a free SnapResibo QR.
+                </p>
                 <input
                   type="number"
                   min={0}
@@ -880,11 +924,54 @@ export default function SettingsClient() {
                   }}
                 />
               </div>
-              {snapResiboAvailableCount !== null && (
-                <p style={{ fontSize: 14, color: COLORS.textSecondary, marginBottom: 8 }}>
-                  Available vouchers: {snapResiboAvailableCount}. Use &quot;Import Vouchers&quot; (above) to add more.
-                </p>
+              {(snapResiboAvailableCount !== null || snapResiboUsedCount !== null) && (
+                <div style={{ marginBottom: 8 }}>
+                  <p style={{ fontSize: 14, color: COLORS.textSecondary, margin: "0 0 4px 0" }}>
+                    Remaining vouchers: {snapResiboAvailableCount ?? "—"}
+                  </p>
+                  <p style={{ fontSize: 14, color: COLORS.textSecondary, margin: 0 }}>
+                    Vouchers used: {snapResiboUsedCount ?? "—"}
+                  </p>
+                  {snapResiboTotalCount != null &&
+                    snapResiboTotalCount > 0 &&
+                    typeof snapResiboAvailableCount === "number" &&
+                    snapResiboAvailableCount / snapResiboTotalCount < 0.1 && (
+                      <p
+                        style={{
+                          fontSize: 13,
+                          color: COLORS.warning,
+                          marginTop: 8,
+                          marginBottom: 0,
+                          fontWeight: 500,
+                        }}
+                      >
+                        Low SnapResibo vouchers: below 10% remaining. Import more soon.
+                      </p>
+                    )}
+                </div>
               )}
+              <div style={{ marginTop: 16 }}>
+                <button
+                  type="button"
+                  onClick={handleSave}
+                  disabled={saving}
+                  style={{
+                    padding: "10px 20px",
+                    fontSize: 14,
+                    fontWeight: 600,
+                    background: saving ? COLORS.bgDark : COLORS.primary,
+                    color: "#fff",
+                    border: "none",
+                    borderRadius: 6,
+                    cursor: saving ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {saving ? "Saving…" : "Save SnapResibo settings"}
+                </button>
+                <p style={{ margin: "8px 0 0 0", fontSize: 12, color: COLORS.textMuted }}>
+                  Click Save to keep changes. Use the main Save below to save all settings together.
+                </p>
+              </div>
             </>
           )}
         </div>
