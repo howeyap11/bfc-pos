@@ -2,9 +2,7 @@ packages:
   - apps/*
   - packages/*
 
-# Only these deps run install/build scripts. @woovi/node-printer omitted so
-# cloud-ui (and other non-POS) deploys don't need cups-config on Linux.
-# For local POS/api printing, run: pnpm rebuild @woovi/node-printer
+# Only these deps run install/build scripts.
 onlyBuiltDependencies:
   - '@prisma/client'
   - '@prisma/engines'

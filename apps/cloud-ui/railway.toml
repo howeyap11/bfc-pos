@@ -1,6 +1,6 @@
 # Optional: use this for the cloud-ui service (Settings → Config file path: /apps/cloud-ui/railway.toml).
 # Root directory must stay at repo root so pnpm lockfile is found.
-# Install is fixed by removing @woovi/node-printer from onlyBuiltDependencies in pnpm-workspace.yaml.
+# POS API uses Windows `print` + PowerShell for queues; no native printer addon in the workspace.
 # For faster installs, set Install Command in dashboard to: pnpm install --filter "cloud-ui..."
 
 [build]

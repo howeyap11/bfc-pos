@@ -1,11 +1,12 @@
 /**
  * Direct local receipt (ESC/POS) and sticker (TSPL) printing using Windows printer names.
- * Uses @woovi/node-printer printDirect (RAW). Receipt: ESC/POS for thermal; sticker: TSPL for label printer (e.g. XP360B).
- * Config from printer-config.json via getPrinterConfig().
- * Lazy-loads the native driver so the API can start when the addon is missing; print calls then fail with a clear error.
+ * Jobs are sent via the Windows `print` command (child_process exec). Receipt: ESC/POS buffer; sticker: TSPL text.
+ * Config from printer-config.json via getPrinterConfig(); queue names from printerDiscovery (Windows enumeration).
  */
 
-import { createRequire } from "module";
+import fs from "fs";
+import { exec } from "child_process";
+import path from "path";
 import { getPrinterConfig } from "./printerConfig.service";
 import { enumerateWindowsPrinters, type PrinterEnumerationResult } from "./printerDiscovery.service";
 import {
@@ -14,37 +15,27 @@ import {
   trimPrinterName,
 } from "./printerResolve.service";
 
-const require = createRequire(import.meta.url);
-
-const PRINTER_DRIVER_UNAVAILABLE =
-  "Printer driver not available (native addon missing). From repo root run: pnpm approve-builds, select @woovi/node-printer, then pnpm install.";
-
-const RAW_UNSUPPORTED_HINT =
-  " The selected printer driver may not support raw (ESC/POS) printing. Try selecting your receipt printer's manufacturer driver in Settings (e.g. VOZYG80), or use a printer that supports RAW.";
-
-function getPrinterDriver(): { printDirect: (opts: {
-  data: Buffer;
-  printer: string;
-  docname?: string;
-  type?: string;
-  success?: (jobId: unknown) => void;
-  error?: (err: Error) => void;
-}) => void } {
-  try {
-    return require("@woovi/node-printer");
-  } catch {
-    throw new Error(PRINTER_DRIVER_UNAVAILABLE);
-  }
+function runPrint(filePath: string, printerName: string) {
+  return new Promise<void>((resolve, reject) => {
+    exec(`print /d:"${printerName}" "${filePath}"`, (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
 }
 
-function isLikelyRawUnsupported(message: string): boolean {
-  const lower = message.toLowerCase();
-  return (
-    lower.includes("printer error") ||
-    lower.includes("1804") ||
-    (lower.includes("datatype") && lower.includes("invalid")) ||
-    lower.includes("something wrong in printdirect")
-  );
+// ESC/POS receipt: write binary then Windows print
+export async function printReceiptESC(data: Buffer, printerName: string) {
+  const file = path.join(process.cwd(), "receipt.bin");
+  fs.writeFileSync(file, data);
+  await runPrint(file, printerName);
+}
+
+// TSPL sticker: write UTF-8 text then Windows print
+export async function printStickerTSPL(tspl: string, printerName: string) {
+  const file = path.join(process.cwd(), "sticker.txt");
+  fs.writeFileSync(file, tspl, "utf8");
+  await runPrint(file, printerName);
 }
 
 // ESC/POS
@@ -74,9 +65,6 @@ function escPosQrBytes(data: string, moduleSize = 6, ecLevel = 48): Buffer {
 
 function assertPrinterEnumeration(enumResult: PrinterEnumerationResult): void {
   if (enumResult.code === "OK") return;
-  if (enumResult.code === "NATIVE_MISSING") {
-    throw new Error(PRINTER_DRIVER_UNAVAILABLE);
-  }
   throw new Error(
     `Printer enumeration failed (${enumResult.code}). ${enumResult.detail ?? ""}`.trim()
   );
@@ -186,42 +174,6 @@ function requireResolvedWindowsQueue(
     );
   }
   return s.queueName;
-}
-
-async function sendRawToWindowsPrinter(printerName: string, data: Buffer, docname = "BFC Receipt"): Promise<void> {
-  console.log("[BFC_PRINTER] sendRawToWindowsPrinter", {
-    printerName,
-    docname,
-    dataLength: data.length,
-  });
-  let driver: ReturnType<typeof getPrinterDriver>;
-  try {
-    driver = getPrinterDriver();
-  } catch (e) {
-    throw e;
-  }
-  return new Promise((resolve, reject) => {
-    driver.printDirect({
-      data,
-      printer: printerName,
-      docname,
-      type: "RAW",
-      success() {
-        console.log("[BFC_PRINTER] printDirect success", { printerName, docname });
-        resolve();
-      },
-      error(err: Error) {
-        const msg = err?.message ?? String(err);
-        console.log("[BFC_PRINTER] printDirect error", { printerName, docname, error: msg });
-        const rawHint =
-          docname === "BFC Sticker"
-            ? " The label printer driver may not support RAW (TSPL) jobs. Install the manufacturer's driver for this model or enable RAW in the printer's Windows queue."
-            : RAW_UNSUPPORTED_HINT;
-        const enhanced = isLikelyRawUnsupported(msg) ? msg + rawHint : msg;
-        reject(new Error(enhanced));
-      },
-    });
-  });
 }
 
 function lineItemDisplayParts(optionsJson: string | null | undefined): { primary: string; secondary: string[] } {
@@ -828,7 +780,7 @@ export async function printReceiptToDevice(
   const config = await getPrinterConfig();
   const name = requireResolvedWindowsQueue(config.receiptPrinter, "receipt", config.receiptPrinter);
   const data = buildReceiptEscPos(tx, header, snapResiboVouchers);
-  await sendRawToWindowsPrinter(name, data);
+  await printReceiptESC(data, name);
 }
 
 /** Print stickers. stickerPrintCategoryIds must be passed; lines must include categoryCloudId for category-based printing. */
@@ -896,8 +848,7 @@ export async function printStickersToDevice(
   console.log(fullFirstStickerTspl);
   console.log("[STICKER_VERIFY] === END ===");
 
-  const data = Buffer.from(tspl, "utf8");
-  await sendRawToWindowsPrinter(name, data, "BFC Sticker");
+  await printStickerTSPL(tspl, name);
   return { printed: stickerLines.length };
 }
 
@@ -910,13 +861,12 @@ export async function printTestReceiptToDevice(): Promise<void> {
   const config = await getPrinterConfig();
   const name = requireResolvedWindowsQueue(config.receiptPrinter, "receipt", config.receiptPrinter);
   const data = buildTestReceiptEscPos();
-  await sendRawToWindowsPrinter(name, data);
+  await printReceiptESC(data, name);
 }
 
 export async function printTestStickerToDevice(): Promise<void> {
   const config = await getPrinterConfig();
   const name = requireResolvedWindowsQueue(config.stickerPrinter, "sticker", config.receiptPrinter);
   const tspl = buildTestStickerTspl(config.stickerWidthMm, config.stickerHeightMm);
-  const data = Buffer.from(tspl, "utf8");
-  await sendRawToWindowsPrinter(name, data, "BFC Sticker");
+  await printStickerTSPL(tspl, name);
 }

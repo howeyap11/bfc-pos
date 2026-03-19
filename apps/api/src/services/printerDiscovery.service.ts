@@ -1,12 +1,10 @@
 /**
- * Discovers printers installed on the system (Windows printer names, etc.).
+ * Discovers printers installed on the system (Windows printer queue names).
  * Used to populate POS settings so staff can select receipt and sticker printers.
- * Lazy-loads @woovi/node-printer so the API can start even when the native addon is missing.
+ * Uses PowerShell (Get-CimInstance Win32_Printer) — no native Node addons.
  */
 
-import { createRequire } from "module";
-
-const require = createRequire(import.meta.url);
+import { execSync } from "child_process";
 
 export type PrinterEnumerationCode =
   | "OK"
@@ -22,58 +20,41 @@ export type PrinterEnumerationResult = {
   detail?: string;
 };
 
-function isNativeModuleMissingError(message: string): boolean {
-  const m = message.toLowerCase();
-  return (
-    m.includes("cannot find module '@woovi/node-printer'") ||
-    m.includes("cannot find module \"@woovi/node-printer\"") ||
-    m.includes("cannot resolve module '@woovi/node-printer'") ||
-    m.includes("could not locate the bindings file")
-  );
-}
-
 /**
- * Enumerate Windows printers via @woovi/node-printer. Does not throw.
+ * Enumerate Windows printers via PowerShell. Does not throw.
  */
 export function enumerateWindowsPrinters(): PrinterEnumerationResult {
-  let printerModule: { getPrinters: () => unknown };
-  try {
-    printerModule = require("@woovi/node-printer") as { getPrinters: () => unknown };
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
+  if (process.platform !== "win32") {
     return {
-      code: isNativeModuleMissingError(msg) ? "NATIVE_MISSING" : "MODULE_LOAD_FAILED",
+      code: "OK",
       printers: [],
-      detail: msg,
+      detail: "Printer enumeration is only supported on Windows.",
     };
   }
 
-  let list: unknown;
   try {
-    list = printerModule.getPrinters();
+    const out = execSync(
+      'powershell -NoProfile -NonInteractive -Command "Get-CimInstance -ClassName Win32_Printer | Select-Object -ExpandProperty Name"',
+      {
+        encoding: "utf8",
+        maxBuffer: 10 * 1024 * 1024,
+        windowsHide: true,
+      }
+    );
+    const printers = out
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return { code: "OK", printers };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     return { code: "GETPRINTERS_THREW", printers: [], detail: msg };
   }
-
-  if (!Array.isArray(list)) {
-    return {
-      code: "NON_ARRAY",
-      printers: [],
-      detail: `getPrinters returned ${typeof list}`,
-    };
-  }
-
-  const printers = list
-    .map((p) => (p && typeof (p as { name?: string }).name === "string" ? (p as { name: string }).name.trim() : ""))
-    .filter(Boolean);
-
-  return { code: "OK", printers };
 }
 
 /**
  * Returns the list of available printer names from the OS.
- * If the native printer module is missing or fails, returns [] (backward compatible).
+ * If enumeration fails, returns [] (backward compatible).
  */
 export function getAvailablePrinters(): string[] {
   return enumerateWindowsPrinters().printers;

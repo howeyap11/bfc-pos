@@ -14,7 +14,7 @@ function enumerationHint(code: string, printerCount: number, detail?: string): s
     return "Windows returned no printer queues. Check Printers & scanners and that the Print Spooler service is running.";
   }
   if (code === "NATIVE_MISSING") {
-    return "Native printer addon missing (@woovi/node-printer). From repo root: pnpm approve-builds → select @woovi/node-printer → pnpm install.";
+    return "Printer list unavailable. On Windows, ensure PowerShell works and the Print Spooler service is running.";
   }
   if (code === "MODULE_LOAD_FAILED") {
     return `Printer module failed to load: ${detail ?? "unknown error"}`;
