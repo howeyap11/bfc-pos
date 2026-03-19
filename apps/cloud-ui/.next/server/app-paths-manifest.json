@@ -22,12 +22,14 @@
   "/reports/page": "app/reports/page.js",
   "/settings/business-details/page": "app/settings/business-details/page.js",
   "/settings/customer-display/page": "app/settings/customer-display/page.js",
+  "/settings/dev/page": "app/settings/dev/page.js",
   "/settings/devices/page": "app/settings/devices/page.js",
   "/settings/online-store/page": "app/settings/online-store/page.js",
   "/settings/page": "app/settings/page.js",
   "/settings/password-pins/page": "app/settings/password-pins/page.js",
   "/settings/receipts/page": "app/settings/receipts/page.js",
   "/settings/sales-inventory/page": "app/settings/sales-inventory/page.js",
+  "/settings/staff/page": "app/settings/staff/page.js",
   "/settings/subscription/page": "app/settings/subscription/page.js",
   "/transactions/page": "app/transactions/page.js"
 }

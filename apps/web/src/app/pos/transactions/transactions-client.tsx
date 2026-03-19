@@ -11,6 +11,7 @@ type Transaction = {
   status: string;
   source: string;
   serviceType: string;
+  isTest?: boolean;
   totalCents: number;
   subtotalCents: number;
   discountCents: number;
@@ -863,6 +864,21 @@ export default function TransactionsClient() {
                                 </span>
                               )}
                             </div>
+                            {tx.isTest && (
+                              <div style={{ marginTop: 6 }}>
+                                <span style={{
+                                  padding: "4px 8px",
+                                  borderRadius: 4,
+                                  fontSize: 10,
+                                  fontWeight: "600",
+                                  background: "rgba(234, 179, 8, 0.25)",
+                                  color: "#fef08a",
+                                  border: "1px solid rgba(234, 179, 8, 0.5)",
+                                }}>
+                                  Test
+                                </span>
+                              </div>
+                            )}
                           </td>
 
                           {/* Time */}

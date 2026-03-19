@@ -2,6 +2,36 @@
 import fp from "fastify-plugin";
 import { requireStaffHook } from "../plugins/staffGuard.js";
 const STORE_ID = "store_1";
+/** Body is only business name/address (Cloud Admin Business Details page). */
+function isBusinessDetailsOnly(body) {
+    if (!body || typeof body !== "object")
+        return false;
+    const keys = Object.keys(body).filter((k) => body[k] !== undefined);
+    return keys.length > 0 && keys.every((k) => k === "businessName" || k === "address");
+}
+/** Body is only devMode (POS Settings Dev Mode toggle – behind PIN gate, no staff key required). */
+function isDevModeOnly(body) {
+    if (!body || typeof body !== "object")
+        return false;
+    const keys = Object.keys(body).filter((k) => body[k] !== undefined);
+    return keys.length > 0 && keys.every((k) => k === "devMode");
+}
+/** Allow PUT if: staff auth, admin key, body only businessName/address (no auth), or body only devMode (no auth). */
+async function allowStaffOrStoreConfigAdmin(req, reply) {
+    const body = req.body;
+    const onlyBusinessDetails = isBusinessDetailsOnly(body);
+    if (onlyBusinessDetails)
+        return;
+    const onlyDevMode = isDevModeOnly(body);
+    if (onlyDevMode)
+        return;
+    const adminKey = process.env.STORE_CONFIG_ADMIN_KEY;
+    const incoming = req.headers["x-store-config-admin-key"] ?? "";
+    const keyMatch = typeof adminKey === "string" && adminKey.length > 0 && incoming.trim() === adminKey.trim();
+    if (keyMatch)
+        return;
+    await requireStaffHook(req, reply);
+}
 const storeConfigRoutesImpl = async (app) => {
     // GET /store-config - Get store configuration (public, no auth required)
     app.get("/store-config", async (req, reply) => {
@@ -15,15 +45,32 @@ const storeConfigRoutesImpl = async (app) => {
                     enabledPaymentMethods: ["CASH"],
                     splitPaymentEnabled: true,
                     paymentMethodOrder: null,
+                    stickerPrintCategoryIds: [],
+                    businessName: null,
+                    address: null,
+                    devMode: false,
+                    snapResiboEnabled: false,
+                    snapResiboPriceCents: null,
+                    snapResiboRewardMinimumCents: null,
                 };
             }
             const enabledPaymentMethods = JSON.parse(config.enabledPaymentMethods || "[]");
             const paymentMethodOrder = config.paymentMethodOrder ? JSON.parse(config.paymentMethodOrder) : null;
+            const stickerPrintCategoryIds = config.stickerPrintCategoryIds
+                ? JSON.parse(config.stickerPrintCategoryIds)
+                : [];
             return {
                 storeId: config.storeId,
                 enabledPaymentMethods,
                 splitPaymentEnabled: config.splitPaymentEnabled ?? true,
                 paymentMethodOrder,
+                stickerPrintCategoryIds,
+                businessName: config.businessName ?? null,
+                address: config.address ?? null,
+                devMode: config.devMode ?? false,
+                snapResiboEnabled: config.snapResiboEnabled ?? false,
+                snapResiboPriceCents: config.snapResiboPriceCents ?? null,
+                snapResiboRewardMinimumCents: config.snapResiboRewardMinimumCents ?? null,
             };
         }
         catch (err) {
@@ -31,9 +78,9 @@ const storeConfigRoutesImpl = async (app) => {
             return reply.code(500).send({ error: "STORE_CONFIG_LOAD_FAILED", message: "Failed to load store config" });
         }
     });
-    // PUT /store-config - Update store configuration (protected by staff auth)
+    // PUT /store-config - Update store configuration (staff auth or cloud admin key)
     app.put("/store-config", {
-        preHandler: requireStaffHook,
+        preHandler: allowStaffOrStoreConfigAdmin,
     }, async (req, reply) => {
         const body = req.body;
         const updateData = {};
@@ -46,22 +93,71 @@ const storeConfigRoutesImpl = async (app) => {
         if (body.paymentMethodOrder !== undefined) {
             updateData.paymentMethodOrder = body.paymentMethodOrder ? JSON.stringify(body.paymentMethodOrder) : null;
         }
-        const config = await app.prisma.storeConfig.upsert({
-            where: { storeId: STORE_ID },
-            update: updateData,
-            create: {
-                storeId: STORE_ID,
-                enabledPaymentMethods: JSON.stringify(body.enabledPaymentMethods || ["CASH"]),
-                splitPaymentEnabled: body.splitPaymentEnabled ?? true,
-                paymentMethodOrder: body.paymentMethodOrder ? JSON.stringify(body.paymentMethodOrder) : null,
-            },
-        });
-        // Parse and return
+        if (body.stickerPrintCategoryIds !== undefined) {
+            updateData.stickerPrintCategoryIds = Array.isArray(body.stickerPrintCategoryIds)
+                ? JSON.stringify(body.stickerPrintCategoryIds)
+                : null;
+        }
+        if (body.businessName !== undefined) {
+            updateData.businessName = body.businessName?.trim() || null;
+        }
+        if (body.address !== undefined) {
+            updateData.address = body.address?.trim() || null;
+        }
+        if (body.devMode !== undefined) {
+            updateData.devMode = !!body.devMode;
+        }
+        if (body.snapResiboEnabled !== undefined) {
+            updateData.snapResiboEnabled = !!body.snapResiboEnabled;
+        }
+        if (body.snapResiboPriceCents !== undefined) {
+            const v = body.snapResiboPriceCents;
+            updateData.snapResiboPriceCents = v == null || v === "" ? null : Math.max(0, Math.trunc(Number(v)));
+        }
+        if (body.snapResiboRewardMinimumCents !== undefined) {
+            const v = body.snapResiboRewardMinimumCents;
+            updateData.snapResiboRewardMinimumCents = v == null || v === "" ? null : Math.max(0, Math.trunc(Number(v)));
+        }
+        let config;
+        try {
+            config = await app.prisma.storeConfig.upsert({
+                where: { storeId: STORE_ID },
+                update: updateData,
+                create: {
+                    storeId: STORE_ID,
+                    enabledPaymentMethods: JSON.stringify(body.enabledPaymentMethods || ["CASH"]),
+                    splitPaymentEnabled: body.splitPaymentEnabled ?? true,
+                    paymentMethodOrder: body.paymentMethodOrder ? JSON.stringify(body.paymentMethodOrder) : null,
+                    stickerPrintCategoryIds: Array.isArray(body.stickerPrintCategoryIds)
+                        ? JSON.stringify(body.stickerPrintCategoryIds)
+                        : null,
+                    businessName: body.businessName?.trim() || null,
+                    address: body.address?.trim() || null,
+                    devMode: !!body.devMode,
+                    snapResiboEnabled: !!body.snapResiboEnabled,
+                    snapResiboPriceCents: body.snapResiboPriceCents != null ? Math.max(0, Math.trunc(Number(body.snapResiboPriceCents))) : null,
+                    snapResiboRewardMinimumCents: body.snapResiboRewardMinimumCents != null ? Math.max(0, Math.trunc(Number(body.snapResiboRewardMinimumCents))) : null,
+                },
+            });
+        }
+        catch (upsertErr) {
+            throw upsertErr;
+        }
+        const stickerPrintCategoryIds = config.stickerPrintCategoryIds
+            ? JSON.parse(config.stickerPrintCategoryIds)
+            : [];
         return {
             storeId: config.storeId,
             enabledPaymentMethods: JSON.parse(config.enabledPaymentMethods),
             splitPaymentEnabled: config.splitPaymentEnabled,
             paymentMethodOrder: config.paymentMethodOrder ? JSON.parse(config.paymentMethodOrder) : null,
+            stickerPrintCategoryIds,
+            businessName: config.businessName ?? null,
+            address: config.address ?? null,
+            devMode: config.devMode ?? false,
+            snapResiboEnabled: config.snapResiboEnabled ?? false,
+            snapResiboPriceCents: config.snapResiboPriceCents ?? null,
+            snapResiboRewardMinimumCents: config.snapResiboRewardMinimumCents ?? null,
         };
     });
 };

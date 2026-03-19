@@ -5,6 +5,9 @@
 
 type MilkType = "FULL_CREAM" | "OAT" | "ALMOND" | "SOY";
 
+/** POS / API transaction type codes (matches create-transaction `serviceType`). */
+export type PosServiceType = "FOR_HERE" | "DINE_IN" | "TO_GO" | "TAKE_OUT" | "FOODPANDA" | "DELIVERY";
+
 export type CartItem = {
   tempId: string;
   itemId: string;
@@ -111,7 +114,7 @@ export function buildCreateTransactionBody(args: {
   cart: CartItem[];
   discountCents?: number;
   /** Actual transaction type from POS (FOR_HERE, TO_GO, FOODPANDA, etc.). API normalizes to stored enum. */
-  serviceType?: "FOR_HERE" | "DINE_IN" | "TO_GO" | "TAKE_OUT" | "FOODPANDA" | "DELIVERY";
+  serviceType?: PosServiceType;
   orderId?: string;
   tablePublicKey?: string;
 }) {

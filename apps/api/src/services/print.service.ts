@@ -7,6 +7,12 @@
 
 import { createRequire } from "module";
 import { getPrinterConfig } from "./printerConfig.service";
+import { enumerateWindowsPrinters, type PrinterEnumerationResult } from "./printerDiscovery.service";
+import {
+  resolveExactOrCaseInsensitive,
+  resolveStickerQueueName,
+  trimPrinterName,
+} from "./printerResolve.service";
 
 const require = createRequire(import.meta.url);
 
@@ -66,45 +72,132 @@ function escPosQrBytes(data: string, moduleSize = 6, ecLevel = 48): Buffer {
   return Buffer.from(bytes);
 }
 
-function getPrinterName(value: string | undefined): string | null {
-  if (!value || !value.trim()) return null;
-  return value.trim();
+function assertPrinterEnumeration(enumResult: PrinterEnumerationResult): void {
+  if (enumResult.code === "OK") return;
+  if (enumResult.code === "NATIVE_MISSING") {
+    throw new Error(PRINTER_DRIVER_UNAVAILABLE);
+  }
+  throw new Error(
+    `Printer enumeration failed (${enumResult.code}). ${enumResult.detail ?? ""}`.trim()
+  );
+}
+
+/**
+ * Resolve configured name to Windows queue name; logs comparison details to stdout.
+ */
+function requireResolvedWindowsQueue(
+  configuredRaw: string | undefined,
+  role: "receipt" | "sticker",
+  receiptConfiguredRaw: string | undefined
+): string {
+  const configured = trimPrinterName(configuredRaw ?? "");
+  const receiptConfigured = trimPrinterName(receiptConfiguredRaw ?? "");
+  const enumResult = enumerateWindowsPrinters();
+
+  console.log("[BFC_PRINTER] enumeration", {
+    code: enumResult.code,
+    windowsPrinterNamesExact: enumResult.printers,
+    printerCount: enumResult.printers.length,
+    detail: enumResult.detail,
+    driverLoadOk: enumResult.code === "OK",
+  });
+
+  assertPrinterEnumeration(enumResult);
+
+  if (enumResult.printers.length === 0) {
+    throw new Error(
+      "No printers returned by Windows (printer driver loaded but the queue list is empty). Add a printer in Windows Settings or check the print spooler."
+    );
+  }
+
+  const receiptResolution = resolveExactOrCaseInsensitive(receiptConfigured, enumResult.printers);
+  const receiptResolvedQueue =
+    receiptResolution.kind === "exact_trim" || receiptResolution.kind === "case_insensitive"
+      ? receiptResolution.queueName
+      : null;
+
+  console.log("[BFC_PRINTER] config names", {
+    role,
+    receiptConfigured,
+    stickerConfigured: role === "sticker" ? configured : undefined,
+    receiptCompare: {
+      strategy: receiptResolution.kind,
+      resolvedQueueName: receiptResolvedQueue,
+      ambiguousCandidates:
+        receiptResolution.kind === "ambiguous_ci" ? receiptResolution.candidates : undefined,
+    },
+  });
+
+  if (role === "receipt") {
+    if (!configured) {
+      throw new Error("Receipt printer not configured");
+    }
+    const r = resolveExactOrCaseInsensitive(configured, enumResult.printers);
+    console.log("[BFC_PRINTER] receipt name resolution", {
+      configured,
+      strategy: r.kind,
+      resolvedQueueName: r.kind === "ambiguous_ci" ? null : r.queueName,
+      ambiguousCandidates: r.kind === "ambiguous_ci" ? r.candidates : undefined,
+      matchedViaCaseInsensitive: r.kind === "case_insensitive",
+    });
+    if (r.kind === "ambiguous_ci") {
+      throw new Error(
+        `Multiple Windows printers match receipt name "${configured}" (case-insensitive): ${r.candidates.join(", ")}`
+      );
+    }
+    if (!r.queueName) {
+      throw new Error(
+        `Configured receipt printer not found: "${configured}". Windows queues: ${enumResult.printers.join(" | ")}`
+      );
+    }
+    return r.queueName;
+  }
+
+  if (!configured) {
+    throw new Error("Sticker printer not configured");
+  }
+
+  const s = resolveStickerQueueName(configured, enumResult.printers, receiptResolvedQueue);
+  console.log("[BFC_PRINTER] sticker name resolution", {
+    configured,
+    resolvedReceiptQueueName: receiptResolvedQueue,
+    strategy: s.kind,
+    resolvedQueueName:
+      s.kind === "ambiguous_ci" || s.kind === "ambiguous_contains" || s.kind === "none"
+        ? null
+        : s.queueName,
+    ambiguousCandidates:
+      s.kind === "ambiguous_ci" || s.kind === "ambiguous_contains" ? s.candidates : undefined,
+  });
+
+  if (s.kind === "ambiguous_ci") {
+    throw new Error(
+      `Multiple Windows printers match sticker name "${configured}" (case-insensitive): ${s.candidates.join(", ")}`
+    );
+  }
+  if (s.kind === "ambiguous_contains") {
+    throw new Error(
+      `Multiple Windows printers partially match sticker name "${configured}": ${s.candidates.join(", ")}. Choose the exact queue name in Settings.`
+    );
+  }
+  if (!s.queueName) {
+    throw new Error(
+      `Configured sticker printer not found: "${configured}". Windows queues: ${enumResult.printers.join(" | ")}`
+    );
+  }
+  return s.queueName;
 }
 
 async function sendRawToWindowsPrinter(printerName: string, data: Buffer, docname = "BFC Receipt"): Promise<void> {
-  // #region agent log
-  fetch("http://127.0.0.1:7330/ingest/e360f4f2-ab8d-4cc6-b94b-f45235f7b95a", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "e0db05" },
-    body: JSON.stringify({
-      sessionId: "e0db05",
-      location: "print.service.ts:sendRawToWindowsPrinter:entry",
-      message: "sendRawToWindowsPrinter called",
-      data: { printerName, dataLength: data.length },
-      hypothesisId: "H2",
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
+  console.log("[BFC_PRINTER] sendRawToWindowsPrinter", {
+    printerName,
+    docname,
+    dataLength: data.length,
+  });
   let driver: ReturnType<typeof getPrinterDriver>;
   try {
     driver = getPrinterDriver();
   } catch (e) {
-    // #region agent log
-    const errMsg = e instanceof Error ? e.message : String(e);
-    fetch("http://127.0.0.1:7330/ingest/e360f4f2-ab8d-4cc6-b94b-f45235f7b95a", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "e0db05" },
-      body: JSON.stringify({
-        sessionId: "e0db05",
-        location: "print.service.ts:sendRawToWindowsPrinter:getPrinterDriver",
-        message: "getPrinterDriver threw",
-        data: { error: errMsg },
-        hypothesisId: "H3",
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
     throw e;
   }
   return new Promise((resolve, reject) => {
@@ -114,26 +207,17 @@ async function sendRawToWindowsPrinter(printerName: string, data: Buffer, docnam
       docname,
       type: "RAW",
       success() {
+        console.log("[BFC_PRINTER] printDirect success", { printerName, docname });
         resolve();
       },
       error(err: Error) {
         const msg = err?.message ?? String(err);
-        // #region agent log
-        fetch("http://127.0.0.1:7330/ingest/e360f4f2-ab8d-4cc6-b94b-f45235f7b95a", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "e0db05" },
-          body: JSON.stringify({
-            sessionId: "e0db05",
-            location: "print.service.ts:sendRawToWindowsPrinter:printDirect",
-            message: "printDirect error",
-            data: { error: msg },
-            hypothesisId: "H5",
-            timestamp: Date.now(),
-          }),
-        }).catch(() => {});
-        // #endregion
-        const enhanced =
-          isLikelyRawUnsupported(msg) ? msg + RAW_UNSUPPORTED_HINT : msg;
+        console.log("[BFC_PRINTER] printDirect error", { printerName, docname, error: msg });
+        const rawHint =
+          docname === "BFC Sticker"
+            ? " The label printer driver may not support RAW (TSPL) jobs. Install the manufacturer's driver for this model or enable RAW in the printer's Windows queue."
+            : RAW_UNSUPPORTED_HINT;
+        const enhanced = isLikelyRawUnsupported(msg) ? msg + rawHint : msg;
         reject(new Error(enhanced));
       },
     });
@@ -575,7 +659,6 @@ export function buildReceiptEscPos(
     for (const v of snapResiboVouchers) {
       const voucherId = v.voucherId;
       snapParts.push(Buffer.from("SNAPRESIBO" + LF, "utf8"));
-      snapParts.push(Buffer.from(v.pricePhp > 0 ? "PHP " + v.pricePhp + LF : "FREE REWARD" + LF, "utf8"));
       snapParts.push(escPosQrBytes(voucherId, 6, 48));
       snapParts.push(Buffer.from(LF + voucherId + LF + LF, "utf8"));
     }
@@ -743,8 +826,7 @@ export async function printReceiptToDevice(
   snapResiboVouchers?: SnapResiboVoucherForPrint[] | null
 ): Promise<void> {
   const config = await getPrinterConfig();
-  const name = getPrinterName(config.receiptPrinter);
-  if (!name) throw new Error("Printer not configured");
+  const name = requireResolvedWindowsQueue(config.receiptPrinter, "receipt", config.receiptPrinter);
   const data = buildReceiptEscPos(tx, header, snapResiboVouchers);
   await sendRawToWindowsPrinter(name, data);
 }
@@ -755,8 +837,7 @@ export async function printStickersToDevice(
   opts: { stickerPrintCategoryIds: string[] | null | undefined }
 ): Promise<{ printed: number }> {
   const config = await getPrinterConfig();
-  const name = getPrinterName(config.stickerPrinter);
-  if (!name) throw new Error("Printer not configured");
+  const name = requireResolvedWindowsQueue(config.stickerPrinter, "sticker", config.receiptPrinter);
   const stickerLines = tx.lineItems.filter((line) => shouldPrintSticker(line, opts.stickerPrintCategoryIds));
   if (stickerLines.length === 0) return { printed: 0 };
   const tspl = buildStickerTspl(
@@ -807,24 +888,6 @@ export async function printStickersToDevice(
       text: m[4].replace(/\\"/g, '"').slice(0, 40),
     });
   }
-  // #region agent log
-  fetch("http://127.0.0.1:7330/ingest/e360f4f2-ab8d-4cc6-b94b-f45235f7b95a", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "162728" },
-    body: JSON.stringify({
-      sessionId: "162728",
-      location: "print.service.ts:printStickersToDevice",
-      message: "sticker verify input and TSPL",
-      data: {
-        stickerVerifyInput,
-        fullFirstStickerTspl,
-        textCommands,
-        hypothesisId: "H1-H5",
-      },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
   console.log("[STICKER_VERIFY] === INPUT FIRST LINE (exact object used for sticker) ===");
   console.log(JSON.stringify(stickerVerifyInput, null, 2));
   console.log("[STICKER_VERIFY] === TEXT commands (x,y,rotation,text) ===");
@@ -845,30 +908,14 @@ export function buildTestReceiptEscPos(): Buffer {
 
 export async function printTestReceiptToDevice(): Promise<void> {
   const config = await getPrinterConfig();
-  // #region agent log
-  fetch("http://127.0.0.1:7330/ingest/e360f4f2-ab8d-4cc6-b94b-f45235f7b95a", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "e0db05" },
-    body: JSON.stringify({
-      sessionId: "e0db05",
-      location: "print.service.ts:printTestReceiptToDevice",
-      message: "config loaded",
-      data: { receiptPrinter: config.receiptPrinter, stickerPrinter: config.stickerPrinter },
-      hypothesisId: "H1",
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
-  const name = getPrinterName(config.receiptPrinter);
-  if (!name) throw new Error("Printer not configured");
+  const name = requireResolvedWindowsQueue(config.receiptPrinter, "receipt", config.receiptPrinter);
   const data = buildTestReceiptEscPos();
   await sendRawToWindowsPrinter(name, data);
 }
 
 export async function printTestStickerToDevice(): Promise<void> {
   const config = await getPrinterConfig();
-  const name = getPrinterName(config.stickerPrinter);
-  if (!name) throw new Error("Printer not configured");
+  const name = requireResolvedWindowsQueue(config.stickerPrinter, "sticker", config.receiptPrinter);
   const tspl = buildTestStickerTspl(config.stickerWidthMm, config.stickerHeightMm);
   const data = Buffer.from(tspl, "utf8");
   await sendRawToWindowsPrinter(name, data, "BFC Sticker");

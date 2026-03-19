@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { COLORS } from "@/lib/theme";
 import { apiFetch, InvalidStaffKeyError } from "@/lib/apiFetch";
 import { useOnScreenKeyboard, OnScreenKeyboard } from "@/lib/useOnScreenKeyboard";
-import { buildTxLineInputs, buildCreateTransactionBody } from "@/lib/buildTransactionPayload";
+import { buildTxLineInputs, buildCreateTransactionBody, type PosServiceType } from "@/lib/buildTransactionPayload";
 import {
   CUSTOMER_DISPLAY_STORAGE_KEY,
   type CustomerDisplaySnapshot,
@@ -158,10 +158,10 @@ type CartItem = {
   defaultShotsForSize?: number; // Default shots for selected size (for comparison)
   shotsUpchargeCents?: number; // Espresso shots upcharge (snapshot)
   /** Transaction type (cloud-synced). Replaces legacy fulfillment. */
-  transactionTypeCode: string;
+  transactionTypeCode: PosServiceType;
   transactionTypeLabel: string;
   /** @deprecated Use transactionTypeCode/transactionTypeLabel. Kept for formatLineItemModifiers fallback. */
-  fulfillment?: string;
+  fulfillment?: "FOR_HERE" | "TAKE_OUT" | "FOODPANDA";
   optionTotalCents: number; // Sum of all option price deltas
   surchargeCents: number; // Per-line surcharge from transaction type priceDeltaCents
   // Existing discount fields
@@ -172,6 +172,20 @@ type CartItem = {
   specialInstructions?: string; // Special instructions — printed on sticker for bar prep
   customerName?: string; // Per-item name for cup/sticker (left of temp/size)
 };
+
+function toPosServiceType(code: string | undefined): PosServiceType {
+  switch (code) {
+    case "FOR_HERE":
+    case "DINE_IN":
+    case "TO_GO":
+    case "TAKE_OUT":
+    case "FOODPANDA":
+    case "DELIVERY":
+      return code;
+    default:
+      return "FOR_HERE";
+  }
+}
 
 // POS Payment Methods (for direct register sales only)
 // Note: QR orders use separate payment methods (CASH/PAYMONGO)
@@ -1632,6 +1646,7 @@ export default function PosRegisterClient() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [storeConfig, setStoreConfig] = useState<StoreConfig | null>(null);
+  const silentMenuRefreshInFlight = useRef(false);
 
   // Register view state: BROWSE (category/items) or CUSTOMIZE (item config)
   const [registerView, setRegisterView] = useState<"BROWSE" | "CUSTOMIZE">("BROWSE");
@@ -2007,6 +2022,8 @@ export default function PosRegisterClient() {
             note: item.note || "",
             specialInstructions: item.specialInstructions || "",
             customerName: item.customerName || "",
+            transactionTypeCode: "FOR_HERE",
+            transactionTypeLabel: "For Here",
           };
         });
         
@@ -2046,6 +2063,8 @@ export default function PosRegisterClient() {
 
   // Silent catalog refresh every 30s: only updates menu state; does not touch loading, cart, or transaction
   function refreshMenuSilent() {
+    if (silentMenuRefreshInFlight.current) return;
+    silentMenuRefreshInFlight.current = true;
     fetchJson("/api/menu", { cache: "no-store" })
       .then((data: unknown) => {
         if (!Array.isArray(data)) return;
@@ -2054,7 +2073,10 @@ export default function PosRegisterClient() {
           data.some((c: { id: string }) => c.id === prev) ? prev : (data[0]?.id ?? null)
         );
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        silentMenuRefreshInFlight.current = false;
+      });
   }
 
   useEffect(() => {
@@ -2161,12 +2183,15 @@ export default function PosRegisterClient() {
         const defaultOptionName = (() => {
           if (!item.itemOptionGroups) return null;
           for (const { group } of item.itemOptionGroups) {
-            const byItemDefault =
-              item.defaultSizeOptionId &&
-              group.options.find((o) => o.id === item.defaultSizeOptionId);
-            const byGroupDefault =
-              group.defaultOptionId &&
-              group.options.find((o) => o.id === group.defaultOptionId);
+            const byItemDefault = item.defaultSizeOptionId
+              ? group.options.find((o) => o.id === item.defaultSizeOptionId)
+              : undefined;
+            const groupDefaultOptionId =
+              (group as { defaultOptionId?: string | null }).defaultOptionId;
+
+            const byGroupDefault = groupDefaultOptionId
+              ? group.options.find((o) => o.id === groupDefaultOptionId)
+              : group.options.find((o) => o.isDefault);
             const opt = byItemDefault ?? byGroupDefault;
             if (opt?.name) return opt.name;
           }
@@ -2554,7 +2579,7 @@ export default function PosRegisterClient() {
         shotsQty: configShotsQty,
         defaultShotsForSize: includedShotsHasSizes,
         shotsUpchargeCents: shotsUpchargeHasSizes,
-        transactionTypeCode: configTransactionType?.code ?? "FOR_HERE",
+        transactionTypeCode: toPosServiceType(configTransactionType?.code),
         transactionTypeLabel: configTransactionType?.label ?? "For Here",
         optionTotalCents: optionTotalCentsHasSizes,
         surchargeCents: configTransactionType?.priceDeltaCents ?? 0,
@@ -2639,7 +2664,7 @@ export default function PosRegisterClient() {
     let milkPriceDelta = 0;
     if (configuringItem.substitutes && configuringItem.substitutes.length > 0 && selectedSubstituteId) {
       const selectedSub = configuringItem.substitutes.find((s) => s.id === selectedSubstituteId);
-      const defaultId = configuringItem.defaultSubstituteCloudId ?? configuringItem.substitutes[0]?.id;
+      const defaultId = configuringItem.defaultSubstituteCloudId ?? configuringItem.substitutes?.[0]?.id;
       const defaultSub = defaultId ? configuringItem.substitutes.find((s) => s.id === defaultId) : configuringItem.substitutes[0];
       const sizeId = selectedSize?.id;
       const sizeLabel = selectedSize?.name;
@@ -2690,7 +2715,7 @@ export default function PosRegisterClient() {
       shotsQty: configShotsQty,
       defaultShotsForSize: includedShotsNoSizes,
       shotsUpchargeCents, // Snapshot the calculated upcharge
-      transactionTypeCode: configTransactionType?.code ?? "FOR_HERE",
+      transactionTypeCode: toPosServiceType(configTransactionType?.code),
       transactionTypeLabel: configTransactionType?.label ?? "For Here",
       optionTotalCents,
       surchargeCents,
@@ -3498,9 +3523,9 @@ export default function PosRegisterClient() {
   ];
 
   return (
-    <div style={{ display: "flex", height: "100%", overflow: "hidden", background: "#1f1f1f" }}>
-      {/* LEFT: 80% - Browse or Customize */}
-      <div style={{ flex: "0 0 80%", display: "flex", flexDirection: "column", borderRight: "2px solid #2a2a2a" }}>
+    <div style={{ display: "flex", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", background: "#1f1f1f" }}>
+      {/* LEFT: fills remaining width — Browse or Customize */}
+      <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column", borderRight: "2px solid #2a2a2a" }}>
         
         {registerView === "BROWSE" ? (
           <>
@@ -4149,7 +4174,7 @@ export default function PosRegisterClient() {
                     const id = s.id;
                     const name = s.name;
                     const priceCents = s.priceCents;
-                    const defaultId = configuringItem.defaultSubstituteCloudId ?? configuringItem.substitutes[0]?.id;
+                    const defaultId = configuringItem.defaultSubstituteCloudId ?? configuringItem.substitutes?.[0]?.id;
                     const isDefault = defaultId != null && id === defaultId;
                     const isSelected = selectedSubstituteId === id;
                     return (
@@ -4465,7 +4490,7 @@ export default function PosRegisterClient() {
                   configuringItem.substitutes && configuringItem.substitutes.length > 0 && selectedSubstituteId
                     ? (() => {
                         const selectedSub = configuringItem.substitutes.find((s) => s.id === selectedSubstituteId);
-                        const defaultId = configuringItem.defaultSubstituteCloudId ?? configuringItem.substitutes[0]?.id;
+                        const defaultId = configuringItem.defaultSubstituteCloudId ?? configuringItem.substitutes?.[0]?.id;
                         const defaultSub = defaultId ? configuringItem.substitutes.find((s) => s.id === defaultId) : configuringItem.substitutes[0];
                         const sizeId = (configuringItem.hasSizes && configSizeOption) ? configSizeOption.id : (() => {
                           const sizeGroup = configuringItem.itemOptionGroups?.find((ig) => ig.group.name.toLowerCase().includes("size") || ig.group.name.toUpperCase().includes("OZ"));
@@ -4668,15 +4693,27 @@ export default function PosRegisterClient() {
         ) : null}
       </div>
 
-      {/* RIGHT: 20% - Cart & Checkout */}
-      <div style={{ flex: "0 0 20%", display: "flex", flexDirection: "column", background: "#0a0a0a" }}>
-        <div style={{ padding: 12, borderBottom: "1px solid #2a2a2a", background: "#1f1f1f" }}>
+      {/* RIGHT: responsive width — Cart & Checkout (scales with viewport) */}
+      <div
+        style={{
+          flexShrink: 0,
+          width: "clamp(272px, 32vw, 440px)",
+          minWidth: 0,
+          minHeight: 0,
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+          background: "#0a0a0a",
+        }}
+      >
+        <div style={{ flexShrink: 0, padding: 12, borderBottom: "1px solid #2a2a2a", background: "#1f1f1f" }}>
           <h2 style={{ margin: 0, fontSize: 18, color: "#fff" }}>Current Order</h2>
         </div>
 
         {/* Staff Selector (UTAK Style - Top of Cart) */}
         <div
           style={{
+            flexShrink: 0,
             padding: 12,
             borderBottom: "2px solid #2a2a2a",
             background: "#1a1a1a",
@@ -4795,8 +4832,17 @@ export default function PosRegisterClient() {
           
           return (
             <>
-              {/* Cart Items */}
-              <div style={{ flex: 1, overflow: "auto", padding: 8 }}>
+              {/* Cart Items — minHeight:0 required so flex item can shrink and list scrolls */}
+              <div
+                style={{
+                  flex: 1,
+                  minHeight: 0,
+                  overflowX: "hidden",
+                  overflowY: "auto",
+                  WebkitOverflowScrolling: "touch",
+                  padding: "clamp(6px, 1vh, 10px)",
+                }}
+              >
           {cart.length === 0 ? (
             <p style={{ color: "#666", fontSize: 13, textAlign: "center", marginTop: 20 }}>Cart is empty</p>
           ) : (
@@ -4813,8 +4859,8 @@ export default function PosRegisterClient() {
           )}
         </div>
 
-        {/* Totals */}
-        <div style={{ padding: 12, borderTop: "1px solid #2a2a2a", background: "#1f1f1f" }}>
+        {/* Totals + payment — flexShrink:0 keeps controls visible; cart list above absorbs overflow */}
+        <div style={{ flexShrink: 0, padding: "clamp(8px, 1.2vh, 12px)", borderTop: "1px solid #2a2a2a", background: "#1f1f1f" }}>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8, fontSize: 14 }}>
             <span style={{ color: "#aaa" }}>Subtotal:</span>
             <strong style={{ color: "#fff" }}>{formatPesos(calculateSubtotal())}</strong>
@@ -5381,7 +5427,7 @@ function TransactionSuccessPanel({
   );
 
   return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: 16, overflow: "auto" }}>
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", padding: 16, overflow: "auto" }}>
       {/* Success Icon */}
       <div style={{ textAlign: "center", marginBottom: 24 }}>
         <div

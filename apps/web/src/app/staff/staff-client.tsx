@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 
 type QueueOrder = {
   id: string;
@@ -21,17 +21,29 @@ export default function StaffClient() {
   const [area, setArea] = useState<"BAR" | "KITCHEN">("BAR");
   const [orders, setOrders] = useState<QueueOrder[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const loadInFlight = useRef(false);
 
   async function load() {
-    const res = await fetch(`/api/queue?area=${area}`, { cache: "no-store" });
-    const text = await res.text();
-    if (!res.ok) throw new Error(text);
-    setOrders(JSON.parse(text) as QueueOrder[]);
+    if (loadInFlight.current) return;
+    loadInFlight.current = true;
+    try {
+      const res = await fetch(`/api/queue?area=${area}`, { cache: "no-store" });
+      const text = await res.text();
+      if (!res.ok) {
+        console.warn("[StaffQueue] load failed (HTTP)", { status: res.status, bodyPreview: text?.slice(0, 200) });
+        return;
+      }
+      setOrders(JSON.parse(text) as QueueOrder[]);
+    } catch (e) {
+      console.warn("[StaffQueue] load failed (network)", { message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      loadInFlight.current = false;
+    }
   }
 
   useEffect(() => {
-    load().catch(console.error);
-    const t = setInterval(() => load().catch(console.error), 2000);
+    void load();
+    const t = setInterval(() => void load(), 2000);
     return () => clearInterval(t);
   }, [area]);
 

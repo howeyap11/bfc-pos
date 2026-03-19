@@ -25,6 +25,7 @@ const transactionImportSchema = z.object({
     createdAt: z.string(), // ISO date
     voidedAt: z.string().nullable().optional(),
     voidReason: z.string().nullable().optional(),
+    isTest: z.boolean().optional().default(false),
 });
 export async function syncRoutes(app) {
     app.get("/catalog", async (req, reply) => {
@@ -35,7 +36,7 @@ export async function syncRoutes(app) {
         }
         // Bootstrap (sinceVersion 0): return all entities. Incremental: only version > sinceVersion.
         const versionFilter = sinceVersion === 0 ? { gte: 0 } : { gt: sinceVersion };
-        const [catalogVersion, items, addOnGroups, substituteGroups, substitutes, substitutePrices, substituteRecipeConsumptions, menuItemAddOnGroups, menuItemSubstituteGroups, menuItemSubstitutes, ingredientsVersioned, recipeLinesVersioned, recipeLineSizesVersioned, categories, subCategories, menuOptionGroups, menuOptions, menuOptionGroupSections, menuItemOptionGroups, menuItemSizes, menuSizes, menuItemSizePrices, transactionTypes, shotPricingRules, storeSetting,] = await Promise.all([
+        const [catalogVersion, items, addOnGroups, substituteGroups, substitutes, substitutePrices, substituteRecipeConsumptions, menuItemAddOnGroups, menuItemSubstituteGroups, menuItemSubstitutes, ingredientsVersioned, recipeLinesVersioned, recipeLineSizesVersioned, categories, subCategories, menuOptionGroups, menuOptions, menuOptionGroupSections, menuItemOptionGroups, menuItemSizes, menuSizes, menuItemSizePrices, transactionTypes, shotPricingRules, storeSetting, staffList,] = await Promise.all([
             app.prisma.catalogVersion.findUnique({ where: { id: 1 } }),
             app.prisma.menuItem.findMany({
                 where: { version: versionFilter },
@@ -71,6 +72,11 @@ export async function syncRoutes(app) {
             app.prisma.transactionTypeSetting.findMany({ where: { isActive: true }, orderBy: { sortOrder: "asc" } }),
             app.prisma.shotPricingRule.findMany({ where: { isActive: true }, orderBy: { sortOrder: "asc" } }),
             app.prisma.storeSetting.findUnique({ where: { id: "1" } }),
+            app.prisma.staff.findMany({
+                where: { storeId: "store_1" },
+                orderBy: { name: "asc" },
+                select: { id: true, name: true, email: true, passcode: true, role: true, isActive: true, updatedAt: true },
+            }),
         ]);
         const latestVersion = catalogVersion?.latestVersion ?? 0;
         // Delta sync: include related entities for changed items (recipe lines, recipe line sizes, referenced ingredients)
@@ -119,6 +125,7 @@ export async function syncRoutes(app) {
             transactionTypes: transactionTypes.length,
             menuOptionGroups: menuOptionGroups.length,
             menuItemOptionGroups: menuItemOptionGroups.length,
+            staffCount: staffList.length,
         }, "[Sync] Catalog delta counts");
         return {
             latestVersion,
@@ -178,6 +185,7 @@ export async function syncRoutes(app) {
                 sizeOptionId: p.sizeOptionId,
                 sizeCode: p.sizeCode,
                 priceCents: p.priceCents,
+                includedShots: p.includedShots ?? null,
             })),
             transactionTypes: transactionTypes.map((t) => ({
                 id: t.id,
@@ -196,6 +204,15 @@ export async function syncRoutes(app) {
                 sortOrder: s.sortOrder,
             })),
             storeSettings: storeSetting ? { adminPinHash: storeSetting.adminPinHash ?? null } : undefined,
+            staff: staffList.map((s) => ({
+                id: s.id,
+                name: s.name,
+                email: s.email ?? null,
+                passcode: s.passcode,
+                role: s.role,
+                isActive: s.isActive,
+                updatedAt: s.updatedAt.toISOString(),
+            })),
             addOnGroups: addOnGroups.map((g) => ({
                 id: g.id,
                 name: g.name,
@@ -316,6 +333,7 @@ export async function syncRoutes(app) {
                     createdAt,
                     voidedAt,
                     voidReason: d.voidReason ?? null,
+                    isTest: d.isTest ?? false,
                 },
             });
             app.log.info({ id: created.id, transactionNo: d.transactionNo }, "[Sync] Transaction imported");
@@ -351,6 +369,54 @@ export async function syncRoutes(app) {
         }
         catch {
             return { valid: false };
+        }
+    });
+    // Delete test transactions (POS Settings) – requires X-Store-Sync-Key + admin PIN. Only deletes isTest = true.
+    app.post("/delete-test-transactions", async (req, reply) => {
+        if (syncSecret) {
+            const key = req.headers["x-store-sync-key"] || "";
+            if (key !== syncSecret) {
+                reply.code(401);
+                return { error: "UNAUTHORIZED", message: "Invalid or missing X-Store-Sync-Key" };
+            }
+        }
+        const parsed = z.object({ pin: z.string().min(1) }).safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", message: "pin required" };
+        }
+        try {
+            const row = await app.prisma.storeSetting.findUnique({ where: { id: "1" } });
+            if (!row?.adminPinHash) {
+                reply.code(400);
+                return { error: "NO_PIN", message: "Admin PIN not configured" };
+            }
+            const valid = await verifyPassword(parsed.data.pin, row.adminPinHash);
+            if (!valid) {
+                reply.code(401);
+                return { error: "INVALID_PIN", message: "Invalid admin PIN" };
+            }
+            const result = await app.prisma.syncedTransaction.deleteMany({
+                where: { isTest: true },
+            });
+            const deletedCount = result.count;
+            await app.prisma.devActionLog.create({
+                data: {
+                    adminId: "sync-api",
+                    adminEmail: "sync@pos",
+                    actionType: "DELETE_TEST_TRANSACTIONS",
+                    scope: "SyncedTransaction where isTest = true (from POS)",
+                    affectedCount: deletedCount,
+                    result: "SUCCESS",
+                    isProduction: process.env.NODE_ENV === "production",
+                },
+            });
+            return { deletedCount };
+        }
+        catch (err) {
+            app.log.error({ err }, "[Sync] Delete test transactions failed");
+            reply.code(500);
+            return { error: "DELETE_FAILED", message: "Failed to delete test transactions" };
         }
     });
     // --- Device commands (POS polling) - auth via X-Device-Key ---

@@ -120,7 +120,7 @@ export function buildReceiptHtml(tx: ReceiptTransaction): string {
           : "";
       return `
         <tr>
-          <td style="padding:4px 8px;border-bottom:1px solid #eee;vertical-align:top;min-width:0;word-wrap:break-word">
+          <td style="padding:4px 8px;border-bottom:1px solid #eee;vertical-align:top;min-width:0;word-wrap:break-word;overflow-wrap:anywhere">
             <div style="word-break:break-word">${escapeHtml(mainLabel)}</div>
             ${addonsHtml}
           </td>
@@ -138,6 +138,8 @@ export function buildReceiptHtml(tx: ReceiptTransaction): string {
   <style>
     body { font-family: monospace; font-size: 12px; max-width: 320px; margin: 12px; }
     table { width: 100%; border-collapse: collapse; }
+    /* Force <col> widths to be hard caps so long labels cannot push the amount down. */
+    .receipt-table { table-layout: fixed; }
     .total { font-weight: bold; font-size: 14px; margin-top: 8px; }
     .method { margin-top: 4px; color: #555; }
     @media print { body { margin: 0; } }

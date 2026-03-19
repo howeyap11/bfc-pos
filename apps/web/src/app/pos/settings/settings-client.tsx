@@ -63,6 +63,11 @@ export default function SettingsClient() {
   const [availablePrinters, setAvailablePrinters] = useState<string[]>([]);
   const [printerSaving, setPrinterSaving] = useState(false);
   const [printerTestLoading, setPrinterTestLoading] = useState<string | null>(null);
+  /** Driver / Windows enumeration message from API */
+  const [printerEnumHint, setPrinterEnumHint] = useState<string | null>(null);
+  /** Saved config name when it does not resolve to a Windows queue (for display) */
+  const [unmatchedReceiptSavedAs, setUnmatchedReceiptSavedAs] = useState<string | null>(null);
+  const [unmatchedStickerSavedAs, setUnmatchedStickerSavedAs] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [overlay, setOverlay] = useState<"updating" | "restarting" | null>(null);
   const [deviceKeyConfig, setDeviceKeyConfig] = useState<{ configured: boolean; masked?: string } | null>(null);
@@ -71,6 +76,11 @@ export default function SettingsClient() {
   const [deviceKeyMessage, setDeviceKeyMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [devMode, setDevMode] = useState(false);
   const [devModeSaving, setDevModeSaving] = useState(false);
+  const [deleteTestModalOpen, setDeleteTestModalOpen] = useState(false);
+  const [deleteTestPin, setDeleteTestPin] = useState("");
+  const [deleteTestLoading, setDeleteTestLoading] = useState(false);
+  const [deleteTestError, setDeleteTestError] = useState<string | null>(null);
+  const [deleteTestSuccess, setDeleteTestSuccess] = useState<string | null>(null);
   const [snapResiboEnabled, setSnapResiboEnabled] = useState(false);
   const [snapResiboPriceCents, setSnapResiboPriceCents] = useState<number | "">(0);
   const [snapResiboRewardMinimumCents, setSnapResiboRewardMinimumCents] = useState<number | "">(0);
@@ -96,7 +106,8 @@ export default function SettingsClient() {
     try {
       const staff = typeof window !== "undefined" ? localStorage.getItem("bfc_active_staff") : null;
       const staffKey = staff ? (JSON.parse(staff) as { staffKey?: string }).staffKey : null;
-      const headers = staffKey ? { "x-staff-key": staffKey } : {};
+      const headers: Record<string, string> = {};
+      if (staffKey) headers["x-staff-key"] = staffKey;
       const [configRes, availableRes] = await Promise.all([
         fetch("/api/system/printers", { cache: "no-store", headers }),
         fetch("/api/system/printers/available", { cache: "no-store", headers }),
@@ -104,13 +115,53 @@ export default function SettingsClient() {
       const configData = await configRes.json();
       const availableData = await availableRes.json();
       if (configRes.ok) {
-        setReceiptPrinter(configData.receiptPrinter ?? "");
-        setStickerPrinter(configData.stickerPrinter ?? "");
+        setReceiptPrinter(
+          typeof configData.receiptPrinterSelectValue === "string"
+            ? configData.receiptPrinterSelectValue
+            : configData.receiptPrinter ?? ""
+        );
+        setStickerPrinter(
+          typeof configData.stickerPrinterSelectValue === "string"
+            ? configData.stickerPrinterSelectValue
+            : configData.stickerPrinter ?? ""
+        );
         setStickerWidthMm(Number(configData.stickerWidthMm) || 80);
         setStickerHeightMm(Number(configData.stickerHeightMm) || 60);
+        if (Array.isArray(configData.enumeration?.windowsPrinterNamesExact)) {
+          setAvailablePrinters(configData.enumeration.windowsPrinterNamesExact);
+        }
+        const hintFromConfig =
+          typeof configData.enumeration?.hint === "string" ? configData.enumeration.hint.trim() : "";
+        const hintFromAvailable =
+          typeof availableData.enumeration?.hint === "string" ? availableData.enumeration.hint.trim() : "";
+        setPrinterEnumHint(hintFromConfig || hintFromAvailable || null);
+        setUnmatchedReceiptSavedAs(
+          configData.savedReceiptNotMatched && configData.receiptPrinter
+            ? String(configData.receiptPrinter)
+            : null
+        );
+        setUnmatchedStickerSavedAs(
+          configData.savedStickerNotMatched && configData.stickerPrinter
+            ? String(configData.stickerPrinter)
+            : null
+        );
+      } else {
+        setUnmatchedReceiptSavedAs(null);
+        setUnmatchedStickerSavedAs(null);
+        const hintFromAvailable =
+          typeof availableData.enumeration?.hint === "string" ? availableData.enumeration.hint.trim() : "";
+        setPrinterEnumHint(hintFromAvailable || null);
       }
-      if (availableRes.ok && Array.isArray(availableData.printers)) {
+      if (
+        availableRes.ok &&
+        Array.isArray(availableData.printers) &&
+        (!configRes.ok || !Array.isArray(configData.enumeration?.windowsPrinterNamesExact))
+      ) {
         setAvailablePrinters(availableData.printers);
+      }
+      if (configRes.ok && !configData.enumeration?.hint && availableRes.ok && availableData.enumeration?.hint) {
+        const h = String(availableData.enumeration.hint).trim();
+        if (h) setPrinterEnumHint(h);
       }
     } catch {
       // ignore
@@ -252,7 +303,9 @@ export default function SettingsClient() {
   async function getStaffHeaders(): Promise<Record<string, string>> {
     const staff = typeof window !== "undefined" ? localStorage.getItem("bfc_active_staff") : null;
     const staffKey = staff ? (JSON.parse(staff) as { staffKey?: string }).staffKey : null;
-    return staffKey ? { "x-staff-key": staffKey } : {};
+    const out: Record<string, string> = {};
+    if (staffKey) out["x-staff-key"] = staffKey;
+    return out;
   }
 
   async function handleSaveDeviceKey() {
@@ -320,6 +373,23 @@ export default function SettingsClient() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.message || data.error || "Failed to save");
+      setReceiptPrinter(
+        typeof data.receiptPrinterSelectValue === "string" ? data.receiptPrinterSelectValue : data.receiptPrinter ?? ""
+      );
+      setStickerPrinter(
+        typeof data.stickerPrinterSelectValue === "string" ? data.stickerPrinterSelectValue : data.stickerPrinter ?? ""
+      );
+      if (Array.isArray(data.enumeration?.windowsPrinterNamesExact)) {
+        setAvailablePrinters(data.enumeration.windowsPrinterNamesExact);
+      }
+      const h = typeof data.enumeration?.hint === "string" ? data.enumeration.hint.trim() : "";
+      setPrinterEnumHint(h || null);
+      setUnmatchedReceiptSavedAs(
+        data.savedReceiptNotMatched && data.receiptPrinter ? String(data.receiptPrinter) : null
+      );
+      setUnmatchedStickerSavedAs(
+        data.savedStickerNotMatched && data.stickerPrinter ? String(data.stickerPrinter) : null
+      );
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to save");
     } finally {
@@ -526,7 +596,11 @@ export default function SettingsClient() {
         setSnapResiboImportResult(data?.message || data?.error || "Import failed");
         return;
       }
-      setSnapResiboImportResult(`Imported: ${data.added} added, ${data.skipped} skipped.`);
+      const cleared =
+        typeof data.clearedAvailable === "number" && data.clearedAvailable > 0
+          ? ` Cleared ${data.clearedAvailable} old available voucher(s).`
+          : "";
+      setSnapResiboImportResult(`Imported: ${data.added} added, ${data.skipped} skipped.${cleared}`);
       loadSnapResiboCount();
     } catch (e) {
       setSnapResiboImportResult(e instanceof Error ? e.message : "Import failed");
@@ -566,7 +640,10 @@ export default function SettingsClient() {
           alignItems: "center",
           justifyContent: "center",
           minHeight: "60vh",
-          padding: 24,
+          padding: "clamp(12px, 3vw, 24px)",
+          width: "100%",
+          maxWidth: "100%",
+          boxSizing: "border-box",
           background: COLORS.bgDarkest,
           gap: 24,
         }}
@@ -578,7 +655,9 @@ export default function SettingsClient() {
             padding: 24,
             borderRadius: 12,
             border: `1px solid ${COLORS.borderLight}`,
-            minWidth: 350,
+            width: "100%",
+            maxWidth: 420,
+            boxSizing: "border-box",
           }}
         >
           <h2 style={{ marginTop: 0, marginBottom: 8, fontSize: 16, fontWeight: 600, color: COLORS.textPrimary }}>
@@ -619,7 +698,9 @@ export default function SettingsClient() {
               padding: 24,
               borderRadius: 12,
               border: `1px solid ${COLORS.borderLight}`,
-              minWidth: 350,
+              width: "100%",
+              maxWidth: 420,
+              boxSizing: "border-box",
             }}
           >
             <h2 style={{ marginTop: 0, marginBottom: 8, fontSize: 16, fontWeight: 600, color: COLORS.textPrimary }}>
@@ -659,7 +740,9 @@ export default function SettingsClient() {
             padding: 32,
             borderRadius: 12,
             border: `1px solid ${COLORS.borderLight}`,
-            minWidth: 350,
+            width: "100%",
+            maxWidth: 420,
+            boxSizing: "border-box",
           }}
         >
           <h2 style={{ marginTop: 0, marginBottom: 20, textAlign: "center", color: COLORS.textPrimary }}>
@@ -744,11 +827,14 @@ export default function SettingsClient() {
       style={{
         height: "100%",
         minHeight: 0,
+        minWidth: 0,
         overflowY: "auto",
-        padding: 24,
+        overflowX: "hidden",
+        padding: "clamp(12px, 2.5vw, 24px)",
         maxWidth: 1200,
         width: "100%",
         margin: "0 auto",
+        boxSizing: "border-box",
         background: COLORS.bgDarkest,
       }}
     >
@@ -1003,7 +1089,165 @@ export default function SettingsClient() {
               {devModeSaving ? "Saving…" : devMode ? "Dev Mode ON" : "Dev Mode OFF"}
             </span>
           </label>
+
+          <div style={{ marginTop: 24, paddingTop: 24, borderTop: `1px solid ${COLORS.borderLight}` }}>
+            <h3 style={{ margin: "0 0 8px 0", fontSize: 16, fontWeight: 600, color: COLORS.textPrimary }}>
+              Test transactions
+            </h3>
+            <p style={{ color: COLORS.textSecondary, marginBottom: 16, fontSize: 14 }}>
+              Delete all test transactions from the cloud (only those marked as test). Requires admin PIN.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setDeleteTestModalOpen(true);
+                setDeleteTestPin("");
+                setDeleteTestError(null);
+                setDeleteTestSuccess(null);
+              }}
+              style={{
+                padding: "8px 16px",
+                fontSize: 14,
+                fontWeight: 600,
+                background: "rgba(239, 68, 68, 0.2)",
+                color: "#fca5a5",
+                border: "1px solid rgba(239, 68, 68, 0.5)",
+                borderRadius: 6,
+                cursor: "pointer",
+              }}
+            >
+              Delete all test transactions
+            </button>
+          </div>
         </div>
+
+        {deleteTestModalOpen && (
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              zIndex: 50,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "rgba(0,0,0,0.7)",
+              padding: 24,
+            }}
+            onClick={() => !deleteTestLoading && setDeleteTestModalOpen(false)}
+          >
+            <div
+              style={{
+                maxWidth: 420,
+                width: "100%",
+                background: COLORS.bgPanel,
+                borderRadius: 12,
+                padding: 24,
+                border: `1px solid ${COLORS.borderLight}`,
+                boxShadow: "0 20px 40px rgba(0,0,0,0.4)",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 style={{ margin: "0 0 12px 0", fontSize: 18, fontWeight: 600, color: COLORS.textPrimary }}>
+                Delete all test transactions
+              </h3>
+              <p style={{ margin: "0 0 16px 0", fontSize: 14, color: COLORS.textSecondary }}>
+                This will delete all transactions marked as test in the cloud. Production transactions are not affected.
+              </p>
+              {deleteTestError && (
+                <div style={{ marginBottom: 12, padding: 10, background: "#7f1d1d", color: "#fecaca", borderRadius: 6, fontSize: 14 }}>
+                  {deleteTestError}
+                </div>
+              )}
+              {deleteTestSuccess && (
+                <div style={{ marginBottom: 12, padding: 10, background: "rgba(34,197,94,0.2)", color: "#86efac", borderRadius: 6, fontSize: 14 }}>
+                  {deleteTestSuccess}
+                </div>
+              )}
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ display: "block", marginBottom: 6, fontSize: 14, color: COLORS.textSecondary }}>
+                  Admin PIN
+                </label>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  value={deleteTestPin}
+                  onChange={(e) => setDeleteTestPin(e.target.value.replace(/\D/g, "").slice(0, 8))}
+                  placeholder="Enter admin PIN"
+                  style={{
+                    width: "100%",
+                    padding: 12,
+                    fontSize: 16,
+                    border: `1px solid ${COLORS.borderLight}`,
+                    borderRadius: 6,
+                    background: COLORS.bgDark,
+                    color: COLORS.textPrimary,
+                  }}
+                />
+              </div>
+              <div style={{ display: "flex", gap: 12 }}>
+                <button
+                  type="button"
+                  disabled={deleteTestLoading || !deleteTestPin.trim()}
+                  onClick={async () => {
+                    setDeleteTestError(null);
+                    setDeleteTestSuccess(null);
+                    setDeleteTestLoading(true);
+                    try {
+                      const res = await fetch("/api/dev/delete-test-transactions", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ pin: deleteTestPin }),
+                      });
+                      const data = await res.json();
+                      if (!res.ok) {
+                        setDeleteTestError(data?.message || data?.error || "Failed");
+                        return;
+                      }
+                      setDeleteTestSuccess(`Deleted ${data.deletedCount ?? 0} test transaction(s).`);
+                      setDeleteTestPin("");
+                      setTimeout(() => {
+                        setDeleteTestModalOpen(false);
+                        setDeleteTestSuccess(null);
+                      }, 2000);
+                    } catch (e) {
+                      setDeleteTestError(e instanceof Error ? e.message : "Request failed");
+                    } finally {
+                      setDeleteTestLoading(false);
+                    }
+                  }}
+                  style={{
+                    padding: "10px 20px",
+                    fontSize: 14,
+                    fontWeight: 600,
+                    background: deleteTestLoading || !deleteTestPin.trim() ? "#555" : "#dc2626",
+                    color: "#fff",
+                    border: "none",
+                    borderRadius: 6,
+                    cursor: deleteTestLoading || !deleteTestPin.trim() ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {deleteTestLoading ? "Deleting…" : "Delete test transactions"}
+                </button>
+                <button
+                  type="button"
+                  disabled={deleteTestLoading}
+                  onClick={() => setDeleteTestModalOpen(false)}
+                  style={{
+                    padding: "10px 20px",
+                    fontSize: 14,
+                    background: "transparent",
+                    color: COLORS.textSecondary,
+                    border: `1px solid ${COLORS.borderLight}`,
+                    borderRadius: 6,
+                    cursor: deleteTestLoading ? "not-allowed" : "pointer",
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div
           style={{
@@ -1341,6 +1585,9 @@ export default function SettingsClient() {
           <p style={{ color: COLORS.textSecondary, marginBottom: 16, fontSize: 14 }}>
             Select the Windows printers for receipts and drink stickers (USB printers connected to this PC).
           </p>
+          {printerEnumHint ? (
+            <p style={{ color: COLORS.error, marginBottom: 12, fontSize: 13 }}>{printerEnumHint}</p>
+          ) : null}
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <div>
               <label style={{ display: "block", marginBottom: 4, fontSize: 14, color: COLORS.textSecondary }}>
@@ -1364,6 +1611,11 @@ export default function SettingsClient() {
                   <option key={name} value={name}>{name}</option>
                 ))}
               </select>
+              {unmatchedReceiptSavedAs ? (
+                <p style={{ marginTop: 6, fontSize: 12, color: COLORS.error }}>
+                  Saved name does not match any Windows queue: &quot;{unmatchedReceiptSavedAs}&quot;. Choose the exact name from the list.
+                </p>
+              ) : null}
             </div>
             <div>
               <label style={{ display: "block", marginBottom: 4, fontSize: 14, color: COLORS.textSecondary }}>
@@ -1387,6 +1639,11 @@ export default function SettingsClient() {
                   <option key={name} value={name}>{name}</option>
                 ))}
               </select>
+              {unmatchedStickerSavedAs ? (
+                <p style={{ marginTop: 6, fontSize: 12, color: COLORS.error }}>
+                  Saved name does not match any Windows queue: &quot;{unmatchedStickerSavedAs}&quot;. Choose the exact name from the list.
+                </p>
+              ) : null}
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <div>

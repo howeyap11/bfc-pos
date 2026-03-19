@@ -1,4 +1,5 @@
 import "fastify";
+import "@fastify/multipart";
 import type { PrismaClient } from "@prisma/client";
 import type { InventoryService } from "../services/inventory.service";
 

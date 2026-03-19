@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { COLORS } from "@/lib/theme";
 import type { CartItem } from "@/lib/buildTransactionPayload";
@@ -79,7 +79,7 @@ const CARD_COLLAPSED_MIN_WIDTH = 200;
 const CARD_EXPANDED_WIDTH = 520;
 const CARD_EXPANDED_MIN_WIDTH = 440;
 const CARD_MIN_HEIGHT = 320;
-/** Match Register's current order panel: flex 0 0 20% */
+/** Cart column width matches Register: clamp(272px, 32vw, 440px) */
 
 function getMinutesElapsed(createdAt: string): number {
   return Math.floor((Date.now() - new Date(createdAt).getTime()) / 60_000);
@@ -237,6 +237,7 @@ export default function OrdersClient() {
   const [acceptingId, setAcceptingId] = useState<string | null>(null);
   const [decliningId, setDecliningId] = useState<string | null>(null);
   const [completingTransactionId, setCompletingTransactionId] = useState<string | null>(null);
+  const loadOrdersInFlight = useRef(false);
 
   useEffect(() => {
     try {
@@ -265,6 +266,8 @@ export default function OrdersClient() {
 
   const loadOrders = useCallback(async () => {
     if (!activeStaff?.staffKey) return;
+    if (loadOrdersInFlight.current) return;
+    loadOrdersInFlight.current = true;
 
     try {
       setError(null);
@@ -274,7 +277,17 @@ export default function OrdersClient() {
       });
 
       const text = await res.text();
-      if (!res.ok) throw new Error(JSON.parse(text || "{}").error || text || "Failed to load orders");
+      if (!res.ok) {
+        let errMsg = text?.trim() || `Failed to load orders (${res.status})`;
+        try {
+          const j = JSON.parse(text || "{}") as { error?: string };
+          if (typeof j?.error === "string" && j.error) errMsg = j.error;
+        } catch {
+          /* keep errMsg */
+        }
+        console.warn("[Orders] load failed (HTTP)", { status: res.status, statusText: res.statusText, bodyPreview: text?.slice?.(0, 200) });
+        throw new Error(errMsg);
+      }
 
       const data = JSON.parse(text) as { orders?: PosOrder[]; pendingTransactions?: PendingTransaction[] } | PosOrder[];
       const orderList = Array.isArray(data) ? data : (data.orders ?? []);
@@ -289,9 +302,15 @@ export default function OrdersClient() {
       setHasLoadedOnce(true);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
+      if (e instanceof TypeError) {
+        console.warn("[Orders] load failed (network)", { message: msg });
+      } else {
+        console.warn("[Orders] load failed", { message: msg });
+      }
       setError(msg);
-      setOrders([]);
+      // Keep last successful orders / pending data visible during transient API issues
     } finally {
+      loadOrdersInFlight.current = false;
       setLoading(false);
     }
   }, [activeStaff?.staffKey, innerTab, hasLoadedOnce]);
@@ -827,7 +846,19 @@ export default function OrdersClient() {
   }
 
   return (
-    <div style={{ padding: 24, flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden", background: COLORS.bgDarkest }}>
+    <div
+      style={{
+        padding: "clamp(12px, 2.5vw, 24px)",
+        flex: 1,
+        minHeight: 0,
+        minWidth: 0,
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+        boxSizing: "border-box",
+        background: COLORS.bgDarkest,
+      }}
+    >
       <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 24 }}>
         <h1 style={{ margin: 0, fontSize: 22, fontWeight: 600, color: COLORS.textPrimary }}>Orders</h1>
         {newOrderBadge > 0 && (
@@ -884,7 +915,8 @@ export default function OrdersClient() {
       <div style={{ flex: 1, display: "flex", gap: 0, minHeight: 0, overflow: "hidden", background: "#1f1f1f" }}>
         <div
           style={{
-            flex: "0 0 80%",
+            flex: 1,
+            minWidth: 0,
             display: "flex",
             flexDirection: "row",
             gap: 16,
@@ -892,7 +924,6 @@ export default function OrdersClient() {
             overflowY: "hidden",
             alignItems: "stretch",
             paddingBottom: 8,
-            minWidth: 0,
             borderRight: "2px solid #2a2a2a",
           }}
         >
@@ -932,35 +963,47 @@ export default function OrdersClient() {
 
         <div
           style={{
-            flex: "0 0 20%",
+            flexShrink: 0,
+            width: "clamp(272px, 32vw, 440px)",
+            minWidth: 0,
+            minHeight: 0,
             display: "flex",
             flexDirection: "column",
             overflow: "hidden",
             background: "#0a0a0a",
           }}
         >
-          <div style={{ padding: 12, borderBottom: "1px solid #2a2a2a", background: "#1f1f1f" }}>
+          <div style={{ flexShrink: 0, padding: 12, borderBottom: "1px solid #2a2a2a", background: "#1f1f1f" }}>
             <h2 style={{ margin: 0, fontSize: 18, color: "#fff" }}>Current Order</h2>
           </div>
           {cart.length > 0 ? (
-            <div style={{ padding: 12, borderBottom: "2px solid #2a2a2a", background: "#1a1a1a" }}>
+            <div style={{ flexShrink: 0, padding: 12, borderBottom: "2px solid #2a2a2a", background: "#1a1a1a" }}>
               <div style={{ fontSize: 14, fontWeight: "600", color: "#fff" }}>Accepted QR order</div>
               <div style={{ fontSize: 11, color: "#aaa", marginTop: 2 }}>Go to Register to complete payment</div>
             </div>
           ) : null}
           {cart.length === 0 ? (
-            <div style={{ flex: 1, padding: 16 }}>
+            <div style={{ flex: 1, minHeight: 0, padding: 16 }}>
               <p style={{ color: "#666", fontSize: 13, textAlign: "center", marginTop: 20 }}>Cart is empty</p>
               <p style={{ color: "#888", fontSize: 12, textAlign: "center", marginTop: 8 }}>Accept a QR order to load items here.</p>
             </div>
           ) : (
             <>
-              <div style={{ flex: 1, overflow: "auto", padding: 8 }}>
+              <div
+                style={{
+                  flex: 1,
+                  minHeight: 0,
+                  overflowX: "hidden",
+                  overflowY: "auto",
+                  WebkitOverflowScrolling: "touch",
+                  padding: "clamp(6px, 1vh, 10px)",
+                }}
+              >
                 {cart.map((item) => (
                   <OrdersCartLineItem key={item.tempId} item={item} />
                 ))}
               </div>
-              <div style={{ padding: 12, borderTop: "1px solid #2a2a2a", background: "#1f1f1f" }}>
+              <div style={{ flexShrink: 0, padding: "clamp(8px, 1.2vh, 12px)", borderTop: "1px solid #2a2a2a", background: "#1f1f1f" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8, fontSize: 14 }}>
                   <span style={{ color: "#aaa" }}>Subtotal:</span>
                   <strong style={{ color: "#fff" }}>{formatPesos(cart.reduce((s, i) => s + calculateLineTotal(i), 0))}</strong>

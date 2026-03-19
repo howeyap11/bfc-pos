@@ -14,7 +14,13 @@ export const functionRoomRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(400).send({ error: "INVALID_BODY", details: parsed.error.flatten() });
     }
 
-    const frZone = await app.prisma.zone.findUnique({ where: { code: "FR" } });
+    const frZone = await app.prisma.zone.findUnique({
+      where: {
+        storeId_code: {
+          storeId: "store_1",
+          code: "FR",
+        },
+      } });
     if (!frZone) return reply.code(400).send({ error: "FR_ZONE_NOT_FOUND" });
 
     // Find any function room table (we just need a tableId to anchor the tab)
@@ -45,7 +51,9 @@ export const functionRoomRoutes: FastifyPluginAsync = async (app) => {
 
   // Active tab + summary
   app.get("/function-room/active", { preHandler: app.requireStaff }, async (req, reply) => {
-    const frZone = await app.prisma.zone.findUnique({ where: { code: "FR" } });
+    const frZone = await app.prisma.zone.findUnique({
+      where: { storeId_code: { storeId: "store_1", code: "FR" } },
+    });
     if (!frZone) return reply.code(400).send({ error: "FR_ZONE_NOT_FOUND" });
 
     const frTable = await app.prisma.table.findFirst({
@@ -101,7 +109,9 @@ export const functionRoomRoutes: FastifyPluginAsync = async (app) => {
 
   // Orders attached to active function room tab
   app.get("/function-room/orders", { preHandler: app.requireStaff }, async (req, reply) => {
-    const frZone = await app.prisma.zone.findUnique({ where: { code: "FR" } });
+    const frZone = await app.prisma.zone.findUnique({
+      where: { storeId_code: { storeId: "store_1", code: "FR" } },
+    });
     if (!frZone) return reply.code(400).send({ error: "FR_ZONE_NOT_FOUND" });
 
     const frTable = await app.prisma.table.findFirst({

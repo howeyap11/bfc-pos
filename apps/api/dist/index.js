@@ -33,12 +33,14 @@ import { adminSyncRoutes } from "./routes/admin/adminSync";
 import { deviceCommandsRoutes } from "./routes/deviceCommands.js";
 import { storeConfigRoutes } from "./routes/storeConfig";
 import { systemPrintersRoutes } from "./routes/systemPrinters";
+import { snapResiboRoutes } from "./routes/snapResibo";
+import { devRoutes } from "./routes/dev.js";
 import { ensureItemForCloudId } from "./services/catalogCache.service";
-import { syncCatalogFromCloud } from "./services/syncCatalog.service.js";
-import { startSyncScheduler, runTransactionSyncFlush } from "./services/syncScheduler.js";
+import { startSyncScheduler, runCatalogSync } from "./services/syncScheduler.js";
 import { startDeviceCommandPolling } from "./services/deviceCommandPolling.service.js";
 import { getCommandState } from "./services/commandState.service.js";
 import { getSyncStatus } from "./services/syncScheduler.js";
+import { getDeviceKey } from "./services/deviceKey.service.js";
 const app = Fastify({ logger: true });
 // Plugins
 await app.register(cors, { origin: true });
@@ -61,13 +63,15 @@ await app.register(adminSyncRoutes);
 await app.register(deviceCommandsRoutes);
 await app.register(storeConfigRoutes);
 await app.register(systemPrintersRoutes);
+await app.register(snapResiboRoutes);
+await app.register(devRoutes);
 // Public routes (MUST be before listen)
 app.get("/health", async () => ({ ok: true }));
 app.get("/device/status", async () => {
     const { state: commandState, errorMessage, lastUpdateAt } = getCommandState();
     return {
         version: process.env.POS_VERSION ?? "1.0.0",
-        deviceConfigured: !!process.env.DEVICE_KEY,
+        deviceConfigured: getDeviceKey().length > 0,
         commandState,
         ...(errorMessage && { errorMessage }),
         ...(lastUpdateAt && { lastUpdateAt: lastUpdateAt.toISOString() }),
@@ -122,11 +126,14 @@ app.get("/tables", async () => {
         include: { zone: true },
     });
 });
+// SnapResibo: virtual category/item id (not in CloudCategory/CloudMenuItem)
+const SNAPRESIBO_CATEGORY_ID = "SNAPRESIBO";
+const SNAPRESIBO_QR_ITEM_ID = "SNAPRESIBO_QR";
 // Catalog from local cache - offline-first, no cloud dependency
 // Returns Category[] with items, using CloudCategory, CloudSubCategory, CloudMenuItem
 app.get("/menu", async (req, reply) => {
     try {
-        const [categories, subCategories, items] = await Promise.all([
+        const [categories, subCategories, items, storeConfig] = await Promise.all([
             app.prisma.cloudCategory.findMany({
                 where: { storeId: "store_1" },
                 orderBy: { sortOrder: "asc" },
@@ -139,9 +146,10 @@ app.get("/menu", async (req, reply) => {
                 where: { storeId: "store_1", isActive: true, deletedAt: null },
                 orderBy: { name: "asc" },
             }),
+            app.prisma.storeConfig.findUnique({ where: { storeId: "store_1" } }),
         ]);
         const subCategoryMap = new Map((subCategories ?? []).map((s) => [s.cloudId, s.name]));
-        const result = (categories ?? []).map((cat) => ({
+        let result = (categories ?? []).map((cat) => ({
             id: cat.cloudId,
             name: cat.name,
             items: (items ?? [])
@@ -153,6 +161,7 @@ app.get("/menu", async (req, reply) => {
                 description: null,
                 imageUrl: i.imageUrl,
                 series: i.subCategoryCloudId ? subCategoryMap.get(i.subCategoryCloudId) ?? "Other" : "Other",
+                hasSizes: i.hasSizes ?? false,
             })),
         }));
         const uncategorized = (items ?? []).filter((i) => !i.categoryCloudId);
@@ -167,11 +176,29 @@ app.get("/menu", async (req, reply) => {
                     description: null,
                     imageUrl: i.imageUrl,
                     series: i.subCategoryCloudId ? subCategoryMap.get(i.subCategoryCloudId) ?? "Other" : "Other",
+                    hasSizes: i.hasSizes ?? false,
                 })),
             });
         }
         if (result.length === 0 && (items ?? []).length > 0) {
-            return [{ id: "menu", name: "Menu", items: (items ?? []).map((i) => ({ id: i.cloudId, name: i.name, basePrice: i.priceCents, description: null, imageUrl: i.imageUrl ?? null, series: "Other" })) }];
+            result = [{ id: "menu", name: "Menu", items: (items ?? []).map((i) => ({ id: i.cloudId, name: i.name, basePrice: i.priceCents, description: null, imageUrl: i.imageUrl ?? null, series: "Other", hasSizes: i.hasSizes ?? false })) }];
+        }
+        // SnapResibo: append virtual category as last (rightmost) when enabled
+        if (storeConfig?.snapResiboEnabled) {
+            const snapPrice = Math.max(0, storeConfig.snapResiboPriceCents ?? 0);
+            result = [...result, {
+                    id: SNAPRESIBO_CATEGORY_ID,
+                    name: "SnapResibo",
+                    items: [{
+                            id: SNAPRESIBO_QR_ITEM_ID,
+                            name: "SnapResibo QR",
+                            basePrice: snapPrice,
+                            description: null,
+                            imageUrl: null,
+                            series: "Generate QR",
+                            hasSizes: false,
+                        }],
+                }];
         }
         return result;
     }
@@ -212,8 +239,45 @@ app.get("/shot-pricing-rules", async () => {
         priceCentsPerBundle: r.priceCentsPerBundle,
     }));
 });
-app.get("/items/:id", async (req) => {
+app.get("/items/:id", async (req, reply) => {
     const { id } = req.params;
+    // SnapResibo: virtual item has no CloudMenuItem; return minimal detail so POS can add to cart
+    if (id === SNAPRESIBO_QR_ITEM_ID) {
+        const storeConfig = await app.prisma.storeConfig.findUnique({
+            where: { storeId: "store_1" },
+            select: { snapResiboEnabled: true, snapResiboPriceCents: true },
+        });
+        if (!storeConfig?.snapResiboEnabled) {
+            return reply.code(404).send({ error: "NOT_FOUND", message: "SnapResibo is disabled" });
+        }
+        const priceCents = Math.max(0, storeConfig.snapResiboPriceCents ?? 0);
+        return {
+            id: SNAPRESIBO_QR_ITEM_ID,
+            name: "SnapResibo QR",
+            basePrice: priceCents,
+            description: null,
+            imageUrl: null,
+            isDrink: false,
+            serveVessel: null,
+            defaultSizeOptionId: null,
+            defaultMilk: undefined,
+            defaultSubstituteCloudId: null,
+            substitutes: undefined,
+            addOns: undefined,
+            addOnGroups: undefined,
+            supportsShots: false,
+            defaultShots: 0,
+            defaultShots12oz: 0,
+            defaultShots16oz: 0,
+            includedShotsBySizeAndTemp: undefined,
+            shotPricingRule: undefined,
+            itemOptionGroups: [],
+            hasSizes: false,
+            sizesByMode: undefined,
+            drinkModeDefaults: undefined,
+            recipeLines: undefined,
+        };
+    }
     // id is cloudId from menu; also support legacy Item.id for backward compat
     const cloud = await app.prisma.cloudMenuItem.findUnique({
         where: { cloudId: id },
@@ -250,9 +314,14 @@ app.get("/items/:id", async (req) => {
             optionsByGroup.set(o.groupCloudId, list);
         }
         // Per-item drink sizes by mode (only show sizes enabled for this item)
-        const drinkConfigs = await app.prisma.cloudMenuItemDrinkSizeConfig.findMany({
-            where: { menuItemCloudId: cloud.cloudId, storeId },
-        });
+        const [drinkConfigs, drinkModeDefaultRows] = await Promise.all([
+            app.prisma.cloudMenuItemDrinkSizeConfig.findMany({
+                where: { menuItemCloudId: cloud.cloudId, storeId },
+            }),
+            app.prisma.cloudMenuItemDrinkModeDefault.findMany({
+                where: { menuItemCloudId: cloud.cloudId, storeId },
+            }),
+        ]);
         const optionIdsFromConfigs = [...new Set(drinkConfigs.map((c) => c.optionCloudId))];
         const [sizeOptions, sizePrices] = await Promise.all([
             app.prisma.cloudMenuOption.findMany({
@@ -278,13 +347,12 @@ app.get("/items/:id", async (req) => {
             }
         }
         const hasSizes = drinkConfigs.length > 0 || cloud.hasSizes;
-        // [DEBUG] Temporary - remove after verifying size UI
-        if (process.env.NODE_ENV !== "production" && drinkConfigs.length > 0) {
-            const hot = sizesByMode.HOT?.length ?? 0;
-            const iced = sizesByMode.ICED?.length ?? 0;
-            const conc = sizesByMode.CONCENTRATED?.length ?? 0;
-            app.log.info({ itemId: cloud.cloudId, drinkConfigs: drinkConfigs.length, hasSizes, hot, iced, conc }, "[items/:id] sizesByMode counts");
-        }
+        const drinkModeDefaultsPayload = drinkModeDefaultRows.length > 0
+            ? drinkModeDefaultRows.map((r) => ({
+                mode: r.mode,
+                defaultOptionId: r.defaultOptionCloudId,
+            }))
+            : undefined;
         const itemOptionGroups = links.map((link) => {
             const g = groupMap.get(link.groupCloudId);
             if (!g)
@@ -314,6 +382,13 @@ app.get("/items/:id", async (req) => {
         }).filter(Boolean);
         const defaultShots = cloud.defaultShots ?? 0;
         const supportsShots = cloud.supportsShots ?? false;
+        // Included (free) shots per size+temp: from size prices, fallback to item defaultShots
+        const includedShotsBySizeAndTemp = {};
+        for (const p of sizePrices) {
+            const key = `${p.baseType}|${p.sizeOptionCloudId}`;
+            const value = p.includedShots != null ? p.includedShots : defaultShots;
+            includedShotsBySizeAndTemp[key] = value;
+        }
         // Active shot pricing rule (for cloud items: apply to shots above default)
         let shotPricingRule;
         if (supportsShots) {
@@ -342,21 +417,67 @@ app.get("/items/:id", async (req) => {
                 where: { menuItemCloudId: cloud.cloudId, storeId },
             }),
             app.prisma.cloudAddOn.findMany({ where: { storeId }, orderBy: { sortOrder: "asc" } }),
-            app.prisma.cloudSubstitute.findMany({ where: { storeId }, include: { prices: true }, orderBy: { sortOrder: "asc" } }),
+            app.prisma.cloudSubstitute.findMany({
+                where: { storeId },
+                include: { prices: { include: { size: true } } },
+                orderBy: { sortOrder: "asc" },
+            }),
         ]);
         const addOnIds = new Set(addOnLinks.map((l) => l.addOnCloudId));
         const substituteIds = new Set(substituteLinks.map((l) => l.substituteCloudId));
-        const itemAddOns = addOns.filter((a) => addOnIds.has(a.cloudId)).map((a) => ({ id: a.cloudId, name: a.name, priceCents: a.priceCents }));
+        const linkedAddOns = addOns.filter((a) => addOnIds.has(a.cloudId));
+        const itemAddOns = linkedAddOns.map((a) => ({ id: a.cloudId, name: a.name, priceCents: a.priceCents }));
+        const byGroupKey = new Map();
+        for (const a of linkedAddOns) {
+            const gkey = a.addOnGroupCloudId?.trim() || "_ungrouped";
+            const gname = (a.addOnGroupName?.trim() || "Add-ons") || "Add-ons";
+            const gsort = a.addOnGroupSortOrder ?? 9999;
+            let slot = byGroupKey.get(gkey);
+            if (!slot) {
+                slot = { groupSort: gsort, groupName: gname, rows: [] };
+                byGroupKey.set(gkey, slot);
+            }
+            slot.rows.push(a);
+        }
+        const addOnGroupsSorted = [...byGroupKey.entries()].sort(([, A], [, B]) => {
+            if (A.groupSort !== B.groupSort)
+                return A.groupSort - B.groupSort;
+            return A.groupName.localeCompare(B.groupName);
+        });
+        const addOnGroupsPayload = addOnGroupsSorted.length > 0
+            ? addOnGroupsSorted.map(([gkey, v]) => ({
+                id: gkey === "_ungrouped" ? "ungrouped" : gkey,
+                name: v.groupName,
+                addOns: [...v.rows]
+                    .sort((x, y) => (x.sortOrder ?? 0) - (y.sortOrder ?? 0) || x.name.localeCompare(y.name))
+                    .map((a) => ({ id: a.cloudId, name: a.name, priceCents: a.priceCents })),
+            }))
+            : undefined;
         const itemSubstitutes = substitutes.filter((s) => substituteIds.has(s.cloudId)).map((s) => {
             const sub = s;
             return {
                 id: sub.cloudId,
                 name: sub.name,
                 priceCents: sub.priceCents,
-                prices: (sub.prices ?? []).map((p) => ({ sizeCloudId: p.sizeCloudId, mode: p.mode, priceCents: p.priceCents })),
+                prices: (sub.prices ?? []).map((p) => ({
+                    sizeCloudId: p.sizeCloudId,
+                    sizeLabel: p.size?.label ?? null,
+                    mode: p.mode,
+                    priceCents: p.priceCents,
+                })),
             };
         });
         const defaultSubId = cloud.defaultSubstituteCloudId ?? null;
+        // Default milk only when cloud sends a default substitute; do not inject FULL_CREAM
+        const defaultMilk = defaultSubId && itemSubstitutes.length > 0
+            ? (() => {
+                const sub = itemSubstitutes.find((s) => s.id === defaultSubId);
+                if (!sub)
+                    return undefined;
+                const n = sub.name.toUpperCase();
+                return n.includes("OAT") ? "OAT" : n.includes("ALMOND") ? "ALMOND" : n.includes("SOY") ? "SOY" : "FULL_CREAM";
+            })()
+            : undefined;
         return {
             id: cloud.cloudId,
             name: cloud.name,
@@ -366,17 +487,21 @@ app.get("/items/:id", async (req) => {
             isDrink: cloud.isDrink,
             serveVessel: cloud.serveVessel,
             defaultSizeOptionId: cloud.defaultSizeOptionCloudId ?? null,
-            defaultMilk: "FULL_CREAM",
+            defaultMilk,
             defaultSubstituteCloudId: defaultSubId,
             substitutes: itemSubstitutes.length > 0 ? itemSubstitutes : undefined,
             addOns: itemAddOns.length > 0 ? itemAddOns : undefined,
+            addOnGroups: addOnGroupsPayload && addOnGroupsPayload.length > 0 ? addOnGroupsPayload : undefined,
             supportsShots,
+            defaultShots,
             defaultShots12oz: defaultShots,
             defaultShots16oz: defaultShots,
+            includedShotsBySizeAndTemp: Object.keys(includedShotsBySizeAndTemp).length > 0 ? includedShotsBySizeAndTemp : undefined,
             shotPricingRule,
             itemOptionGroups,
             hasSizes: hasSizes || undefined,
             sizesByMode: hasSizes ? sizesByMode : undefined,
+            drinkModeDefaults: drinkModeDefaultsPayload,
             recipeLines: recipeLines.length > 0 || recipeLineSizes.length > 0
                 ? { base: recipeLines.map((r) => ({ ingredientCloudId: r.ingredientCloudId, qtyPerItem: r.qtyPerItem.toString(), unitCode: r.unitCode })), bySize: recipeLineSizes.map((r) => ({ ingredientCloudId: r.ingredientCloudId, baseType: r.baseType, sizeCode: r.sizeCode, qtyPerItem: r.qtyPerItem.toString(), unitCode: r.unitCode })) }
                 : undefined,
@@ -534,24 +659,25 @@ try {
     const syncEnv = {
         CLOUD_URL: (process.env.CLOUD_URL ?? "").trim() ? "present" : "missing",
         CLOUD_KEY: (process.env.CLOUD_KEY ?? "").trim() ? "present" : "missing",
-        DEVICE_KEY: (process.env.DEVICE_KEY ?? "").trim() ? "present" : "missing",
+        DEVICE_KEY: getDeviceKey() ? "present" : "missing",
     };
     app.log.info({ syncEnv }, "Sync env status (use DEVICE_KEY for device polling; CLOUD_KEY is not used)");
-    startSyncScheduler(app);
     startDeviceCommandPolling(app);
-    syncCatalogFromCloud(app.prisma, "default")
-        .then((outcome) => {
-        if (outcome.ok) {
-            app.log.info({ result: outcome.result }, "Catalog sync completed on startup");
-        }
-        else {
-            app.log.warn({ error: outcome.error, code: outcome.code }, "Catalog sync skipped on startup");
-        }
+    // Cloud sync: initial catalog sync runs first; scheduler starts only after it settles (then/catch).
+    // No CLOUD_KEY check — CLOUD_URL is enough for sync; DEVICE_KEY is for device polling only.
+    // If initial sync hangs, scheduler never starts — look for "Cloud sync startup enabled" or "failed" and "Sync scheduler started".
+    // Skipped branch: none today; if added, log "Cloud sync startup skipped" with reason (e.g. missing env / disabled flag).
+    app.log.info({ syncEnv, reason: "scheduler will start after initial catalog sync completes" }, "Cloud sync startup: starting initial catalog sync");
+    app.log.info("runCatalogSync(app) invoked (promise pending); next log: runCatalogSync: started");
+    runCatalogSync(app)
+        .then(() => {
+        startSyncScheduler(app);
+        app.log.info({ syncEnv }, "Cloud sync startup enabled; scheduler started");
     })
         .catch((err) => {
-        app.log.warn({ err }, "Catalog sync failed on startup");
+        app.log.warn({ err, syncEnv, reason: "initial catalog sync failed" }, "Cloud sync startup failed; starting scheduler anyway");
+        startSyncScheduler(app);
     });
-    setTimeout(() => runTransactionSyncFlush(app).catch(() => { }), 5000);
 }
 catch (err) {
     console.error("[boot] startup failed:", err);

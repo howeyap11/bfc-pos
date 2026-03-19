@@ -99,8 +99,8 @@ const storeConfigRoutesImpl: FastifyPluginAsync = async (app) => {
         address?: string | null;
         devMode?: boolean;
         snapResiboEnabled?: boolean;
-        snapResiboPriceCents?: number | null;
-        snapResiboRewardMinimumCents?: number | null;
+        snapResiboPriceCents?: number | string | null;
+        snapResiboRewardMinimumCents?: number | string | null;
       };
 
       const updateData: Record<string, unknown> = {};

@@ -3,8 +3,56 @@ import { verifyAdminPin } from "../services/adminPin.service";
 import { enqueueOutbox } from "../services/outbox.service";
 import { ensureItemForCloudId } from "../services/catalogCache.service";
 import { uploadTransactionToCloud } from "../services/transactionSync.service";
-import { printReceiptToDevice, printStickersToDevice } from "../services/print.service";
+import { printReceiptToDevice, printStickersToDevice, formatTransactionLineLabel } from "../services/print.service";
+import { allocateVouchersForTransaction, getSnapResiboVoucherForTransaction, } from "../services/snapResiboVoucher.service";
 const STORE_ID = "store_1";
+const SNAPRESIBO_QR_ITEM_ID = "SNAPRESIBO_QR";
+export const CREATE_TX_STEPS = {
+    validate_input: "validate_input",
+    ensure_store: "ensure_store",
+    resolve_items: "resolve_items",
+    build_line_snapshots: "build_line_snapshots",
+    create_transaction: "create_transaction",
+    create_audit_log: "create_audit_log",
+};
+function getPrismaErrorInfo(err) {
+    const e = err;
+    return typeof e === "object" && e !== null ? { code: e.code, meta: e.meta } : {};
+}
+function logCreateTransactionError(log, ctx, err, payload) {
+    const prismaInfo = getPrismaErrorInfo(err);
+    const message = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : undefined;
+    log.error({
+        tag: "[createTransaction]",
+        ...ctx,
+        errorMessage: message,
+        prismaCode: prismaInfo.code,
+        prismaMeta: prismaInfo.meta,
+        ...(payload ?? {}),
+    }, "Transaction create failed");
+    if (stack && process.env.NODE_ENV !== "production") {
+        log.debug({ stack }, "createTransaction stack");
+    }
+}
+/** Ensure Store and StoreConfig exist (same as seed). Required for transaction.create FK. */
+async function ensureStoreAndConfig(prisma) {
+    await prisma.store.upsert({
+        where: { id: STORE_ID },
+        update: { code: "BFC-LOCAL", name: "But First, Coffee (Local)" },
+        create: { id: STORE_ID, code: "BFC-LOCAL", name: "But First, Coffee (Local)" },
+    });
+    await prisma.storeConfig.upsert({
+        where: { storeId: STORE_ID },
+        update: {},
+        create: {
+            storeId: STORE_ID,
+            enabledPaymentMethods: JSON.stringify(["CASH", "CARD", "GCASH", "FOODPANDA"]),
+            splitPaymentEnabled: true,
+            paymentMethodOrder: null,
+        },
+    });
+}
 function sum(nums) {
     return nums.reduce((a, b) => a + b, 0);
 }
@@ -37,9 +85,10 @@ function calculateShotsUpcharge(shotsQty, pricingMode, defaultShots, shotRule) {
     return 0;
 }
 function calculateMilkUpcharge(milkChoice, defaultMilk) {
-    const itemDefaultMilk = defaultMilk || "FULL_CREAM";
-    const selectedMilk = milkChoice || itemDefaultMilk;
-    return selectedMilk !== itemDefaultMilk ? 1000 : 0; // 1000 cents = ₱10
+    if (defaultMilk == null)
+        return 0; // No default from cloud; no milk upcharge
+    const selectedMilk = milkChoice ?? defaultMilk;
+    return selectedMilk !== defaultMilk ? 1000 : 0; // 1000 cents = ₱10
 }
 export async function posTransactionsRoutes(app) {
     app.addHook("preHandler", requireStaffHook);
@@ -81,8 +130,22 @@ export async function posTransactionsRoutes(app) {
             },
         });
         const hasMore = transactions.length > limit;
-        const items = hasMore ? transactions.slice(0, limit) : transactions;
-        const nextCursor = hasMore ? items[items.length - 1].transactionNo : null;
+        const rawItems = hasMore ? transactions.slice(0, limit) : transactions;
+        const nextCursor = hasMore ? rawItems[rawItems.length - 1].transactionNo : null;
+        const items = rawItems.map((tx) => ({
+            ...tx,
+            lineItems: tx.lineItems.map((li) => ({
+                ...li,
+                displayLabel: formatTransactionLineLabel({
+                    name: li.name,
+                    optionsJson: li.optionsJson,
+                    categoryName: li.categoryName ?? li.item?.category?.name ?? undefined,
+                    subCategoryName: li.subCategoryName ?? undefined,
+                    qty: li.qty,
+                    includeQuantity: true,
+                }),
+            })),
+        }));
         return {
             items,
             nextCursor,
@@ -93,285 +156,537 @@ export async function posTransactionsRoutes(app) {
     app.get("/pos/transactions/list", listTransactions);
     // Create transaction + line items (no payment yet)
     app.post("/pos/transactions", async (req, reply) => {
-        const body = req.body;
-        if (!Array.isArray(body?.items) || body.items.length === 0) {
-            reply.code(400);
-            return { error: "EMPTY_ITEMS" };
-        }
-        // TODO: RegisterSession enforcement disabled until cash reconciliation module is implemented.
-        // Staff login (cashier PIN) is sufficient for auditing.
-        // When cash reconciliation is ready, uncomment the check below and require an open register.
-        // Find open register session (optional, for linking only)
-        const open = await app.prisma.registerSession.findFirst({
-            where: { storeId: STORE_ID, status: "OPEN" },
-            orderBy: { openedAt: "desc" },
-            select: { id: true },
-        });
-        // Enforcement disabled: transactions can proceed without an open register
-        // if (!open) {
-        //   reply.code(409);
-        //   return { error: "NO_OPEN_REGISTER" };
-        // }
-        let tableId = null;
-        if (body.tablePublicKey) {
-            const table = await app.prisma.table.findUnique({
-                where: { publicKey: body.tablePublicKey },
-                select: { id: true },
-            });
-            if (!table) {
-                reply.code(404);
-                return { error: "TABLE_NOT_FOUND" };
-            }
-            tableId = table.id;
-        }
-        // transactionNo: same max+1 style as orderNo (store-scoped)
-        const last = await app.prisma.transaction.findFirst({
-            where: { storeId: STORE_ID },
-            orderBy: { transactionNo: "desc" },
-            select: { transactionNo: true },
-        });
-        const nextNo = (last?.transactionNo ?? 0) + 1;
-        // itemId from POS is cloudId (from CloudMenuItem); resolve to Item.id for storage + inventory
-        const cloudIds = [...new Set(body.items.map((i) => i.itemId))];
-        const optionIds = [...new Set(body.items.flatMap((i) => i.optionIds ?? []))];
-        const resolvedIds = [];
-        for (const cid of cloudIds) {
-            try {
-                const itemId = await ensureItemForCloudId(app.prisma, cid);
-                resolvedIds.push(itemId);
-            }
-            catch {
-                throw new Error(`Invalid itemId: ${cid}`);
-            }
-        }
-        const dbItems = await app.prisma.item.findMany({
-            where: { id: { in: resolvedIds } },
-            select: {
-                id: true,
-                cloudId: true,
-                name: true,
-                basePrice: true,
-                defaultMilk: true,
-                shotsPricingMode: true,
-                foodpandaSurchargeCents: true,
-            },
-        });
-        // Map by both id and cloudId so we can look up from body itemId (cloudId)
-        const itemMap = new Map();
-        for (const i of dbItems) {
-            itemMap.set(i.id, i);
-            if (i.cloudId)
-                itemMap.set(i.cloudId, i);
-        }
-        const cloudItems = await app.prisma.cloudMenuItem.findMany({
-            where: { cloudId: { in: cloudIds }, storeId: STORE_ID },
-            select: { cloudId: true, isDrink: true, serveVessel: true, defaultShots: true },
-        });
-        const cloudItemMap = new Map(cloudItems.map((c) => [c.cloudId, c]));
-        const dbOptions = await app.prisma.option.findMany({
-            where: { id: { in: optionIds } },
-            select: { id: true, name: true, priceDelta: true, group: { select: { name: true } } },
-        });
-        const optionMap = new Map(dbOptions.map((o) => [o.id, o]));
-        const cloudOptions = await app.prisma.cloudMenuOption.findMany({
-            where: { cloudId: { in: optionIds }, storeId: STORE_ID },
-        });
-        const cloudGroupIds = [...new Set(cloudOptions.map((o) => o.groupCloudId))];
-        const cloudGroups = await app.prisma.cloudMenuOptionGroup.findMany({
-            where: { cloudId: { in: cloudGroupIds }, storeId: STORE_ID },
-            select: { cloudId: true, name: true },
-        });
-        const cloudGroupNameMap = new Map(cloudGroups.map((g) => [g.cloudId, g.name]));
-        const cloudOptionMap = new Map(cloudOptions.map((o) => [
-            o.cloudId,
-            { name: o.name, priceDelta: o.priceDelta, groupName: cloudGroupNameMap.get(o.groupCloudId) ?? "" },
-        ]));
-        const discountCents = Math.max(0, Math.trunc(Number(body.discountCents ?? 0)));
-        // Active shot pricing rule (for cloud items when Item.shotsPricingMode is null)
-        const shotRuleRow = await app.prisma.cloudShotPricingRule.findFirst({
-            where: { storeId: STORE_ID, isActive: true },
-            orderBy: { sortOrder: "asc" },
-        });
-        const shotRule = shotRuleRow
-            ? { shotsPerBundle: shotRuleRow.shotsPerBundle, priceCentsPerBundle: shotRuleRow.priceCentsPerBundle }
-            : null;
-        // Load per-size pricing for sized items (baseType + size selection)
-        const sizedItems = body.items.filter((it) => it.baseType && it.sizeLabel);
-        const sizePriceMap = new Map();
-        if (sizedItems.length > 0) {
-            const sizedCloudIds = [...new Set(sizedItems.map((i) => i.itemId))];
-            const sizePrices = await app.prisma.cloudMenuItemSizePrice.findMany({
-                where: { storeId: STORE_ID, menuItemCloudId: { in: sizedCloudIds } },
-            });
-            for (const p of sizePrices) {
-                const key = `${p.menuItemCloudId}|${p.baseType}|${p.sizeCode}`;
-                sizePriceMap.set(key, p.priceCents);
-            }
-        }
-        // Determine service type, source
-        // NOTE: Service fees are now per-line (lineSurchargeCents), not transaction-level
-        const serviceTypeInput = body.serviceType ?? "DINE_IN";
-        let serviceType;
-        let source;
-        if (serviceTypeInput === "FOODPANDA" || serviceTypeInput === "DELIVERY") {
-            serviceType = "DELIVERY";
-            source = "FOODPANDA";
-        }
-        else if (serviceTypeInput === "TO_GO") {
-            serviceType = "TO_GO";
-            source = "POS";
-        }
-        else {
-            serviceType = "DINE_IN";
-            source = "POS";
-        }
-        // Build line snapshots + totals (it.itemId is cloudId)
-        const lineSnapshots = body.items.map((it) => {
-            const dbItem = itemMap.get(it.itemId);
-            if (!dbItem)
-                throw new Error(`Invalid itemId: ${it.itemId}`);
-            const qty = Math.max(1, Math.trunc(it.qty || 1));
-            const optIds = it.optionIds ?? [];
-            const deltas = optIds.map((oid) => optionMap.get(oid)?.priceDelta ?? cloudOptionMap.get(oid)?.priceDelta ?? 0);
-            let modifiersCents = sum(deltas);
-            // Add espresso shots upcharge (server-side recalculation for money safety)
-            const shotsQty = it.shotsQty ?? 0;
-            const cloudItem = cloudItemMap.get(it.itemId);
-            const defaultShots = cloudItem?.defaultShots ?? null;
-            const shotsUpchargeCents = calculateShotsUpcharge(shotsQty, dbItem.shotsPricingMode, defaultShots, shotRule);
-            modifiersCents += shotsUpchargeCents;
-            // Add milk upcharge (₱10 for non-default milk)
-            const milkUpchargeCents = calculateMilkUpcharge(it.milkChoice, dbItem.defaultMilk);
-            modifiersCents += milkUpchargeCents;
-            // Add per-line surcharge (e.g., FOODPANDA)
-            const lineSurchargeCents = it.surchargeCents ?? 0;
-            // Per-line discount
-            const lineDiscountCents = Math.max(0, Math.trunc(Number(it.discountAmount ?? 0)));
-            // Base unit price: if line has size selection and per-size price exists, use it; otherwise fall back to item basePrice.
-            let unitPrice = dbItem.basePrice;
-            if (it.baseType && it.sizeLabel) {
-                const key = `${it.itemId}|${it.baseType}|${it.sizeLabel}`;
-                const sizedPrice = sizePriceMap.get(key);
-                if (typeof sizedPrice === "number" && sizedPrice >= 0) {
-                    unitPrice = sizedPrice;
+        const deviceId = req.headers["x-device-id"] || undefined;
+        let step = CREATE_TX_STEPS.validate_input;
+        try {
+            const rawBody = (req.body ?? {});
+            const body = {
+                ...rawBody,
+                items: Array.isArray(rawBody.items) ? rawBody.items : [],
+            };
+            for (const it of body.items) {
+                if (it && typeof it === "object" && !Array.isArray(it.optionIds)) {
+                    it.optionIds = it.optionIds ?? [];
                 }
             }
-            const lineSubtotal = (unitPrice + modifiersCents) * qty + (lineSurchargeCents * qty);
-            const lineTotal = Math.max(0, lineSubtotal - lineDiscountCents);
-            // Build options JSON including shots and milk for audit trail
-            const optionsData = optIds.map((oid) => {
-                const o = optionMap.get(oid);
-                const co = cloudOptionMap.get(oid);
-                if (o)
-                    return { id: oid, name: o.name, group: o.group?.name, priceDelta: o.priceDelta };
-                if (co)
-                    return { id: oid, name: co.name, group: co.groupName, priceDelta: co.priceDelta };
-                return { id: oid, missing: true };
+            if (body.items.length === 0) {
+                reply.code(400);
+                return { error: "EMPTY_ITEMS" };
+            }
+            step = CREATE_TX_STEPS.ensure_store;
+            // Ensure Store (and StoreConfig) exist so transaction.create FK does not fail (e.g. fresh DB without seed).
+            await ensureStoreAndConfig(app.prisma);
+            // TODO: RegisterSession enforcement disabled until cash reconciliation module is implemented.
+            // Staff login (cashier PIN) is sufficient for auditing.
+            // When cash reconciliation is ready, uncomment the check below and require an open register.
+            // Find open register session (optional, for linking only)
+            const open = await app.prisma.registerSession.findFirst({
+                where: { storeId: STORE_ID, status: "OPEN" },
+                orderBy: { openedAt: "desc" },
+                select: { id: true },
             });
-            if (shotsQty > 0) {
-                optionsData.push({
-                    type: "shots",
-                    qty: shotsQty,
-                    upchargeCents: shotsUpchargeCents
+            // Enforcement disabled: transactions can proceed without an open register
+            // if (!open) {
+            //   reply.code(409);
+            //   return { error: "NO_OPEN_REGISTER" };
+            // }
+            let tableId = null;
+            if (body.tablePublicKey) {
+                const table = await app.prisma.table.findUnique({
+                    where: { publicKey: body.tablePublicKey },
+                    select: { id: true },
+                });
+                if (!table) {
+                    reply.code(404);
+                    return { error: "TABLE_NOT_FOUND" };
+                }
+                tableId = table.id;
+            }
+            // SnapResibo: separate virtual item from regular catalog items
+            const regularItems = body.items.filter((i) => i.itemId !== SNAPRESIBO_QR_ITEM_ID);
+            const snapResiboItems = body.items.filter((i) => i.itemId === SNAPRESIBO_QR_ITEM_ID);
+            const storeConfigForCreate = await app.prisma.storeConfig.findUnique({
+                where: { storeId: STORE_ID },
+                select: { snapResiboEnabled: true, snapResiboPriceCents: true, snapResiboRewardMinimumCents: true, devMode: true },
+            });
+            if (snapResiboItems.length > 0) {
+                if (!storeConfigForCreate?.snapResiboEnabled) {
+                    reply.code(400);
+                    return { error: "SNAPRESIBO_DISABLED", message: "SnapResibo is disabled in Settings" };
+                }
+            }
+            // transactionNo: same max+1 style as orderNo (store-scoped)
+            const last = await app.prisma.transaction.findFirst({
+                where: { storeId: STORE_ID },
+                orderBy: { transactionNo: "desc" },
+                select: { transactionNo: true },
+            });
+            const nextNo = (last?.transactionNo ?? 0) + 1;
+            step = CREATE_TX_STEPS.resolve_items;
+            // itemId from POS is cloudId (from CloudMenuItem); resolve to Item.id for storage + inventory (exclude SnapResibo virtual item)
+            const cloudIds = [...new Set(regularItems.map((i) => i.itemId))];
+            const optionIds = [...new Set(regularItems.flatMap((i) => i.optionIds ?? []))];
+            const resolvedIds = [];
+            for (const cid of cloudIds) {
+                try {
+                    const itemId = await ensureItemForCloudId(app.prisma, cid);
+                    resolvedIds.push(itemId);
+                }
+                catch {
+                    throw new Error(`Invalid itemId: ${cid}`);
+                }
+            }
+            const dbItems = await app.prisma.item.findMany({
+                where: { id: { in: resolvedIds } },
+                select: {
+                    id: true,
+                    cloudId: true,
+                    name: true,
+                    basePrice: true,
+                    defaultMilk: true,
+                    shotsPricingMode: true,
+                    foodpandaSurchargeCents: true,
+                },
+            });
+            // Map by both id and cloudId so we can look up from body itemId (cloudId)
+            const itemMap = new Map();
+            for (const i of dbItems) {
+                itemMap.set(i.id, i);
+                if (i.cloudId)
+                    itemMap.set(i.cloudId, i);
+            }
+            const cloudItems = await app.prisma.cloudMenuItem.findMany({
+                where: { cloudId: { in: cloudIds }, storeId: STORE_ID },
+                select: {
+                    cloudId: true,
+                    isDrink: true,
+                    serveVessel: true,
+                    defaultShots: true,
+                    defaultSubstituteCloudId: true,
+                    categoryCloudId: true,
+                    subCategoryCloudId: true,
+                },
+            });
+            const cloudItemMap = new Map(cloudItems.map((c) => [c.cloudId, c]));
+            const categoryCloudIds = [...new Set(cloudItems.map((c) => c.categoryCloudId).filter((id) => !!id))];
+            const subCategoryCloudIds = [...new Set(cloudItems.map((c) => c.subCategoryCloudId).filter((id) => !!id))];
+            const categoryNameByCloudId = new Map();
+            const subCategoryNameByCloudId = new Map();
+            if (categoryCloudIds.length > 0) {
+                const categories = await app.prisma.cloudCategory.findMany({
+                    where: { cloudId: { in: categoryCloudIds }, storeId: STORE_ID },
+                    select: { cloudId: true, name: true },
+                });
+                for (const cat of categories)
+                    categoryNameByCloudId.set(cat.cloudId, cat.name);
+            }
+            if (subCategoryCloudIds.length > 0) {
+                const subCats = await app.prisma.cloudSubCategory.findMany({
+                    where: { cloudId: { in: subCategoryCloudIds }, storeId: STORE_ID },
+                    select: { cloudId: true, name: true },
+                });
+                for (const sub of subCats)
+                    subCategoryNameByCloudId.set(sub.cloudId, sub.name);
+            }
+            const substituteIds = new Set();
+            body.items.forEach((it) => {
+                if (it.selectedSubstituteCloudId)
+                    substituteIds.add(it.selectedSubstituteCloudId);
+            });
+            cloudItems.forEach((c) => {
+                if (c.defaultSubstituteCloudId)
+                    substituteIds.add(c.defaultSubstituteCloudId);
+            });
+            const substituteRows = substituteIds.size > 0
+                ? await app.prisma.cloudSubstitute.findMany({
+                    where: { cloudId: { in: [...substituteIds] }, storeId: STORE_ID },
+                    select: { cloudId: true, priceCents: true },
+                })
+                : [];
+            const substitutePriceMap = new Map(substituteRows.map((s) => [s.cloudId, s.priceCents]));
+            // Per-size/mode milk prices (e.g. 70 regular, 180 1-liter) for correct upcharge
+            const substitutePriceRows = substituteIds.size > 0
+                ? await app.prisma.cloudSubstitutePrice.findMany({
+                    where: { substituteCloudId: { in: [...substituteIds] }, storeId: STORE_ID },
+                    select: { substituteCloudId: true, sizeCloudId: true, mode: true, priceCents: true },
+                })
+                : [];
+            const substitutePriceBySizeMap = new Map();
+            for (const p of substitutePriceRows) {
+                const modeNorm = (p.mode ?? "").toUpperCase();
+                substitutePriceBySizeMap.set(`${p.substituteCloudId}|${p.sizeCloudId}|${modeNorm}`, p.priceCents);
+            }
+            const sizeCloudIdsSet = new Set(substitutePriceRows.map((p) => p.sizeCloudId));
+            // Map size label -> sizeCloudId so we can resolve price when line sends sizeLabel (e.g. "1-Liter") but option ids don't match
+            const sizeLabelToCloudId = new Map();
+            if (sizeCloudIdsSet.size > 0) {
+                const menuSizes = await app.prisma.cloudMenuSize.findMany({
+                    where: { cloudId: { in: [...sizeCloudIdsSet] }, storeId: STORE_ID },
+                    select: { cloudId: true, label: true },
+                });
+                for (const s of menuSizes) {
+                    const labelNorm = (s.label ?? "").trim().toLowerCase();
+                    if (labelNorm)
+                        sizeLabelToCloudId.set(labelNorm, s.cloudId);
+                }
+            }
+            const dbOptions = await app.prisma.option.findMany({
+                where: { id: { in: optionIds } },
+                select: { id: true, name: true, priceDelta: true, group: { select: { name: true } } },
+            });
+            const optionMap = new Map(dbOptions.map((o) => [o.id, o]));
+            const cloudOptions = await app.prisma.cloudMenuOption.findMany({
+                where: { cloudId: { in: optionIds }, storeId: STORE_ID },
+            });
+            const cloudGroupIds = [...new Set(cloudOptions.map((o) => o.groupCloudId))];
+            const cloudGroups = await app.prisma.cloudMenuOptionGroup.findMany({
+                where: { cloudId: { in: cloudGroupIds }, storeId: STORE_ID },
+                select: { cloudId: true, name: true },
+            });
+            const cloudGroupNameMap = new Map(cloudGroups.map((g) => [g.cloudId, g.name]));
+            const cloudOptionMap = new Map(cloudOptions.map((o) => [
+                o.cloudId,
+                { name: o.name, priceDelta: o.priceDelta, groupName: cloudGroupNameMap.get(o.groupCloudId) ?? "" },
+            ]));
+            // Resolve add-on IDs (from CloudAddOn) so they get name/group in optionsJson for cart and sticker
+            const foundOptionIds = new Set([...optionMap.keys(), ...cloudOptionMap.keys()]);
+            const addOnIds = optionIds.filter((id) => !foundOptionIds.has(id));
+            const cloudAddOns = addOnIds.length > 0
+                ? await app.prisma.cloudAddOn.findMany({
+                    where: { cloudId: { in: addOnIds }, storeId: STORE_ID },
+                    select: { cloudId: true, name: true, priceCents: true },
+                })
+                : [];
+            const addOnMap = new Map(cloudAddOns.map((a) => [a.cloudId, { name: a.name, priceDelta: a.priceCents }]));
+            const discountCents = Math.max(0, Math.trunc(Number(body.discountCents ?? 0)));
+            // Active shot pricing rule (for cloud items when Item.shotsPricingMode is null)
+            const shotRuleRow = await app.prisma.cloudShotPricingRule.findFirst({
+                where: { storeId: STORE_ID, isActive: true },
+                orderBy: { sortOrder: "asc" },
+            });
+            const shotRule = shotRuleRow
+                ? { shotsPerBundle: shotRuleRow.shotsPerBundle, priceCentsPerBundle: shotRuleRow.priceCentsPerBundle }
+                : null;
+            // Load per-size pricing for sized items (baseType + size selection); also used for included-shots lookup
+            const sizedItems = body.items.filter((it) => it.baseType && it.sizeLabel);
+            const sizePriceMap = new Map();
+            const includedShotsMap = new Map();
+            if (sizedItems.length > 0) {
+                const sizedCloudIds = [...new Set(sizedItems.map((i) => i.itemId))];
+                const sizePrices = await app.prisma.cloudMenuItemSizePrice.findMany({
+                    where: { storeId: STORE_ID, menuItemCloudId: { in: sizedCloudIds } },
+                    select: { menuItemCloudId: true, baseType: true, sizeCode: true, priceCents: true, includedShots: true },
+                });
+                for (const p of sizePrices) {
+                    const key = `${p.menuItemCloudId}|${p.baseType}|${p.sizeCode}`;
+                    sizePriceMap.set(key, p.priceCents);
+                    if (p.includedShots != null) {
+                        includedShotsMap.set(key, p.includedShots);
+                    }
+                }
+            }
+            // Determine service type, source
+            // NOTE: Service fees are now per-line (lineSurchargeCents), not transaction-level
+            const serviceTypeInput = String(body.serviceType ?? "DINE_IN").trim().toUpperCase();
+            let serviceType;
+            let source;
+            if (serviceTypeInput === "FOODPANDA" || serviceTypeInput === "FOOD_PANDA") {
+                serviceType = "FOODPANDA";
+                source = "FOODPANDA";
+            }
+            else if (serviceTypeInput === "GRABFOOD" || serviceTypeInput === "GRAB_FOOD") {
+                serviceType = "DELIVERY";
+                source = "FOODPANDA";
+            }
+            else if (serviceTypeInput === "BFC_APP" || serviceTypeInput === "BFCAPP") {
+                serviceType = "DELIVERY";
+                source = "POS";
+            }
+            else if (serviceTypeInput === "DELIVERY") {
+                serviceType = "DELIVERY";
+                source = "FOODPANDA";
+            }
+            else if (serviceTypeInput === "TO_GO" ||
+                serviceTypeInput === "TAKE_OUT" ||
+                serviceTypeInput === "TAKEOUT") {
+                serviceType = "TO_GO";
+                source = "POS";
+            }
+            else {
+                serviceType = "DINE_IN";
+                source = "POS";
+            }
+            step = CREATE_TX_STEPS.build_line_snapshots;
+            const lineSnapshots = regularItems.map((it) => {
+                const dbItem = itemMap.get(it.itemId);
+                if (!dbItem)
+                    throw new Error(`Invalid itemId: ${it.itemId}`);
+                const qty = Math.max(1, Math.trunc(it.qty || 1));
+                const optIds = it.optionIds ?? [];
+                const shotsQty = it.shotsQty ?? 0;
+                const hasSizeSelection = !!(it.baseType && it.sizeLabel);
+                const deltas = optIds.map((oid) => {
+                    const o = optionMap.get(oid);
+                    const co = cloudOptionMap.get(oid);
+                    const addOn = addOnMap.get(oid);
+                    if (o) {
+                        if (hasSizeSelection && (o.group?.name ?? "").toLowerCase().includes("size"))
+                            return 0;
+                        const name = (o.name ?? "").toLowerCase();
+                        if (name.includes("shot") || name.includes("espresso shot"))
+                            return 0;
+                        return o.priceDelta ?? 0;
+                    }
+                    if (co) {
+                        if (hasSizeSelection && co.groupName.toLowerCase().includes("size"))
+                            return 0;
+                        if (co.groupName.toLowerCase().includes("shot"))
+                            return 0;
+                        const name = (co.name ?? "").toLowerCase();
+                        if (name.includes("shot") || name.includes("espresso shot"))
+                            return 0;
+                        return co.priceDelta ?? 0;
+                    }
+                    if (addOn) {
+                        const name = (addOn.name ?? "").toLowerCase();
+                        if (name.includes("shot") || name.includes("espresso shot"))
+                            return 0;
+                        return addOn.priceDelta ?? 0;
+                    }
+                    return 0;
+                });
+                let modifiersCents = sum(deltas);
+                // Add espresso shots upcharge (server-side recalculation for money safety)
+                // Resolve included shots: per size+temp from CloudMenuItemSizePrice, else item defaultShots
+                const cloudItem = cloudItemMap.get(it.itemId);
+                let includedShots = cloudItem?.defaultShots ?? null;
+                if (it.baseType && it.sizeLabel) {
+                    const sizeKey = `${it.itemId}|${it.baseType}|${it.sizeLabel}`;
+                    const fromSizePrice = includedShotsMap.get(sizeKey);
+                    if (typeof fromSizePrice === "number") {
+                        includedShots = fromSizePrice;
+                    }
+                }
+                const shotsUpchargeCents = calculateShotsUpcharge(shotsQty, dbItem.shotsPricingMode, includedShots, shotRule);
+                modifiersCents += shotsUpchargeCents;
+                // Milk upcharge: per-size/mode when available (e.g. 70 regular, 180 1-liter), else flat substitute price
+                const effectiveDefaultMilk = it.defaultMilk ?? dbItem.defaultMilk;
+                let milkUpchargeCents = 0;
+                if (it.selectedSubstituteCloudId) {
+                    const cloudItem = cloudItemMap.get(it.itemId);
+                    const defaultSubId = cloudItem?.defaultSubstituteCloudId ?? null;
+                    let selectedPrice = substitutePriceMap.get(it.selectedSubstituteCloudId) ?? 0;
+                    let defaultPrice = defaultSubId != null ? substitutePriceMap.get(defaultSubId) ?? 0 : 0;
+                    let sizeCloudId = optIds.find((id) => sizeCloudIdsSet.has(id)) ?? null;
+                    const mode = (it.baseType ?? "").toUpperCase();
+                    if (!sizeCloudId && it.sizeLabel && mode) {
+                        const fromLabel = sizeLabelToCloudId.get(it.sizeLabel.trim().toLowerCase());
+                        if (fromLabel)
+                            sizeCloudId = fromLabel;
+                    }
+                    if (sizeCloudId && mode) {
+                        const keySelected = `${it.selectedSubstituteCloudId}|${sizeCloudId}|${mode}`;
+                        const keyDefault = defaultSubId != null ? `${defaultSubId}|${sizeCloudId}|${mode}` : null;
+                        if (substitutePriceBySizeMap.has(keySelected))
+                            selectedPrice = substitutePriceBySizeMap.get(keySelected);
+                        if (keyDefault != null && substitutePriceBySizeMap.has(keyDefault))
+                            defaultPrice = substitutePriceBySizeMap.get(keyDefault);
+                    }
+                    // Default milk is included in base price; only charge the increment for a non-default milk
+                    const defaultPriceForDelta = it.selectedSubstituteCloudId === defaultSubId ? selectedPrice : 0;
+                    milkUpchargeCents = Math.max(0, selectedPrice - defaultPriceForDelta);
+                }
+                else {
+                    milkUpchargeCents = calculateMilkUpcharge(it.milkChoice, effectiveDefaultMilk);
+                }
+                modifiersCents += milkUpchargeCents;
+                // Add per-line surcharge (e.g., FOODPANDA)
+                const lineSurchargeCents = it.surchargeCents ?? 0;
+                // Per-line discount
+                const lineDiscountCents = Math.max(0, Math.trunc(Number(it.discountAmount ?? 0)));
+                // Base unit price: if line has size selection and per-size price exists, use it; otherwise fall back to item basePrice.
+                let unitPrice = dbItem.basePrice;
+                if (it.baseType && it.sizeLabel) {
+                    const sizeLabelNorm = it.sizeLabel.trim().toLowerCase();
+                    const sizeCodeResolved = sizeLabelToCloudId.get(sizeLabelNorm) ?? it.sizeLabel;
+                    const key = `${it.itemId}|${it.baseType}|${it.sizeLabel}`;
+                    const keyByCode = `${it.itemId}|${it.baseType}|${sizeCodeResolved}`;
+                    const sizedPrice = sizePriceMap.get(key) ?? sizePriceMap.get(keyByCode);
+                    if (typeof sizedPrice === "number" && sizedPrice >= 0) {
+                        unitPrice = sizedPrice;
+                    }
+                }
+                const lineSubtotal = (unitPrice + modifiersCents) * qty + (lineSurchargeCents * qty);
+                const lineTotal = Math.max(0, lineSubtotal - lineDiscountCents);
+                // Build options JSON including shots, milk, and add-ons for audit trail and sticker
+                const optionsData = optIds.map((oid) => {
+                    const o = optionMap.get(oid);
+                    const co = cloudOptionMap.get(oid);
+                    const addOn = addOnMap.get(oid);
+                    if (o)
+                        return { id: oid, name: o.name, group: o.group?.name, priceDelta: o.priceDelta };
+                    if (co)
+                        return { id: oid, name: co.name, group: co.groupName, priceDelta: co.priceDelta };
+                    if (addOn)
+                        return { id: oid, name: addOn.name, group: "Add-ons", priceDelta: addOn.priceDelta };
+                    return { id: oid, missing: true };
+                });
+                if (shotsQty > 0) {
+                    optionsData.push({
+                        type: "shots",
+                        qty: shotsQty,
+                        upchargeCents: shotsUpchargeCents
+                    });
+                }
+                if (it.baseType && it.sizeLabel) {
+                    optionsData.push({ type: "size", baseType: it.baseType, sizeLabel: it.sizeLabel });
+                }
+                if (it.milkChoice && (it.selectedSubstituteCloudId != null || (effectiveDefaultMilk != null && it.milkChoice !== effectiveDefaultMilk))) {
+                    optionsData.push({
+                        type: "milk",
+                        choice: it.milkChoice,
+                        upchargeCents: milkUpchargeCents,
+                    });
+                }
+                if (lineSurchargeCents > 0) {
+                    optionsData.push({
+                        type: "surcharge",
+                        amountCents: lineSurchargeCents,
+                        reason: "FOODPANDA"
+                    });
+                }
+                if (lineDiscountCents > 0) {
+                    optionsData.push({
+                        type: "discount",
+                        pct: it.discountPct ?? 0,
+                        amountCents: lineDiscountCents,
+                        tag: it.discountTag
+                    });
+                }
+                const optionsJson = JSON.stringify(optionsData);
+                const categoryName = cloudItem?.categoryCloudId != null ? categoryNameByCloudId.get(cloudItem.categoryCloudId) ?? null : null;
+                const subCategoryName = cloudItem?.subCategoryCloudId != null ? subCategoryNameByCloudId.get(cloudItem.subCategoryCloudId) ?? null : null;
+                return {
+                    itemId: dbItem.id,
+                    name: dbItem.name,
+                    qty,
+                    unitPrice,
+                    modifiersCents,
+                    lineTotal,
+                    note: it.note?.trim() || null,
+                    specialInstructions: it.specialInstructions?.trim() || null,
+                    customerName: it.customerName?.trim() || null,
+                    optionsJson,
+                    isDrink: cloudItem?.isDrink ?? null,
+                    serveVessel: cloudItem?.serveVessel ?? null,
+                    categoryName: categoryName ?? undefined,
+                    subCategoryName: subCategoryName ?? undefined,
+                };
+            });
+            // SnapResibo QR lines (virtual item; price from settings)
+            const snapResiboPriceCents = Math.max(0, storeConfigForCreate?.snapResiboPriceCents ?? 0);
+            for (const snap of snapResiboItems) {
+                const qty = Math.max(1, Math.trunc(snap.qty || 1));
+                const lineTotal = snapResiboPriceCents * qty;
+                lineSnapshots.push({
+                    itemId: null,
+                    name: "SnapResibo QR",
+                    qty,
+                    unitPrice: snapResiboPriceCents,
+                    modifiersCents: 0,
+                    lineTotal,
+                    note: null,
+                    specialInstructions: null,
+                    customerName: null,
+                    optionsJson: "[]",
+                    isDrink: null,
+                    serveVessel: null,
+                    categoryName: "SnapResibo",
+                    subCategoryName: "Generate QR",
                 });
             }
-            if (it.baseType && it.sizeLabel) {
-                optionsData.push({ type: "size", baseType: it.baseType, sizeLabel: it.sizeLabel });
-            }
-            if (it.milkChoice && it.milkChoice !== dbItem.defaultMilk) {
-                optionsData.push({
-                    type: "milk",
-                    choice: it.milkChoice,
-                    upchargeCents: milkUpchargeCents
+            const subtotalCents = sum(lineSnapshots.map((l) => l.lineTotal));
+            // Note: serviceCents is now 0 because surcharges are per-line (already included in lineTotal)
+            const totalCents = Math.max(0, subtotalCents - discountCents);
+            const isTest = storeConfigForCreate?.devMode ?? false;
+            step = CREATE_TX_STEPS.create_transaction;
+            const created = await app.prisma.transaction.create({
+                data: {
+                    storeId: STORE_ID,
+                    transactionNo: nextNo,
+                    status: "OPEN",
+                    source,
+                    serviceType,
+                    registerSessionId: open?.id || null, // Optional: link to register session if open
+                    tableId,
+                    orderId: body.orderId || null, // Link to QR order if provided
+                    subtotalCents,
+                    discountCents,
+                    serviceCents: 0, // Surcharges are per-line, not transaction-level
+                    totalCents,
+                    isTest,
+                    lineItems: { create: lineSnapshots },
+                },
+                include: { lineItems: true, payments: true },
+            });
+            step = CREATE_TX_STEPS.create_audit_log;
+            try {
+                await app.prisma.auditLog.create({
+                    data: {
+                        storeId: STORE_ID,
+                        action: "TRANSACTION_CREATE",
+                        entity: "Transaction",
+                        entityId: created.id,
+                        metaJson: JSON.stringify({ transactionNo: created.transactionNo, totalCents: created.totalCents }),
+                    },
                 });
             }
-            if (lineSurchargeCents > 0) {
-                optionsData.push({
-                    type: "surcharge",
-                    amountCents: lineSurchargeCents,
-                    reason: "FOODPANDA"
-                });
+            catch (auditErr) {
+                app.log.warn({ tag: "[createTransaction]", storeId: STORE_ID, transactionId: created.id, transactionNo: created.transactionNo, err: auditErr }, "Audit log create failed; transaction already created");
             }
-            if (lineDiscountCents > 0) {
-                optionsData.push({
-                    type: "discount",
-                    pct: it.discountPct ?? 0,
-                    amountCents: lineDiscountCents,
-                    tag: it.discountTag
-                });
-            }
-            const optionsJson = JSON.stringify(optionsData);
+            return created;
+        }
+        catch (err) {
+            logCreateTransactionError(app.log, { storeId: STORE_ID, step, deviceId }, err);
+            const safeMessage = step === CREATE_TX_STEPS.validate_input
+                ? "Invalid request"
+                : step === CREATE_TX_STEPS.resolve_items
+                    ? "Invalid item in cart"
+                    : step === CREATE_TX_STEPS.build_line_snapshots
+                        ? "Pricing or line build failed"
+                        : step === CREATE_TX_STEPS.create_transaction
+                            ? "Failed to save transaction"
+                            : step === CREATE_TX_STEPS.create_audit_log
+                                ? "Transaction saved but audit log failed"
+                                : "Transaction create failed";
+            reply.code(500);
             return {
-                itemId: dbItem.id,
-                name: dbItem.name,
-                qty,
-                unitPrice,
-                modifiersCents,
-                lineTotal,
-                note: it.note?.trim() || null,
-                optionsJson,
-                isDrink: cloudItem?.isDrink ?? null,
-                serveVessel: cloudItem?.serveVessel ?? null,
+                code: "TRANSACTION_CREATE_FAILED",
+                step,
+                message: safeMessage,
             };
-        });
-        const subtotalCents = sum(lineSnapshots.map((l) => l.lineTotal));
-        // Note: serviceCents is now 0 because surcharges are per-line (already included in lineTotal)
-        const totalCents = Math.max(0, subtotalCents - discountCents);
-        // Debug logging for money accuracy
-        console.log("[TX CREATE] Pricing breakdown:", {
-            lineCount: lineSnapshots.length,
-            lines: lineSnapshots.map(l => ({
-                name: l.name,
-                qty: l.qty,
-                unitPrice: l.unitPrice,
-                modifiersCents: l.modifiersCents,
-                lineTotal: l.lineTotal,
-            })),
-            subtotalCents,
-            discountCents,
-            totalCents,
-        });
-        const created = await app.prisma.transaction.create({
-            data: {
-                storeId: STORE_ID,
-                transactionNo: nextNo,
-                status: "OPEN",
-                source,
-                serviceType,
-                registerSessionId: open?.id || null, // Optional: link to register session if open
-                tableId,
-                orderId: body.orderId || null, // Link to QR order if provided
-                subtotalCents,
-                discountCents,
-                serviceCents: 0, // Surcharges are per-line, not transaction-level
-                totalCents,
-                lineItems: { create: lineSnapshots },
-            },
-            include: { lineItems: true, payments: true },
-        });
-        await app.prisma.auditLog.create({
-            data: {
-                storeId: STORE_ID,
-                action: "TRANSACTION_CREATE",
-                entity: "Transaction",
-                entityId: created.id,
-                metaJson: JSON.stringify({ transactionNo: created.transactionNo, totalCents: created.totalCents }),
-            },
-        });
-        return created;
+        }
     });
-    // Add payment (supports split tender)
+    // Add payment (supports split tender). Payment method: normalize and validate to avoid Prisma enum errors.
+    const VALID_PAYMENT_METHODS = ["CASH", "CARD", "GCASH", "PAYMONGO", "FOODPANDA", "GRABFOOD", "BFCAPP", "TO_BE_DECIDED"];
+    function normalizePaymentMethod(raw) {
+        const s = raw != null ? String(raw).trim().toUpperCase() : "";
+        if (s === "GCASH_MANUAL")
+            return "GCASH";
+        return VALID_PAYMENT_METHODS.includes(s) ? s : null;
+    }
     app.post("/pos/transactions/:id/payments", async (req, reply) => {
         const { id } = req.params;
-        const body = req.body;
+        const body = (req.body ?? {});
         const amountCents = Math.trunc(Number(body?.amountCents ?? NaN));
         if (!Number.isFinite(amountCents) || amountCents <= 0) {
             reply.code(400);
             return { error: "INVALID_AMOUNT" };
         }
-        if (!body?.method) {
+        const method = normalizePaymentMethod(body?.method);
+        if (!method) {
             reply.code(400);
-            return { error: "MISSING_METHOD" };
+            return { error: "MISSING_METHOD", message: "Invalid or missing payment method" };
         }
         const transaction = await app.prisma.transaction.findUnique({
             where: { id },
@@ -388,7 +703,7 @@ export async function posTransactionsRoutes(app) {
         const payment = await app.prisma.transactionPayment.create({
             data: {
                 transactionId: transaction.id,
-                method: body.method,
+                method,
                 status: "PAID",
                 amountCents,
                 refNo: body.refNo?.trim() || null,
@@ -405,6 +720,37 @@ export async function posTransactionsRoutes(app) {
                 where: { id: transaction.id },
                 data: { status: "PAID", createdBy: staff?.name ?? undefined },
             });
+            // SnapResibo: allocate at most one voucher once at finalization; print/reprint will reuse it
+            const storeConfigSnap = await app.prisma.storeConfig.findUnique({
+                where: { storeId: STORE_ID },
+                select: {
+                    snapResiboEnabled: true,
+                    snapResiboPriceCents: true,
+                    snapResiboRewardMinimumCents: true,
+                },
+            });
+            if (storeConfigSnap?.snapResiboEnabled) {
+                const hasPaidSnapResiboLine = transaction.lineItems.some((li) => li.name.trim().toLowerCase() === "snapresibo qr" && li.lineTotal > 0);
+                const qualifiesReward = (storeConfigSnap.snapResiboRewardMinimumCents ?? 0) > 0 &&
+                    transaction.totalCents >= (storeConfigSnap.snapResiboRewardMinimumCents ?? 0);
+                const pricePhp = Math.floor((storeConfigSnap.snapResiboPriceCents ?? 0) / 100);
+                try {
+                    const { error } = await allocateVouchersForTransaction(app.prisma, {
+                        storeId: STORE_ID,
+                        transactionId: transaction.id,
+                        receiptNo: transaction.transactionNo,
+                        hasPaidSnapResiboLine,
+                        qualifiesReward,
+                        pricePhp,
+                    });
+                    if (error) {
+                        app.log.warn({ transactionId: transaction.id, error }, "SnapResibo voucher allocation at finalization failed");
+                    }
+                }
+                catch (err) {
+                    app.log.warn({ err, transactionId: transaction.id }, "SnapResibo allocation at finalization threw");
+                }
+            }
             // Sync to cloud (best effort, non-blocking)
             const paymentsList = allPayments.map((p) => ({ method: p.method, amountCents: p.amountCents }));
             const lineItemsList = transaction.lineItems.map((l) => ({ name: l.name, qty: l.qty, lineTotal: l.lineTotal }));
@@ -642,33 +988,123 @@ export async function posTransactionsRoutes(app) {
         });
         return updatedTransaction;
     });
-    // Receipt view
+    // Receipt view (enrich lineItems with categoryCloudId for sticker decision on client; include business name/address for receipt header; include linked SnapResibo voucher when enabled so UI can display same voucher without allocating)
     app.get("/pos/transactions/:id/receipt", async (req, reply) => {
         const { id } = req.params;
-        const transaction = await app.prisma.transaction.findUnique({
-            where: { id },
-            include: {
-                lineItems: {
-                    include: {
-                        refundItems: true,
+        const [transaction, storeConfig] = await Promise.all([
+            app.prisma.transaction.findUnique({
+                where: { id },
+                include: {
+                    lineItems: {
+                        include: {
+                            refundItems: true,
+                            item: { select: { cloudId: true } },
+                        },
+                    },
+                    payments: true,
+                    table: { include: { zone: true } },
+                    refunds: {
+                        include: {
+                            refundItems: true,
+                        },
                     },
                 },
-                payments: true,
-                table: { include: { zone: true } },
-                refunds: {
-                    include: {
-                        refundItems: true,
-                    },
-                },
-            },
-        });
+            }),
+            app.prisma.storeConfig.findUnique({
+                where: { storeId: STORE_ID },
+                select: { businessName: true, address: true, snapResiboEnabled: true, snapResiboPriceCents: true },
+            }),
+        ]);
         if (!transaction) {
             reply.code(404);
             return { error: "TRANSACTION_NOT_FOUND" };
         }
-        return transaction;
+        const cloudIds = [
+            ...new Set(transaction.lineItems.map((li) => li.item?.cloudId).filter((c) => !!c)),
+        ];
+        const categoryByCloudId = new Map();
+        const categoryNameByCloudId = new Map();
+        const subCategoryNameByCloudId = new Map();
+        const categoryNameByMenuItemCloudId = new Map();
+        const subCategoryNameByMenuItemCloudId = new Map();
+        if (cloudIds.length > 0) {
+            const cloudItems = await app.prisma.cloudMenuItem.findMany({
+                where: { cloudId: { in: cloudIds } },
+                select: { cloudId: true, categoryCloudId: true, subCategoryCloudId: true },
+            });
+            for (const row of cloudItems) {
+                categoryByCloudId.set(row.cloudId, row.categoryCloudId);
+            }
+            const catIds = [...new Set(cloudItems.map((r) => r.categoryCloudId).filter((c) => !!c))];
+            const subIds = [...new Set(cloudItems.map((r) => r.subCategoryCloudId).filter((c) => !!c))];
+            if (catIds.length > 0) {
+                const cats = await app.prisma.cloudCategory.findMany({
+                    where: { cloudId: { in: catIds }, storeId: STORE_ID },
+                    select: { cloudId: true, name: true },
+                });
+                for (const c of cats)
+                    categoryNameByCloudId.set(c.cloudId, c.name);
+            }
+            if (subIds.length > 0) {
+                const subs = await app.prisma.cloudSubCategory.findMany({
+                    where: { cloudId: { in: subIds }, storeId: STORE_ID },
+                    select: { cloudId: true, name: true },
+                });
+                for (const s of subs)
+                    subCategoryNameByCloudId.set(s.cloudId, s.name);
+            }
+            for (const mi of cloudItems) {
+                if (mi.categoryCloudId)
+                    categoryNameByMenuItemCloudId.set(mi.cloudId, categoryNameByCloudId.get(mi.categoryCloudId) ?? "");
+                if (mi.subCategoryCloudId)
+                    subCategoryNameByMenuItemCloudId.set(mi.cloudId, subCategoryNameByCloudId.get(mi.subCategoryCloudId) ?? "");
+            }
+        }
+        const lineItemsWithCategory = transaction.lineItems.map((li) => {
+            const cloudId = li.item?.cloudId ?? null;
+            const categoryCloudId = cloudId ? categoryByCloudId.get(cloudId) ?? null : null;
+            const categoryName = li.categoryName ?? (cloudId ? categoryNameByMenuItemCloudId.get(cloudId) ?? null : null);
+            const subCategoryName = li.subCategoryName ?? (cloudId ? subCategoryNameByMenuItemCloudId.get(cloudId) ?? null : null);
+            const displayLabel = formatTransactionLineLabel({
+                name: li.name,
+                optionsJson: li.optionsJson,
+                categoryName: categoryName ?? undefined,
+                subCategoryName: subCategoryName ?? undefined,
+                qty: li.qty,
+                includeQuantity: true,
+            });
+            return {
+                ...li,
+                categoryCloudId,
+                categoryName: categoryName ?? undefined,
+                subCategoryName: subCategoryName ?? undefined,
+                displayLabel,
+            };
+        });
+        const receiptHeader = storeConfig && (storeConfig.businessName || storeConfig.address)
+            ? {
+                businessName: storeConfig.businessName ?? null,
+                address: storeConfig.address ?? null,
+            }
+            : undefined;
+        let snapResiboVouchers = [];
+        if (storeConfig?.snapResiboEnabled) {
+            const one = await getSnapResiboVoucherForTransaction(app.prisma, id);
+            if (one) {
+                const pricePhp = Math.floor((storeConfig.snapResiboPriceCents ?? 0) / 100);
+                snapResiboVouchers = [
+                    { voucherId: one.voucherId, pricePhp: one.source === "PAID_ITEM" ? pricePhp : 0 },
+                ];
+            }
+        }
+        return {
+            ...transaction,
+            lineItems: lineItemsWithCategory,
+            ...(receiptHeader && { businessName: receiptHeader.businessName, address: receiptHeader.address }),
+            ...(snapResiboVouchers.length > 0 && { snapResiboVouchers }),
+        };
     });
-    // Direct print receipt (local printer, no browser)
+    // Direct print receipt (local printer, no browser). SnapResibo: uses voucher already linked at finalization; never allocates here.
     app.post("/pos/transactions/:id/print-receipt", async (req, reply) => {
         const { id } = req.params;
         const transaction = await app.prisma.transaction.findUnique({
@@ -679,29 +1115,127 @@ export async function posTransactionsRoutes(app) {
             reply.code(404);
             return { error: "TRANSACTION_NOT_FOUND" };
         }
+        const storeConfig = await app.prisma.storeConfig.findUnique({
+            where: { storeId: STORE_ID },
+            select: {
+                businessName: true,
+                address: true,
+                snapResiboEnabled: true,
+                snapResiboPriceCents: true,
+                snapResiboRewardMinimumCents: true,
+            },
+        });
+        const receiptHeader = storeConfig && (storeConfig.businessName || storeConfig.address)
+            ? {
+                businessName: storeConfig.businessName ?? null,
+                address: storeConfig.address ?? null,
+            }
+            : undefined;
+        const txForPrint = {
+            ...transaction,
+            createdAt: transaction.createdAt instanceof Date
+                ? transaction.createdAt.toISOString()
+                : String(transaction.createdAt),
+        };
+        let vouchersForPrint = [];
+        let snapResiboError = null;
+        if (storeConfig?.snapResiboEnabled) {
+            const pricePhp = Math.floor((storeConfig.snapResiboPriceCents ?? 0) / 100);
+            const hasPaidSnapResiboLine = transaction.lineItems.some((li) => li.name.trim().toLowerCase() === "snapresibo qr" && li.lineTotal > 0);
+            const qualifiesReward = (storeConfig.snapResiboRewardMinimumCents ?? 0) > 0 &&
+                transaction.totalCents >= (storeConfig.snapResiboRewardMinimumCents ?? 0);
+            const expectsVoucher = hasPaidSnapResiboLine || qualifiesReward;
+            const one = await getSnapResiboVoucherForTransaction(app.prisma, transaction.id);
+            if (one) {
+                vouchersForPrint = [
+                    { voucherId: one.voucherId, pricePhp: one.source === "PAID_ITEM" ? pricePhp : 0 },
+                ];
+            }
+            else if (expectsVoucher) {
+                snapResiboError = "NO_VOUCHER_LINKED";
+            }
+        }
         try {
-            await printReceiptToDevice(transaction);
-            return { ok: true };
+            await printReceiptToDevice(txForPrint, receiptHeader, vouchersForPrint.length > 0 ? vouchersForPrint : undefined);
+            return snapResiboError ? { ok: true, snapResiboError } : { ok: true };
         }
         catch (err) {
+            const message = err instanceof Error ? err.message : String(err ?? "Receipt print failed");
             app.log.error({ err, transactionId: id }, "Print receipt failed");
             reply.code(500);
-            return { error: "PRINT_FAILED", message: err?.message ?? "Receipt print failed" };
+            return { error: "PRINT_FAILED", message };
         }
     });
-    // Direct print stickers (local printer, no browser)
+    // Direct print stickers (local printer, no browser); uses store stickerPrintCategoryIds and line categoryCloudId
     app.post("/pos/transactions/:id/print-stickers", async (req, reply) => {
         const { id } = req.params;
         const transaction = await app.prisma.transaction.findUnique({
             where: { id },
-            include: { lineItems: true, payments: true },
+            include: {
+                lineItems: { include: { item: { select: { cloudId: true } } } },
+                payments: true,
+            },
         });
         if (!transaction) {
             reply.code(404);
             return { error: "TRANSACTION_NOT_FOUND" };
         }
+        const storeConfig = await app.prisma.storeConfig.findUnique({
+            where: { storeId: STORE_ID },
+        });
+        const stickerPrintCategoryIds = storeConfig?.stickerPrintCategoryIds
+            ? JSON.parse(storeConfig.stickerPrintCategoryIds)
+            : [];
+        const cloudIds = [
+            ...new Set(transaction.lineItems.map((li) => li.item?.cloudId).filter((c) => !!c)),
+        ];
+        const categoryByCloudId = new Map();
+        const subCategoryNameByMenuItemCloudId = new Map();
+        if (cloudIds.length > 0) {
+            const cloudItems = await app.prisma.cloudMenuItem.findMany({
+                where: { cloudId: { in: cloudIds } },
+                select: { cloudId: true, categoryCloudId: true, subCategoryCloudId: true },
+            });
+            for (const row of cloudItems) {
+                categoryByCloudId.set(row.cloudId, row.categoryCloudId);
+            }
+            const subCategoryCloudIds = [...new Set(cloudItems.map((r) => r.subCategoryCloudId).filter((c) => !!c))];
+            const subCategoryNameBySubCloudId = new Map();
+            if (subCategoryCloudIds.length > 0) {
+                const subCats = await app.prisma.cloudSubCategory.findMany({
+                    where: { cloudId: { in: subCategoryCloudIds } },
+                    select: { cloudId: true, name: true },
+                });
+                for (const s of subCats)
+                    subCategoryNameBySubCloudId.set(s.cloudId, s.name);
+            }
+            for (const row of cloudItems) {
+                const name = row.subCategoryCloudId ? (subCategoryNameBySubCloudId.get(row.subCategoryCloudId) ?? null) : null;
+                subCategoryNameByMenuItemCloudId.set(row.cloudId, name);
+            }
+        }
+        const enrichedLineItems = transaction.lineItems.map((li) => ({
+            name: li.name,
+            qty: li.qty,
+            unitPrice: li.unitPrice,
+            lineTotal: li.lineTotal,
+            note: li.note,
+            specialInstructions: li.specialInstructions ?? null,
+            customerName: li.customerName ?? null,
+            optionsJson: li.optionsJson,
+            categoryCloudId: li.item?.cloudId ? categoryByCloudId.get(li.item.cloudId) ?? null : null,
+            subCategoryName: li.item?.cloudId ? subCategoryNameByMenuItemCloudId.get(li.item.cloudId) ?? null : null,
+            stickerName: undefined,
+        }));
+        const txForPrint = {
+            ...transaction,
+            createdAt: transaction.createdAt instanceof Date
+                ? transaction.createdAt.toISOString()
+                : String(transaction.createdAt),
+            lineItems: enrichedLineItems,
+        };
         try {
-            const result = await printStickersToDevice(transaction);
+            const result = await printStickersToDevice(txForPrint, { stickerPrintCategoryIds });
             if (result.printed === 0) {
                 reply.code(400);
                 return { error: "NO_STICKER_ITEMS", message: "No sticker items in this transaction" };

@@ -30,6 +30,9 @@ export default function SystemClient() {
   const [availablePrinters, setAvailablePrinters] = useState<string[]>([]);
   const [printerSaving, setPrinterSaving] = useState(false);
   const [printerTestLoading, setPrinterTestLoading] = useState<string | null>(null);
+  const [printerEnumHint, setPrinterEnumHint] = useState<string | null>(null);
+  const [unmatchedReceiptSavedAs, setUnmatchedReceiptSavedAs] = useState<string | null>(null);
+  const [unmatchedStickerSavedAs, setUnmatchedStickerSavedAs] = useState<string | null>(null);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -45,7 +48,8 @@ export default function SystemClient() {
     try {
       const staff = typeof window !== "undefined" ? localStorage.getItem("bfc_active_staff") : null;
       const staffKey = staff ? (JSON.parse(staff) as { staffKey?: string }).staffKey : null;
-      const headers = staffKey ? { "x-staff-key": staffKey } : {};
+      const headers: Record<string, string> = {};
+      if (staffKey) headers["x-staff-key"] = staffKey;
       const [configRes, availableRes] = await Promise.all([
         fetch("/api/system/printers", { cache: "no-store", headers }),
         fetch("/api/system/printers/available", { cache: "no-store", headers }),
@@ -53,11 +57,51 @@ export default function SystemClient() {
       const configData = await configRes.json();
       const availableData = await availableRes.json();
       if (configRes.ok) {
-        setReceiptPrinter(configData.receiptPrinter ?? "");
-        setStickerPrinter(configData.stickerPrinter ?? "");
+        setReceiptPrinter(
+          typeof configData.receiptPrinterSelectValue === "string"
+            ? configData.receiptPrinterSelectValue
+            : configData.receiptPrinter ?? ""
+        );
+        setStickerPrinter(
+          typeof configData.stickerPrinterSelectValue === "string"
+            ? configData.stickerPrinterSelectValue
+            : configData.stickerPrinter ?? ""
+        );
+        if (Array.isArray(configData.enumeration?.windowsPrinterNamesExact)) {
+          setAvailablePrinters(configData.enumeration.windowsPrinterNamesExact);
+        }
+        const hintFromConfig =
+          typeof configData.enumeration?.hint === "string" ? configData.enumeration.hint.trim() : "";
+        const hintFromAvailable =
+          typeof availableData.enumeration?.hint === "string" ? availableData.enumeration.hint.trim() : "";
+        setPrinterEnumHint(hintFromConfig || hintFromAvailable || null);
+        setUnmatchedReceiptSavedAs(
+          configData.savedReceiptNotMatched && configData.receiptPrinter
+            ? String(configData.receiptPrinter)
+            : null
+        );
+        setUnmatchedStickerSavedAs(
+          configData.savedStickerNotMatched && configData.stickerPrinter
+            ? String(configData.stickerPrinter)
+            : null
+        );
+      } else {
+        setUnmatchedReceiptSavedAs(null);
+        setUnmatchedStickerSavedAs(null);
+        const hintFromAvailable =
+          typeof availableData.enumeration?.hint === "string" ? availableData.enumeration.hint.trim() : "";
+        setPrinterEnumHint(hintFromAvailable || null);
       }
-      if (availableRes.ok && Array.isArray(availableData.printers)) {
+      if (
+        availableRes.ok &&
+        Array.isArray(availableData.printers) &&
+        (!configRes.ok || !Array.isArray(configData.enumeration?.windowsPrinterNamesExact))
+      ) {
         setAvailablePrinters(availableData.printers);
+      }
+      if (configRes.ok && !configData.enumeration?.hint && availableRes.ok && availableData.enumeration?.hint) {
+        const h = String(availableData.enumeration.hint).trim();
+        if (h) setPrinterEnumHint(h);
       }
     } catch {
       // ignore
@@ -157,7 +201,9 @@ export default function SystemClient() {
   async function getStaffHeaders(): Promise<Record<string, string>> {
     const staff = typeof window !== "undefined" ? localStorage.getItem("bfc_active_staff") : null;
     const staffKey = staff ? (JSON.parse(staff) as { staffKey?: string }).staffKey : null;
-    return staffKey ? { "x-staff-key": staffKey } : {};
+    const out: Record<string, string> = {};
+    if (staffKey) out["x-staff-key"] = staffKey;
+    return out;
   }
 
   async function handleSavePrinters() {
@@ -172,6 +218,23 @@ export default function SystemClient() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.message || data.error || "Failed to save");
+      setReceiptPrinter(
+        typeof data.receiptPrinterSelectValue === "string" ? data.receiptPrinterSelectValue : data.receiptPrinter ?? ""
+      );
+      setStickerPrinter(
+        typeof data.stickerPrinterSelectValue === "string" ? data.stickerPrinterSelectValue : data.stickerPrinter ?? ""
+      );
+      if (Array.isArray(data.enumeration?.windowsPrinterNamesExact)) {
+        setAvailablePrinters(data.enumeration.windowsPrinterNamesExact);
+      }
+      const h = typeof data.enumeration?.hint === "string" ? data.enumeration.hint.trim() : "";
+      setPrinterEnumHint(h || null);
+      setUnmatchedReceiptSavedAs(
+        data.savedReceiptNotMatched && data.receiptPrinter ? String(data.receiptPrinter) : null
+      );
+      setUnmatchedStickerSavedAs(
+        data.savedStickerNotMatched && data.stickerPrinter ? String(data.stickerPrinter) : null
+      );
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to save");
     } finally {
@@ -449,6 +512,9 @@ export default function SystemClient() {
           <p style={{ color: COLORS.textSecondary, marginBottom: 16, fontSize: 14 }}>
             Select the Windows printers used for receipts and drink stickers (USB printers connected to this PC).
           </p>
+          {printerEnumHint ? (
+            <p style={{ color: COLORS.error, marginBottom: 12, fontSize: 13 }}>{printerEnumHint}</p>
+          ) : null}
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <div>
               <label style={{ display: "block", marginBottom: 4, fontSize: 14, color: COLORS.textSecondary }}>
@@ -474,6 +540,11 @@ export default function SystemClient() {
                   </option>
                 ))}
               </select>
+              {unmatchedReceiptSavedAs ? (
+                <p style={{ marginTop: 6, fontSize: 12, color: COLORS.error }}>
+                  Saved name does not match any Windows queue: &quot;{unmatchedReceiptSavedAs}&quot;. Choose the exact name from the list.
+                </p>
+              ) : null}
             </div>
             <div>
               <label style={{ display: "block", marginBottom: 4, fontSize: 14, color: COLORS.textSecondary }}>
@@ -499,6 +570,11 @@ export default function SystemClient() {
                   </option>
                 ))}
               </select>
+              {unmatchedStickerSavedAs ? (
+                <p style={{ marginTop: 6, fontSize: 12, color: COLORS.error }}>
+                  Saved name does not match any Windows queue: &quot;{unmatchedStickerSavedAs}&quot;. Choose the exact name from the list.
+                </p>
+              ) : null}
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
               <button

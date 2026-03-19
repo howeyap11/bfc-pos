@@ -5,6 +5,7 @@ import { uploadImage } from "../services/r2.service.js";
 import { bumpCatalogVersion } from "../lib/catalogVersion.js";
 import { hashPassword } from "../lib/password.js";
 import { getDrinkSizesOptionGroup, getDrinkSizesOptionIds } from "../lib/drinkSizes.js";
+import { getDashboardKpis, getSalesByDate, getPaymentTypeTotals, getSalesByCategory, getSalesByItem, getSalesByCashier, getSalesByPayment, getItemsSold, getLastSyncedAt, getStoreName, buildDateRange, getDefaultDateRange, } from "../services/dashboard.service.js";
 function generateSlug(name) {
     return name
         .toLowerCase()
@@ -67,6 +68,117 @@ export async function adminRoutes(app) {
         });
         return { ok: true };
     });
+    // Staff (POS cashiers/managers) - source of truth for names, PINs, email, roles; syncs to POS
+    const STAFF_STORE_ID = "store_1";
+    const STAFF_ROLES = ["HEAD_BARISTA", "HEAD_CHEF", "BARISTA", "LEAD_BARISTA", "MANAGER", "KITCHEN_STAFF", "ADMIN"];
+    const staffRoleSchema = z.enum(STAFF_ROLES);
+    const staffCreateSchema = z.object({
+        name: z.string().min(1, "Name is required").max(120).trim(),
+        email: z.string().email().optional().or(z.literal("")).transform((v) => (v === "" ? undefined : v)),
+        passcode: z.string().min(4, "PIN must be at least 4 characters").max(20).regex(/^\d+$/, "PIN must be digits only"),
+        role: staffRoleSchema.default("BARISTA"),
+        isActive: z.boolean().optional().default(true),
+    });
+    const staffUpdateSchema = z.object({
+        name: z.string().min(1).max(120).trim().optional(),
+        email: z.union([z.string().email(), z.literal("")]).optional().transform((v) => (v === "" ? null : v)),
+        passcode: z.string().min(4).max(20).regex(/^\d+$/).optional(),
+        role: staffRoleSchema.optional(),
+        isActive: z.boolean().optional(),
+    });
+    const staffSelect = { id: true, name: true, email: true, role: true, isActive: true, createdAt: true, updatedAt: true };
+    app.get("/staff", async (req, reply) => {
+        const list = await app.prisma.staff.findMany({
+            where: { storeId: STAFF_STORE_ID },
+            orderBy: { name: "asc" },
+            select: staffSelect,
+        });
+        return { staff: list };
+    });
+    app.post("/staff", async (req, reply) => {
+        const parsed = staffCreateSchema.safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "VALIDATION_ERROR", message: parsed.error.issues.map((i) => i.message).join("; ") };
+        }
+        const { name, email, passcode, role, isActive } = parsed.data;
+        const existingByName = await app.prisma.staff.findUnique({ where: { storeId_name: { storeId: STAFF_STORE_ID, name } } });
+        if (existingByName) {
+            reply.code(409);
+            return { error: "DUPLICATE_NAME", message: "A staff member with this name already exists" };
+        }
+        if (email) {
+            const existingByEmail = await app.prisma.staff.findFirst({ where: { storeId: STAFF_STORE_ID, email } });
+            if (existingByEmail) {
+                reply.code(409);
+                return { error: "DUPLICATE_EMAIL", message: "A staff member with this email already exists" };
+            }
+        }
+        const staff = await app.prisma.staff.create({
+            data: { storeId: STAFF_STORE_ID, name, email: email ?? null, passcode, role, isActive },
+            select: staffSelect,
+        });
+        return staff;
+    });
+    app.get("/staff/:id", async (req, reply) => {
+        const staff = await app.prisma.staff.findFirst({
+            where: { id: req.params.id, storeId: STAFF_STORE_ID },
+            select: staffSelect,
+        });
+        if (!staff) {
+            reply.code(404);
+            return { error: "NOT_FOUND" };
+        }
+        return staff;
+    });
+    app.patch("/staff/:id", async (req, reply) => {
+        const parsed = staffUpdateSchema.safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "VALIDATION_ERROR", message: parsed.error.issues.map((i) => i.message).join("; ") };
+        }
+        const existing = await app.prisma.staff.findFirst({
+            where: { id: req.params.id, storeId: STAFF_STORE_ID },
+        });
+        if (!existing) {
+            reply.code(404);
+            return { error: "NOT_FOUND" };
+        }
+        const { name, email, passcode, role, isActive } = parsed.data;
+        if (name !== undefined && name !== existing.name) {
+            const duplicate = await app.prisma.staff.findUnique({ where: { storeId_name: { storeId: STAFF_STORE_ID, name } } });
+            if (duplicate) {
+                reply.code(409);
+                return { error: "DUPLICATE_NAME", message: "A staff member with this name already exists" };
+            }
+        }
+        if (email !== undefined && email !== existing.email) {
+            if (email) {
+                const duplicate = await app.prisma.staff.findFirst({ where: { storeId: STAFF_STORE_ID, email } });
+                if (duplicate) {
+                    reply.code(409);
+                    return { error: "DUPLICATE_EMAIL", message: "A staff member with this email already exists" };
+                }
+            }
+        }
+        const updateData = {};
+        if (name !== undefined)
+            updateData.name = name;
+        if (email !== undefined)
+            updateData.email = email;
+        if (passcode !== undefined)
+            updateData.passcode = passcode;
+        if (role !== undefined)
+            updateData.role = role;
+        if (isActive !== undefined)
+            updateData.isActive = isActive;
+        const staff = await app.prisma.staff.update({
+            where: { id: req.params.id },
+            data: updateData,
+            select: staffSelect,
+        });
+        return staff;
+    });
     // MenuItem CRUD - subCategoryId required
     const drinkTempEnum = z.enum(["HOT", "ICED", "ANY"]);
     const menuItemCreateSchema = z.object({
@@ -80,6 +192,7 @@ export async function adminRoutes(app) {
         hasSizes: z.boolean().optional().default(false),
         supportsShots: z.boolean().optional().default(false),
         defaultShots: z.number().int().min(0).optional().nullable(),
+        shotsPerSizeEnabled: z.boolean().optional().default(false),
     });
     const menuItemUpdateSchema = z
         .object({
@@ -95,6 +208,7 @@ export async function adminRoutes(app) {
         hasSizes: z.boolean().optional(),
         supportsShots: z.boolean().optional(),
         defaultShots: z.number().int().min(0).optional().nullable(),
+        shotsPerSizeEnabled: z.boolean().optional(),
     })
         .partial();
     const reorderOrderSchema = z.object({
@@ -608,8 +722,12 @@ export async function adminRoutes(app) {
             sortOrder = (maxOrder._max.sortOrder ?? -1) + 1;
         }
         const shotData = parsed.data.supportsShots
-            ? { supportsShots: true, defaultShots: parsed.data.defaultShots ?? 1 }
-            : { supportsShots: false, defaultShots: null };
+            ? {
+                supportsShots: true,
+                defaultShots: parsed.data.defaultShots ?? 1,
+                shotsPerSizeEnabled: parsed.data.shotsPerSizeEnabled ?? false,
+            }
+            : { supportsShots: false, defaultShots: null, shotsPerSizeEnabled: false };
         return app.prisma.menuItem.create({
             data: {
                 name: parsed.data.name,
@@ -752,10 +870,17 @@ export async function adminRoutes(app) {
         if (parsed.data.supportsShots === true) {
             updateData.supportsShots = true;
             updateData.defaultShots = parsed.data.defaultShots ?? 1;
+            if (parsed.data.shotsPerSizeEnabled !== undefined) {
+                updateData.shotsPerSizeEnabled = parsed.data.shotsPerSizeEnabled;
+            }
         }
         else if (parsed.data.supportsShots === false) {
             updateData.supportsShots = false;
             updateData.defaultShots = null;
+            updateData.shotsPerSizeEnabled = false;
+        }
+        else if (parsed.data.shotsPerSizeEnabled !== undefined) {
+            updateData.shotsPerSizeEnabled = parsed.data.shotsPerSizeEnabled;
         }
         if (parsed.data.subCategoryId) {
             const sub = await app.prisma.subCategory.findUnique({ where: { id: parsed.data.subCategoryId }, select: { categoryId: true } });
@@ -781,6 +906,13 @@ export async function adminRoutes(app) {
             CONCENTRATED: z.record(z.string(), z.number().int().min(0)).optional(),
         })
             .optional(),
+        sizeShotsByMode: z
+            .object({
+            ICED: z.record(z.string(), z.number().int().min(0).max(20)).optional(),
+            HOT: z.record(z.string(), z.number().int().min(0).max(20)).optional(),
+            CONCENTRATED: z.record(z.string(), z.number().int().min(0).max(20)).optional(),
+        })
+            .optional(),
     });
     app.put("/items/:id/drink-sizes", async (req, reply) => {
         const { id } = req.params;
@@ -803,7 +935,7 @@ export async function adminRoutes(app) {
             reply.code(400);
             return { error: "DRINK_SIZES_GROUP_MISSING", message: validIds.error };
         }
-        const { drinkSizesByMode, hasSizes: hasSizesInput, sizePricesByMode } = parsed.data;
+        const { drinkSizesByMode, hasSizes: hasSizesInput, sizePricesByMode, sizeShotsByMode } = parsed.data;
         const modes = ["ICED", "HOT", "CONCENTRATED"];
         let anyEnabled = false;
         for (const mode of modes) {
@@ -869,6 +1001,7 @@ export async function adminRoutes(app) {
                 // Create price rows for enabled sizes when hasSizes is true
                 if (hasSizes) {
                     const modePrices = sizePricesByMode?.[mode] ?? {};
+                    const modeShots = sizeShotsByMode?.[mode] ?? {};
                     const optionIdsNeedingPrice = enabledOptionIds.filter((optId) => modePrices[optId] !== undefined);
                     if (optionIdsNeedingPrice.length > 0) {
                         const options = await app.prisma.menuOption.findMany({
@@ -883,6 +1016,7 @@ export async function adminRoutes(app) {
                                 sizeOptionId: optId,
                                 sizeCode: nameById.get(optId) ?? optId,
                                 priceCents: modePrices[optId] ?? 0,
+                                includedShots: modeShots[optId] != null ? modeShots[optId] : null,
                             })),
                         });
                     }
@@ -2759,6 +2893,7 @@ export async function adminRoutes(app) {
                 Source: t.source,
                 "Service Type": t.serviceType,
                 "Payment Method": primaryMethod,
+                Test: (t.isTest ?? false) ? "Yes" : "No",
                 Subtotal: (t.subtotalCents / 100).toFixed(2),
                 Discount: (t.discountCents / 100).toFixed(2),
                 Total: (t.totalCents / 100).toFixed(2),
@@ -2824,6 +2959,7 @@ export async function adminRoutes(app) {
                 createdAt: t.createdAt.toISOString(),
                 voidedAt: t.voidedAt?.toISOString() ?? null,
                 voidReason: t.voidReason,
+                isTest: t.isTest ?? false,
                 payments,
                 lineItems,
             };
@@ -2903,5 +3039,82 @@ export async function adminRoutes(app) {
             totalDiscounts,
             byPaymentMethod: byMethod,
         };
+    });
+    // ----- Dashboard (Cloud Admin)
+    const dashboardStoreId = () => "store_1";
+    const dashboardDateRange = (req) => {
+        const def = getDefaultDateRange();
+        const startDate = req.query.startDate || def.startDate;
+        const endDate = req.query.endDate || def.endDate;
+        return { startDate, endDate, range: buildDateRange(startDate, endDate) };
+    };
+    app.get("/dashboard/summary", async (req) => {
+        const storeId = (req.query.storeId || dashboardStoreId());
+        const { startDate, endDate, range } = dashboardDateRange(req);
+        const [kpis, lastSyncedAt, storeName] = await Promise.all([
+            getDashboardKpis(app.prisma, storeId, range),
+            getLastSyncedAt(app.prisma, storeId),
+            Promise.resolve(getStoreName()),
+        ]);
+        return {
+            startDate,
+            endDate,
+            storeId,
+            storeName,
+            lastSyncedAt: lastSyncedAt?.toISOString() ?? null,
+            kpis,
+        };
+    });
+    app.get("/dashboard/sales-by-date", async (req) => {
+        const storeId = (req.query.storeId || dashboardStoreId());
+        const { startDate, endDate, range } = dashboardDateRange(req);
+        const granularity = (req.query.granularity === "daily" || req.query.granularity === "monthly")
+            ? req.query.granularity
+            : "hourly";
+        const buckets = await getSalesByDate(app.prisma, storeId, range, granularity, {
+            startDate,
+            endDate,
+        });
+        return { buckets };
+    });
+    app.get("/dashboard/payment-types", async (req) => {
+        const storeId = (req.query.storeId || dashboardStoreId());
+        const { range } = dashboardDateRange(req);
+        const paymentTypes = await getPaymentTypeTotals(app.prisma, storeId, range);
+        return { paymentTypes };
+    });
+    app.get("/dashboard/sales-by-category", async (req) => {
+        const storeId = (req.query.storeId || dashboardStoreId());
+        const { range } = dashboardDateRange(req);
+        const rows = await getSalesByCategory(app.prisma, storeId, range);
+        return { rows };
+    });
+    app.get("/dashboard/sales-by-item", async (req) => {
+        const storeId = (req.query.storeId || dashboardStoreId());
+        const { range } = dashboardDateRange(req);
+        const rows = await getSalesByItem(app.prisma, storeId, range);
+        return { rows };
+    });
+    app.get("/dashboard/sales-by-cashier", async (req) => {
+        const storeId = (req.query.storeId || dashboardStoreId());
+        const { range } = dashboardDateRange(req);
+        const rows = await getSalesByCashier(app.prisma, storeId, range);
+        return { rows };
+    });
+    app.get("/dashboard/sales-by-payment", async (req) => {
+        const storeId = (req.query.storeId || dashboardStoreId());
+        const { range } = dashboardDateRange(req);
+        const rows = await getSalesByPayment(app.prisma, storeId, range);
+        return { rows };
+    });
+    app.get("/dashboard/items-sold", async (req) => {
+        const storeId = (req.query.storeId || dashboardStoreId());
+        const { range } = dashboardDateRange(req);
+        const sortBy = (req.query.sortBy === "qty" || req.query.sortBy === "profit") ? req.query.sortBy : "amount";
+        const order = req.query.order === "asc" ? "asc" : "desc";
+        const page = Math.max(1, parseInt(req.query.page || "1", 10) || 1);
+        const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize || "10", 10) || 10));
+        const { rows, total } = await getItemsSold(app.prisma, storeId, range, { sortBy, order, page, pageSize });
+        return { rows, total, page, pageSize };
     });
 }

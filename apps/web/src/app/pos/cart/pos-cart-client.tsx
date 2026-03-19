@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { COLORS } from "@/lib/theme";
 import { extractSizeTemp, formatSizeTempLine } from "@/lib/lineItemDisplay";
 import { lineItemDisplayParts, getLineItemMainLabel } from "@/lib/printHelpers";
@@ -114,6 +114,7 @@ export default function PosCartClient() {
   const [paymentMethod, setPaymentMethod] = useState<"CASH" | "GCASH" | "CARD">("CASH");
   const [paymentAmountPesos, setPaymentAmountPesos] = useState("");
   const [busy, setBusy] = useState(false);
+  const silentMenuRefreshInFlight = useRef(false);
 
   useEffect(() => {
     loadMenu();
@@ -135,6 +136,8 @@ export default function PosCartClient() {
 
   // Silent catalog refresh every 30s: only updates menu state; does not touch loading, cart, or transaction
   function refreshMenuSilent() {
+    if (silentMenuRefreshInFlight.current) return;
+    silentMenuRefreshInFlight.current = true;
     fetch("/api/menu", { cache: "no-store" })
       .then((res) => res.json())
       .then((data) => {
@@ -144,7 +147,10 @@ export default function PosCartClient() {
           data.some((c: { id: string }) => c.id === prev) ? prev : (data[0]?.id ?? null)
         );
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        silentMenuRefreshInFlight.current = false;
+      });
   }
 
   useEffect(() => {

@@ -186,6 +186,8 @@ export type ImportResult = {
   errors: string[];
   added: number;
   skipped: number;
+  /** AVAILABLE vouchers removed before this import (pool reset). ISSUED/USED are kept for transaction history. */
+  clearedAvailable: number;
 };
 
 export class SnapResiboImportStoreNotFoundError extends Error {
@@ -198,6 +200,7 @@ export class SnapResiboImportStoreNotFoundError extends Error {
 
 /**
  * Import voucher IDs from parsed rows. Validates VCHR_* format; skips in-file duplicates and existing DB rows.
+ * Before importing: deletes all AVAILABLE vouchers for the store (replaces the pool). ISSUED/USED rows are kept.
  * Throws SnapResiboImportStoreNotFoundError if the store does not exist (FK would fail).
  */
 export async function importVouchers(
@@ -217,6 +220,11 @@ export async function importVouchers(
   if (!store) {
     throw new SnapResiboImportStoreNotFoundError(storeId);
   }
+
+  const clearResult = await prisma.snapResiboVoucher.deleteMany({
+    where: { storeId, status: "AVAILABLE" },
+  });
+  const clearedAvailable = clearResult.count;
 
   const toCreate: { storeId: string; voucherId: string }[] = [];
   const seen = new Set<string>();
@@ -275,5 +283,6 @@ export async function importVouchers(
     errors,
     added: imported,
     skipped: skippedDuplicates + skippedExisting,
+    clearedAvailable,
   };
 }

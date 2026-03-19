@@ -8,6 +8,7 @@
 //
 import type { FastifyInstance } from "fastify";
 import type { MilkType, ServiceType, ShotsPricingMode } from "@prisma/client";
+import type { PrismaClient } from "@prisma/client";
 import { requireStaffHook } from "../plugins/staffGuard";
 import { verifyAdminPin } from "../services/adminPin.service";
 import { enqueueOutbox } from "../services/outbox.service";
@@ -21,6 +22,65 @@ import {
 
 const STORE_ID = "store_1";
 const SNAPRESIBO_QR_ITEM_ID = "SNAPRESIBO_QR";
+
+export const CREATE_TX_STEPS = {
+  validate_input: "validate_input",
+  ensure_store: "ensure_store",
+  resolve_items: "resolve_items",
+  build_line_snapshots: "build_line_snapshots",
+  create_transaction: "create_transaction",
+  create_audit_log: "create_audit_log",
+} as const;
+export type CreateTransactionStep = (typeof CREATE_TX_STEPS)[keyof typeof CREATE_TX_STEPS];
+
+function getPrismaErrorInfo(err: unknown): { code?: string; meta?: unknown } {
+  const e = err as { code?: string; meta?: unknown };
+  return typeof e === "object" && e !== null ? { code: e.code, meta: e.meta } : {};
+}
+
+function logCreateTransactionError(
+  log: FastifyInstance["log"],
+  ctx: { storeId: string; transactionNo?: number; step: string; deviceId?: string },
+  err: unknown,
+  payload?: Record<string, unknown>
+) {
+  const prismaInfo = getPrismaErrorInfo(err);
+  const message = err instanceof Error ? err.message : String(err);
+  const stack = err instanceof Error ? err.stack : undefined;
+  log.error(
+    {
+      tag: "[createTransaction]",
+      ...ctx,
+      errorMessage: message,
+      prismaCode: prismaInfo.code,
+      prismaMeta: prismaInfo.meta,
+      ...(payload ?? {}),
+    },
+    "Transaction create failed"
+  );
+  if (stack && process.env.NODE_ENV !== "production") {
+    log.debug({ stack }, "createTransaction stack");
+  }
+}
+
+/** Ensure Store and StoreConfig exist (same as seed). Required for transaction.create FK. */
+async function ensureStoreAndConfig(prisma: PrismaClient) {
+  await prisma.store.upsert({
+    where: { id: STORE_ID },
+    update: { code: "BFC-LOCAL", name: "But First, Coffee (Local)" },
+    create: { id: STORE_ID, code: "BFC-LOCAL", name: "But First, Coffee (Local)" },
+  });
+  await prisma.storeConfig.upsert({
+    where: { storeId: STORE_ID },
+    update: {},
+    create: {
+      storeId: STORE_ID,
+      enabledPaymentMethods: JSON.stringify(["CASH", "CARD", "GCASH", "FOODPANDA"]),
+      splitPaymentEnabled: true,
+      paymentMethodOrder: null,
+    },
+  });
+}
 
 function sum(nums: number[]) {
   return nums.reduce((a, b) => a + b, 0);
@@ -137,35 +197,55 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
 
   // Create transaction + line items (no payment yet)
   app.post("/pos/transactions", async (req, reply) => {
-    const body = req.body as {
+    const deviceId = (req.headers["x-device-id"] as string) || undefined;
+    let step: CreateTransactionStep = CREATE_TX_STEPS.validate_input;
+
+    type ItemInput = {
+      itemId: string;
+      qty: number;
+      optionIds?: string[];
+      note?: string;
+      specialInstructions?: string;
+      customerName?: string;
+      baseType?: "HOT" | "ICED" | "CONCENTRATED";
+      sizeLabel?: string;
+      shotsQty?: number;
+      milkChoice?: string;
+      selectedSubstituteCloudId?: string;
+      defaultMilk?: MilkType;
+      surchargeCents?: number;
+      discountPct?: number;
+      discountAmount?: number;
+      discountTag?: "SNR" | "PWD" | null;
+    };
+    type BodyInput = {
       tablePublicKey?: string;
-      items: Array<{
-        itemId: string;
-        qty: number;
-        optionIds: string[];
-        note?: string;
-        specialInstructions?: string; // Prep only, for sticker (quoted below ice); note remains for audit/discount
-        customerName?: string; // Per-item name for sticker (left of temp/size)
-        baseType?: "HOT" | "ICED" | "CONCENTRATED";
-        sizeLabel?: string;
-        shotsQty?: number;
-        milkChoice?: string; // Substitute name for display or legacy MilkType
-        selectedSubstituteCloudId?: string; // For milk upcharge from cloud substitute price
-        defaultMilk?: MilkType;
-        surchargeCents?: number; // Per-line surcharge (e.g., FOODPANDA)
-        discountPct?: number; // Per-line discount percentage
-        discountAmount?: number; // Per-line discount amount in cents
-        discountTag?: "SNR" | "PWD" | null; // Discount type for audit
-      }>;
+      items?: ItemInput[];
       discountCents?: number;
-      serviceType?: "DINE_IN" | "TO_GO" | "FOODPANDA" | "DELIVERY" | "FOR_HERE" | "TAKE_OUT";
-      orderId?: string; // Optional link to QR order
+      serviceType?: string;
+      orderId?: string;
     };
 
-    if (!Array.isArray(body?.items) || body.items.length === 0) {
-      reply.code(400);
-      return { error: "EMPTY_ITEMS" };
-    }
+    try {
+      const rawBody = (req.body ?? {}) as BodyInput;
+      const body: BodyInput & { items: ItemInput[] } = {
+        ...rawBody,
+        items: Array.isArray(rawBody.items) ? rawBody.items : [],
+      };
+      for (const it of body.items) {
+        if (it && typeof it === "object" && !Array.isArray(it.optionIds)) {
+          (it as ItemInput).optionIds = it.optionIds ?? [];
+        }
+      }
+
+      if (body.items.length === 0) {
+        reply.code(400);
+        return { error: "EMPTY_ITEMS" };
+      }
+
+      step = CREATE_TX_STEPS.ensure_store;
+      // Ensure Store (and StoreConfig) exist so transaction.create FK does not fail (e.g. fresh DB without seed).
+      await ensureStoreAndConfig(app.prisma);
 
     // TODO: RegisterSession enforcement disabled until cash reconciliation module is implemented.
     // Staff login (cashier PIN) is sufficient for auditing.
@@ -201,7 +281,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     const snapResiboItems = body.items.filter((i) => i.itemId === SNAPRESIBO_QR_ITEM_ID);
     const storeConfigForCreate = await app.prisma.storeConfig.findUnique({
       where: { storeId: STORE_ID },
-      select: { snapResiboEnabled: true, snapResiboPriceCents: true, snapResiboRewardMinimumCents: true },
+      select: { snapResiboEnabled: true, snapResiboPriceCents: true, snapResiboRewardMinimumCents: true, devMode: true },
     });
     if (snapResiboItems.length > 0) {
       if (!storeConfigForCreate?.snapResiboEnabled) {
@@ -218,6 +298,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     });
     const nextNo = (last?.transactionNo ?? 0) + 1;
 
+    step = CREATE_TX_STEPS.resolve_items;
     // itemId from POS is cloudId (from CloudMenuItem); resolve to Item.id for storage + inventory (exclude SnapResibo virtual item)
     const cloudIds = [...new Set(regularItems.map((i) => i.itemId))];
     const optionIds = [...new Set(regularItems.flatMap((i) => i.optionIds ?? []))];
@@ -421,6 +502,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       source = "POS";
     }
 
+    step = CREATE_TX_STEPS.build_line_snapshots;
     // Build line snapshots + totals (it.itemId is cloudId); only regular items
     type LineSnapshotCreate = {
       itemId: string | null;
@@ -640,21 +722,8 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     // Note: serviceCents is now 0 because surcharges are per-line (already included in lineTotal)
     const totalCents = Math.max(0, subtotalCents - discountCents);
 
-    // Debug logging for money accuracy
-    console.log("[TX CREATE] Pricing breakdown:", {
-      lineCount: lineSnapshots.length,
-      lines: lineSnapshots.map(l => ({
-        name: l.name,
-        qty: l.qty,
-        unitPrice: l.unitPrice,
-        modifiersCents: l.modifiersCents,
-        lineTotal: l.lineTotal,
-      })),
-      subtotalCents,
-      discountCents,
-      totalCents,
-    });
-
+    const isTest = storeConfigForCreate?.devMode ?? false;
+    step = CREATE_TX_STEPS.create_transaction;
     const created = await app.prisma.transaction.create({
       data: {
         storeId: STORE_ID,
@@ -669,37 +738,75 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         discountCents,
         serviceCents: 0, // Surcharges are per-line, not transaction-level
         totalCents,
+        isTest,
         lineItems: { create: lineSnapshots },
       },
       include: { lineItems: true, payments: true },
     });
 
-    await app.prisma.auditLog.create({
-      data: {
-        storeId: STORE_ID,
-        action: "TRANSACTION_CREATE",
-        entity: "Transaction",
-        entityId: created.id,
-        metaJson: JSON.stringify({ transactionNo: created.transactionNo, totalCents: created.totalCents }),
-      },
-    });
+    step = CREATE_TX_STEPS.create_audit_log;
+    try {
+      await app.prisma.auditLog.create({
+        data: {
+          storeId: STORE_ID,
+          action: "TRANSACTION_CREATE",
+          entity: "Transaction",
+          entityId: created.id,
+          metaJson: JSON.stringify({ transactionNo: created.transactionNo, totalCents: created.totalCents }),
+        },
+      });
+    } catch (auditErr) {
+      app.log.warn(
+        { tag: "[createTransaction]", storeId: STORE_ID, transactionId: created.id, transactionNo: created.transactionNo, err: auditErr },
+        "Audit log create failed; transaction already created"
+      );
+    }
 
     return created;
+    } catch (err) {
+      logCreateTransactionError(app.log, { storeId: STORE_ID, step, deviceId }, err);
+      const safeMessage =
+        step === CREATE_TX_STEPS.validate_input
+          ? "Invalid request"
+          : step === CREATE_TX_STEPS.resolve_items
+            ? "Invalid item in cart"
+            : step === CREATE_TX_STEPS.build_line_snapshots
+              ? "Pricing or line build failed"
+              : step === CREATE_TX_STEPS.create_transaction
+                ? "Failed to save transaction"
+                : step === CREATE_TX_STEPS.create_audit_log
+                  ? "Transaction saved but audit log failed"
+                  : "Transaction create failed";
+      reply.code(500);
+      return {
+        code: "TRANSACTION_CREATE_FAILED",
+        step,
+        message: safeMessage,
+      };
+    }
   });
 
-  // Add payment (supports split tender)
+  // Add payment (supports split tender). Payment method: normalize and validate to avoid Prisma enum errors.
+  const VALID_PAYMENT_METHODS = ["CASH", "CARD", "GCASH", "PAYMONGO", "FOODPANDA", "GRABFOOD", "BFCAPP", "TO_BE_DECIDED"] as const;
+  function normalizePaymentMethod(raw: unknown): (typeof VALID_PAYMENT_METHODS)[number] | null {
+    const s = raw != null ? String(raw).trim().toUpperCase() : "";
+    if (s === "GCASH_MANUAL") return "GCASH";
+    return VALID_PAYMENT_METHODS.includes(s as any) ? (s as (typeof VALID_PAYMENT_METHODS)[number]) : null;
+  }
+
   app.post("/pos/transactions/:id/payments", async (req, reply) => {
     const { id } = req.params as { id: string };
-    const body = req.body as { method: any; amountCents?: number; refNo?: string };
+    const body = (req.body ?? {}) as { method?: unknown; amountCents?: number; refNo?: string };
 
     const amountCents = Math.trunc(Number(body?.amountCents ?? NaN));
     if (!Number.isFinite(amountCents) || amountCents <= 0) {
       reply.code(400);
       return { error: "INVALID_AMOUNT" };
     }
-    if (!body?.method) {
+    const method = normalizePaymentMethod(body?.method);
+    if (!method) {
       reply.code(400);
-      return { error: "MISSING_METHOD" };
+      return { error: "MISSING_METHOD", message: "Invalid or missing payment method" };
     }
 
     const transaction = await app.prisma.transaction.findUnique({
@@ -718,7 +825,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     const payment = await app.prisma.transactionPayment.create({
       data: {
         transactionId: transaction.id,
-        method: body.method,
+        method,
         status: "PAID",
         amountCents,
         refNo: body.refNo?.trim() || null,

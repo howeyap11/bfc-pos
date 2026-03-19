@@ -43,8 +43,10 @@ export async function getPrinterConfig(): Promise<PrinterConfig> {
     const raw = await readFile(CONFIG_PATH, "utf8");
     const data = JSON.parse(raw) as Record<string, unknown>;
     return {
-      receiptPrinter: typeof data.receiptPrinter === "string" ? data.receiptPrinter : "",
-      stickerPrinter: typeof data.stickerPrinter === "string" ? data.stickerPrinter : "",
+      receiptPrinter:
+        typeof data.receiptPrinter === "string" ? data.receiptPrinter.trim() : "",
+      stickerPrinter:
+        typeof data.stickerPrinter === "string" ? data.stickerPrinter.trim() : "",
       stickerWidthMm: parsePositiveNumber(data.stickerWidthMm, DEFAULT_STICKER_WIDTH_MM),
       stickerHeightMm: parsePositiveNumber(data.stickerHeightMm, DEFAULT_STICKER_HEIGHT_MM),
     };

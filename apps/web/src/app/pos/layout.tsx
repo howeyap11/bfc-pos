@@ -127,8 +127,8 @@ export default function PosLayout({ children }: { children: React.ReactNode }) {
         )}
       </div>
 
-      {/* Main Content */}
-      <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
+      {/* Main Content — minHeight:0 so nested POS flex + scroll regions can shrink (mini PC / short viewports) */}
+      <div style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative" }}>
         {children}
 
         {/* Left Drawer */}

@@ -8,36 +8,73 @@ import { createRequire } from "module";
 
 const require = createRequire(import.meta.url);
 
+export type PrinterEnumerationCode =
+  | "OK"
+  | "NATIVE_MISSING"
+  | "MODULE_LOAD_FAILED"
+  | "GETPRINTERS_THREW"
+  | "NON_ARRAY";
+
+export type PrinterEnumerationResult = {
+  code: PrinterEnumerationCode;
+  /** Trimmed Windows queue names in enumeration order */
+  printers: string[];
+  detail?: string;
+};
+
+function isNativeModuleMissingError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes("cannot find module '@woovi/node-printer'") ||
+    m.includes("cannot find module \"@woovi/node-printer\"") ||
+    m.includes("cannot resolve module '@woovi/node-printer'") ||
+    m.includes("could not locate the bindings file")
+  );
+}
+
+/**
+ * Enumerate Windows printers via @woovi/node-printer. Does not throw.
+ */
+export function enumerateWindowsPrinters(): PrinterEnumerationResult {
+  let printerModule: { getPrinters: () => unknown };
+  try {
+    printerModule = require("@woovi/node-printer") as { getPrinters: () => unknown };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      code: isNativeModuleMissingError(msg) ? "NATIVE_MISSING" : "MODULE_LOAD_FAILED",
+      printers: [],
+      detail: msg,
+    };
+  }
+
+  let list: unknown;
+  try {
+    list = printerModule.getPrinters();
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { code: "GETPRINTERS_THREW", printers: [], detail: msg };
+  }
+
+  if (!Array.isArray(list)) {
+    return {
+      code: "NON_ARRAY",
+      printers: [],
+      detail: `getPrinters returned ${typeof list}`,
+    };
+  }
+
+  const printers = list
+    .map((p) => (p && typeof (p as { name?: string }).name === "string" ? (p as { name: string }).name.trim() : ""))
+    .filter(Boolean);
+
+  return { code: "OK", printers };
+}
+
 /**
  * Returns the list of available printer names from the OS.
- * No filtering; frontend displays the full list for selection.
- * If the native printer module is missing or fails to load, returns [] so the API does not crash.
+ * If the native printer module is missing or fails, returns [] (backward compatible).
  */
 export function getAvailablePrinters(): string[] {
-  try {
-    const printerModule = require("@woovi/node-printer") as {
-      getPrinters: () => Array<{ name?: string }>;
-    };
-    const list = printerModule.getPrinters();
-    // #region agent log
-    fetch("http://127.0.0.1:7330/ingest/e360f4f2-ab8d-4cc6-b94b-f45235f7b95a", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "e0db05" },
-      body: JSON.stringify({
-        sessionId: "e0db05",
-        location: "printerDiscovery.service.ts:getAvailablePrinters",
-        message: "Driver loaded, getPrinters returned",
-        data: { count: Array.isArray(list) ? list.length : 0, driver: "@woovi/node-printer" },
-        hypothesisId: "H1",
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
-    if (!Array.isArray(list)) return [];
-    return list
-      .map((p) => (p && typeof p.name === "string" ? p.name.trim() : ""))
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
+  return enumerateWindowsPrinters().printers;
 }

@@ -29,21 +29,23 @@ export async function sopRoutes(app: FastifyInstance) {
   // Create completion (with optional photo upload)
   app.post("/sop/completions", async (req, reply) => {
     try {
-      const data = await req.file();
+      const data = await (req as typeof req & { file: () => Promise<any> }).file();
       
       if (!data) {
         reply.code(400);
         return { error: "NO_DATA" };
       }
 
-      // Parse form fields
-      const fields: Record<string, string> = {};
-      
-      // Get fields from multipart data
-      const taskId = data.fields.taskId?.value as string;
-      const templateId = data.fields.templateId?.value as string;
-      const completedBy = data.fields.completedBy?.value as string;
-      const note = data.fields.note?.value as string;
+      // Parse form fields (Multipart can be file or field; only field has .value)
+      const fieldStr = (f: typeof data.fields[string]): string | undefined => {
+        if (f == null) return undefined;
+        const part = Array.isArray(f) ? f[0] : f;
+        return part && "value" in part && part.type === "field" ? String(part.value) : undefined;
+      };
+      const taskId = fieldStr(data.fields.taskId);
+      const templateId = fieldStr(data.fields.templateId);
+      const completedBy = fieldStr(data.fields.completedBy);
+      const note = fieldStr(data.fields.note);
 
       if (!taskId || !templateId) {
         reply.code(400);

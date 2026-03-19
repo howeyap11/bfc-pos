@@ -410,6 +410,54 @@ export async function syncRoutes(app: FastifyInstance) {
     }
   });
 
+  // Delete test transactions (POS Settings) – requires X-Store-Sync-Key + admin PIN. Only deletes isTest = true.
+  app.post("/delete-test-transactions", async (req: FastifyRequest, reply: FastifyReply) => {
+    if (syncSecret) {
+      const key = (req.headers["x-store-sync-key"] as string) || "";
+      if (key !== syncSecret) {
+        reply.code(401);
+        return { error: "UNAUTHORIZED", message: "Invalid or missing X-Store-Sync-Key" };
+      }
+    }
+    const parsed = z.object({ pin: z.string().min(1) }).safeParse(req.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "INVALID_BODY", message: "pin required" };
+    }
+    try {
+      const row = await app.prisma.storeSetting.findUnique({ where: { id: "1" } });
+      if (!row?.adminPinHash) {
+        reply.code(400);
+        return { error: "NO_PIN", message: "Admin PIN not configured" };
+      }
+      const valid = await verifyPassword(parsed.data.pin, row.adminPinHash);
+      if (!valid) {
+        reply.code(401);
+        return { error: "INVALID_PIN", message: "Invalid admin PIN" };
+      }
+      const result = await app.prisma.syncedTransaction.deleteMany({
+        where: { isTest: true },
+      });
+      const deletedCount = result.count;
+      await app.prisma.devActionLog.create({
+        data: {
+          adminId: "sync-api",
+          adminEmail: "sync@pos",
+          actionType: "DELETE_TEST_TRANSACTIONS",
+          scope: "SyncedTransaction where isTest = true (from POS)",
+          affectedCount: deletedCount,
+          result: "SUCCESS",
+          isProduction: process.env.NODE_ENV === "production",
+        },
+      });
+      return { deletedCount };
+    } catch (err) {
+      app.log.error({ err }, "[Sync] Delete test transactions failed");
+      reply.code(500);
+      return { error: "DELETE_FAILED", message: "Failed to delete test transactions" };
+    }
+  });
+
   // --- Device commands (POS polling) - auth via X-Device-Key ---
   async function resolveDeviceFromKey(
     req: FastifyRequest,

@@ -38,6 +38,7 @@ export async function snapResiboRoutes(app: FastifyInstance) {
         invalidRows: 0,
         added: 0,
         skipped: 0,
+        clearedAvailable: 0,
         errors: [],
         message: "No voucher IDs provided",
       };
@@ -55,6 +56,7 @@ export async function snapResiboRoutes(app: FastifyInstance) {
         invalidRows: result.invalidRows,
         added: result.added,
         skipped: result.skipped,
+        clearedAvailable: result.clearedAvailable,
         errors: result.errors,
       };
     } catch (err) {

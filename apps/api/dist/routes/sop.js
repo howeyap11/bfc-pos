@@ -27,13 +27,17 @@ export async function sopRoutes(app) {
                 reply.code(400);
                 return { error: "NO_DATA" };
             }
-            // Parse form fields
-            const fields = {};
-            // Get fields from multipart data
-            const taskId = data.fields.taskId?.value;
-            const templateId = data.fields.templateId?.value;
-            const completedBy = data.fields.completedBy?.value;
-            const note = data.fields.note?.value;
+            // Parse form fields (Multipart can be file or field; only field has .value)
+            const fieldStr = (f) => {
+                if (f == null)
+                    return undefined;
+                const part = Array.isArray(f) ? f[0] : f;
+                return part && "value" in part && part.type === "field" ? String(part.value) : undefined;
+            };
+            const taskId = fieldStr(data.fields.taskId);
+            const templateId = fieldStr(data.fields.templateId);
+            const completedBy = fieldStr(data.fields.completedBy);
+            const note = fieldStr(data.fields.note);
             if (!taskId || !templateId) {
                 reply.code(400);
                 return { error: "MISSING_REQUIRED_FIELDS" };

@@ -151,7 +151,7 @@ export const posOrdersRoutes: FastifyPluginAsync = async (app) => {
           id: li.id,
           qty: li.qty,
           unitPrice: li.unitPrice,
-          lineNote: li.lineNote,
+          lineNote: li.note,
           specialInstructions: li.specialInstructions,
           name: li.name,
           optionsJson: li.optionsJson,

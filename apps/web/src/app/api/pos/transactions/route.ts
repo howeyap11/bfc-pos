@@ -16,9 +16,18 @@ export async function POST(req: Request) {
     const text = await upstream.text();
     
     if (!upstream.ok) {
-      console.error("[API Route] Backend error", {
+      let parsed: { code?: string; step?: string; message?: string } | null = null;
+      try {
+        parsed = JSON.parse(text) as { code?: string; step?: string; message?: string };
+      } catch {
+        parsed = null;
+      }
+      console.error("[createTransaction] Backend error", {
         status: upstream.status,
-        body: text.slice(0, 500),
+        code: parsed?.code ?? "unknown",
+        step: parsed?.step,
+        message: parsed?.message,
+        bodyPreview: text.slice(0, 300),
       });
     }
     
