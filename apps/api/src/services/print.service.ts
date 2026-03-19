@@ -573,10 +573,11 @@ export function buildReceiptEscPos(
   if (snapResiboVouchers && snapResiboVouchers.length > 0) {
     const snapParts: Buffer[] = [];
     for (const v of snapResiboVouchers) {
+      const voucherId = v.voucherId;
       snapParts.push(Buffer.from("SNAPRESIBO" + LF, "utf8"));
       snapParts.push(Buffer.from(v.pricePhp > 0 ? "PHP " + v.pricePhp + LF : "FREE REWARD" + LF, "utf8"));
-      snapParts.push(escPosQrBytes(v.voucherId, 6, 48));
-      snapParts.push(Buffer.from(LF + v.voucherId + LF + LF, "utf8"));
+      snapParts.push(escPosQrBytes(voucherId, 6, 48));
+      snapParts.push(Buffer.from(LF + voucherId + LF + LF, "utf8"));
     }
     buf = Buffer.concat([buf, ...snapParts]);
   }

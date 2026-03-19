@@ -61,6 +61,18 @@ export async function getVouchersForTransaction(
   return rows.map((r) => ({ voucherId: r.voucherId, source: r.source }));
 }
 
+/**
+ * Single source of truth: the one SnapResibo voucher linked to this transaction (if any).
+ * Use this for both QR payload and printed/displayed voucher ID so they never diverge.
+ */
+export async function getSnapResiboVoucherForTransaction(
+  prisma: PrismaClient,
+  transactionId: string
+): Promise<VoucherForTransaction | null> {
+  const all = await getVouchersForTransaction(prisma, transactionId);
+  return all[0] ?? null;
+}
+
 export type AllocateForTransactionOpts = {
   storeId?: string;
   transactionId: string;

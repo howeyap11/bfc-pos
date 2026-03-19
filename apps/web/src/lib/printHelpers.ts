@@ -147,7 +147,11 @@ export function buildReceiptHtml(tx: ReceiptTransaction): string {
   ${headerHtml}
   <div style="text-align:center;margin-bottom:8px"><strong>RECEIPT #${tx.transactionNo}</strong></div>
   <div style="font-size:10px;color:#666;margin-bottom:8px">${new Date(tx.createdAt).toLocaleString()}</div>
-  <table>
+  <table class="receipt-table">
+    <colgroup>
+      <col />
+      <col style="width:84px" />
+    </colgroup>
     ${lines}
   </table>
   <div class="total">Total: ${formatPesos(tx.totalCents)}</div>

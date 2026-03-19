@@ -127,10 +127,6 @@ export async function devRoutes(app: FastifyInstance) {
 
   // POST /admin/dev/delete-test-transactions – ONLY delete SyncedTransaction where isTest = true. Requires password.
   app.post("/dev/delete-test-transactions", async (req: FastifyRequest, reply: FastifyReply) => {
-    if (isProduction()) {
-      reply.code(403);
-      return { error: "FORBIDDEN", message: "Delete test transactions is disabled in production." };
-    }
     const parsed = z.object({ password: z.string().min(1) }).safeParse(req.body);
     if (!parsed.success) {
       reply.code(400);
@@ -158,7 +154,7 @@ export async function devRoutes(app: FastifyInstance) {
         scope: "SyncedTransaction where isTest = true",
         affectedCount: deletedCount,
         result: "SUCCESS",
-        isProduction: false,
+        isProduction: isProduction(),
       },
     });
     return { deletedCount };

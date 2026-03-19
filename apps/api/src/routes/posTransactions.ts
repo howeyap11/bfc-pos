@@ -16,7 +16,7 @@ import { uploadTransactionToCloud } from "../services/transactionSync.service";
 import { printReceiptToDevice, printStickersToDevice, formatTransactionLineLabel } from "../services/print.service";
 import {
   allocateVouchersForTransaction,
-  getVouchersForTransaction,
+  getSnapResiboVoucherForTransaction,
 } from "../services/snapResiboVoucher.service";
 
 const STORE_ID = "store_1";
@@ -1149,13 +1149,12 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
 
     let snapResiboVouchers: Array<{ voucherId: string; pricePhp: number }> = [];
     if (storeConfig?.snapResiboEnabled) {
-      const linked = await getVouchersForTransaction(app.prisma, id);
-      if (linked.length > 0) {
+      const one = await getSnapResiboVoucherForTransaction(app.prisma, id);
+      if (one) {
         const pricePhp = Math.floor((storeConfig.snapResiboPriceCents ?? 0) / 100);
-        snapResiboVouchers = linked.slice(0, 1).map((v) => ({
-          voucherId: v.voucherId,
-          pricePhp: v.source === "PAID_ITEM" ? pricePhp : 0,
-        }));
+        snapResiboVouchers = [
+          { voucherId: one.voucherId, pricePhp: one.source === "PAID_ITEM" ? pricePhp : 0 },
+        ];
       }
     }
 
@@ -1217,14 +1216,11 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         transaction.totalCents >= (storeConfig.snapResiboRewardMinimumCents ?? 0);
       const expectsVoucher = hasPaidSnapResiboLine || qualifiesReward;
 
-      const linked = await getVouchersForTransaction(app.prisma, transaction.id);
-      if (linked.length > 0) {
-        // V1: max one voucher per transaction; use first linked only (reprint must show same voucher)
-        const one = linked.slice(0, 1);
-        vouchersForPrint = one.map((v) => ({
-          voucherId: v.voucherId,
-          pricePhp: v.source === "PAID_ITEM" ? pricePhp : 0,
-        }));
+      const one = await getSnapResiboVoucherForTransaction(app.prisma, transaction.id);
+      if (one) {
+        vouchersForPrint = [
+          { voucherId: one.voucherId, pricePhp: one.source === "PAID_ITEM" ? pricePhp : 0 },
+        ];
       } else if (expectsVoucher) {
         snapResiboError = "NO_VOUCHER_LINKED";
       }
