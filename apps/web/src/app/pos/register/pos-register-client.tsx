@@ -5437,7 +5437,15 @@ function TransactionSuccessPanel({
               });
               const data = await res.json();
               if (!res.ok) throw new Error(data.message || data.error || "Print failed");
-              alert("Receipt sent to printer.");
+              if (data.snapResiboError) {
+                alert(
+                  data.snapResiboError === "NO_AVAILABLE_VOUCHERS"
+                    ? "Receipt printed. SnapResibo: no vouchers available – import in Settings."
+                    : "Receipt printed. SnapResibo voucher could not be allocated."
+                );
+              } else {
+                alert("Receipt sent to printer.");
+              }
             } catch (e: any) {
               alert(e?.message ?? "Print receipt failed");
             }

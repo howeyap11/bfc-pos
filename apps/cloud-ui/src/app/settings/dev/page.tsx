@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import { COLORS } from "@/lib/theme";
 
 const CONFIRM_PHRASE = "CLEAR TEST DATA";
+const DELETE_TEST_PHRASE = "DELETE TEST TRANSACTIONS";
 
 export default function DevSettingsPage() {
   const [devMode, setDevModeState] = useState(false);
@@ -13,6 +14,10 @@ export default function DevSettingsPage() {
   const [password, setPassword] = useState("");
   const [confirmPhrase, setConfirmPhrase] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
+  const [deleteTestModalOpen, setDeleteTestModalOpen] = useState(false);
+  const [deleteTestPassword, setDeleteTestPassword] = useState("");
+  const [deleteTestPhrase, setDeleteTestPhrase] = useState("");
+  const [deleteTestLoading, setDeleteTestLoading] = useState(false);
   const [success, setSuccess] = useState("");
   const [error, setError] = useState("");
 
@@ -62,6 +67,32 @@ export default function DevSettingsPage() {
       setError(body?.message ?? (err instanceof Error ? err.message : "Failed"));
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleDeleteTestTransactions() {
+    setError("");
+    if (deleteTestPassword.trim() === "") {
+      setError("Enter your admin password.");
+      return;
+    }
+    if (deleteTestPhrase.trim().toUpperCase() !== DELETE_TEST_PHRASE) {
+      setError(`Type exactly: ${DELETE_TEST_PHRASE}`);
+      return;
+    }
+    setDeleteTestLoading(true);
+    try {
+      const res = await api.deleteTestTransactions(deleteTestPassword);
+      setSuccess(`Deleted ${res.deletedCount} test transaction(s). Production transactions were not affected.`);
+      setDeleteTestModalOpen(false);
+      setDeleteTestPassword("");
+      setDeleteTestPhrase("");
+      setTimeout(() => setSuccess(""), 5000);
+    } catch (err: unknown) {
+      const body = (err as { body?: { message?: string } })?.body;
+      setError(body?.message ?? (err instanceof Error ? err.message : "Failed"));
+    } finally {
+      setDeleteTestLoading(false);
     }
   }
 
@@ -133,6 +164,90 @@ export default function DevSettingsPage() {
           >
             Clear Admin Cached Transaction Data
           </button>
+
+          <div className="mt-6 border-t pt-6" style={{ borderColor: COLORS.borderLight }}>
+            <h2 className="mb-2 text-sm font-semibold text-white">Test Transactions</h2>
+            <p className="mb-4 text-sm text-white/60">
+              Delete all transactions marked as test (isTest = true). Only affects records created while Dev Mode was ON
+              on the POS. Production transactions are never deleted.
+            </p>
+            <button
+              type="button"
+              onClick={() => { setDeleteTestModalOpen(true); setError(""); setDeleteTestPhrase(""); setDeleteTestPassword(""); }}
+              disabled={!canUseDangerous}
+              className="rounded border border-red-500/50 px-4 py-2 text-sm font-medium text-red-400 hover:bg-red-500/10 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Delete All Test Transactions
+            </button>
+          </div>
+        </div>
+      )}
+
+      {deleteTestModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          onClick={() => !deleteTestLoading && setDeleteTestModalOpen(false)}
+        >
+          <div
+            className="max-w-md rounded-lg border p-6 shadow-xl"
+            style={{ background: COLORS.bgPanel, borderColor: COLORS.borderLight }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="mb-2 text-lg font-semibold text-white">Delete All Test Transactions</h3>
+            <p className="mb-4 text-sm text-amber-200">
+              This will delete ALL transactions marked as test (isTest = true). Production transactions will NOT be
+              affected.
+            </p>
+            <p className="mb-4 text-sm text-white/70">
+              Only records created while Dev Mode was ON on the POS will be removed.
+            </p>
+            <div className="mb-3">
+              <label className="mb-1 block text-sm text-white/80">Admin password</label>
+              <input
+                type="password"
+                value={deleteTestPassword}
+                onChange={(e) => setDeleteTestPassword(e.target.value)}
+                placeholder="Your admin password"
+                className={inputStyle}
+                style={inputBg}
+                autoComplete="current-password"
+              />
+            </div>
+            <div className="mb-4">
+              <label className="mb-1 block text-sm text-white/80">Type to confirm: {DELETE_TEST_PHRASE}</label>
+              <input
+                type="text"
+                value={deleteTestPhrase}
+                onChange={(e) => setDeleteTestPhrase(e.target.value)}
+                placeholder={DELETE_TEST_PHRASE}
+                className={inputStyle}
+                style={inputBg}
+                autoComplete="off"
+              />
+            </div>
+            {!canUseDangerous && (
+              <p className="mb-4 text-sm text-amber-400">This action is disabled in production.</p>
+            )}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={handleDeleteTestTransactions}
+                disabled={!canUseDangerous || deleteTestLoading || deleteTestPassword.trim() === "" || deleteTestPhrase.trim().toUpperCase() !== DELETE_TEST_PHRASE}
+                className="rounded border border-red-500/50 px-4 py-2 text-sm font-medium text-red-400 hover:bg-red-500/10 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {deleteTestLoading ? "…" : "Delete test transactions"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setDeleteTestModalOpen(false)}
+                disabled={deleteTestLoading}
+                className="rounded border px-4 py-2 text-sm text-white/70"
+                style={{ borderColor: COLORS.borderLight }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

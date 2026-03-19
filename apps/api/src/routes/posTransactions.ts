@@ -14,8 +14,14 @@ import { enqueueOutbox } from "../services/outbox.service";
 import { ensureItemForCloudId } from "../services/catalogCache.service";
 import { uploadTransactionToCloud } from "../services/transactionSync.service";
 import { printReceiptToDevice, printStickersToDevice, formatTransactionLineLabel } from "../services/print.service";
+import {
+  allocateOneForPaidItem,
+  allocateOneForReward,
+  type AllocateResult,
+} from "../services/snapResiboVoucher.service";
 
 const STORE_ID = "store_1";
+const SNAPRESIBO_QR_ITEM_ID = "SNAPRESIBO_QR";
 
 function sum(nums: number[]) {
   return nums.reduce((a, b) => a + b, 0);
@@ -191,6 +197,20 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       tableId = table.id;
     }
 
+    // SnapResibo: separate virtual item from regular catalog items
+    const regularItems = body.items.filter((i) => i.itemId !== SNAPRESIBO_QR_ITEM_ID);
+    const snapResiboItems = body.items.filter((i) => i.itemId === SNAPRESIBO_QR_ITEM_ID);
+    const storeConfigForCreate = await app.prisma.storeConfig.findUnique({
+      where: { storeId: STORE_ID },
+      select: { snapResiboEnabled: true, snapResiboPriceCents: true, snapResiboRewardMinimumCents: true },
+    });
+    if (snapResiboItems.length > 0) {
+      if (!storeConfigForCreate?.snapResiboEnabled) {
+        reply.code(400);
+        return { error: "SNAPRESIBO_DISABLED", message: "SnapResibo is disabled in Settings" };
+      }
+    }
+
     // transactionNo: same max+1 style as orderNo (store-scoped)
     const last = await app.prisma.transaction.findFirst({
       where: { storeId: STORE_ID },
@@ -199,9 +219,9 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     });
     const nextNo = (last?.transactionNo ?? 0) + 1;
 
-    // itemId from POS is cloudId (from CloudMenuItem); resolve to Item.id for storage + inventory
-    const cloudIds = [...new Set(body.items.map((i) => i.itemId))];
-    const optionIds = [...new Set(body.items.flatMap((i) => i.optionIds ?? []))];
+    // itemId from POS is cloudId (from CloudMenuItem); resolve to Item.id for storage + inventory (exclude SnapResibo virtual item)
+    const cloudIds = [...new Set(regularItems.map((i) => i.itemId))];
+    const optionIds = [...new Set(regularItems.flatMap((i) => i.optionIds ?? []))];
 
     const resolvedIds: string[] = [];
     for (const cid of cloudIds) {
@@ -402,8 +422,8 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       source = "POS";
     }
 
-    // Build line snapshots + totals (it.itemId is cloudId)
-    const lineSnapshots = body.items.map((it) => {
+    // Build line snapshots + totals (it.itemId is cloudId); only regular items
+    const lineSnapshots = regularItems.map((it) => {
       const dbItem = itemMap.get(it.itemId);
       if (!dbItem) throw new Error(`Invalid itemId: ${it.itemId}`);
 
@@ -577,6 +597,29 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         subCategoryName: subCategoryName ?? undefined,
       };
     });
+
+    // SnapResibo QR lines (virtual item; price from settings)
+    const snapResiboPriceCents = Math.max(0, storeConfigForCreate?.snapResiboPriceCents ?? 0);
+    for (const snap of snapResiboItems) {
+      const qty = Math.max(1, Math.trunc(snap.qty || 1));
+      const lineTotal = snapResiboPriceCents * qty;
+      lineSnapshots.push({
+        itemId: null,
+        name: "SnapResibo QR",
+        qty,
+        unitPrice: snapResiboPriceCents,
+        modifiersCents: 0,
+        lineTotal,
+        note: null,
+        specialInstructions: null,
+        customerName: null,
+        optionsJson: "[]",
+        isDrink: null,
+        serveVessel: null,
+        categoryName: "SnapResibo",
+        subCategoryName: "Generate QR",
+      });
+    }
 
     const subtotalCents = sum(lineSnapshots.map((l) => l.lineTotal));
     // Note: serviceCents is now 0 because surcharges are per-line (already included in lineTotal)
@@ -1042,7 +1085,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     return { ...transaction, lineItems: lineItemsWithCategory };
   });
 
-  // Direct print receipt (local printer, no browser)
+  // Direct print receipt (local printer, no browser). When SnapResibo enabled, allocates vouchers and appends QR(s) to receipt.
   app.post("/pos/transactions/:id/print-receipt", async (req, reply) => {
     const { id } = req.params as { id: string };
     const transaction = await app.prisma.transaction.findUnique({
@@ -1055,7 +1098,13 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     }
     const storeConfig = await app.prisma.storeConfig.findUnique({
       where: { storeId: STORE_ID },
-      select: { businessName: true, address: true },
+      select: {
+        businessName: true,
+        address: true,
+        snapResiboEnabled: true,
+        snapResiboPriceCents: true,
+        snapResiboRewardMinimumCents: true,
+      },
     });
     const receiptHeader =
       storeConfig && (storeConfig.businessName || storeConfig.address)
@@ -1064,18 +1113,61 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
             address: storeConfig.address ?? null,
           }
         : undefined;
-    try {
-      await printReceiptToDevice(
-        {
-          ...transaction,
-          createdAt:
-            transaction.createdAt instanceof Date
-              ? transaction.createdAt.toISOString()
-              : String(transaction.createdAt),
-        },
-        receiptHeader
+
+    const txForPrint = {
+      ...transaction,
+      createdAt:
+        transaction.createdAt instanceof Date
+          ? transaction.createdAt.toISOString()
+          : String(transaction.createdAt),
+    };
+
+    let snapResiboVouchers: AllocateResult[] = [];
+    let snapResiboError: string | null = null;
+
+    if (storeConfig?.snapResiboEnabled) {
+      const pricePhp = Math.floor((storeConfig.snapResiboPriceCents ?? 0) / 100);
+      const hasPaidSnapResiboLine = transaction.lineItems.some(
+        (li) => li.name.trim().toLowerCase() === "snapresibo qr" && li.lineTotal > 0
       );
-      return { ok: true };
+      const qualifiesReward =
+        (storeConfig.snapResiboRewardMinimumCents ?? 0) > 0 &&
+        transaction.totalCents >= storeConfig.snapResiboRewardMinimumCents;
+
+      try {
+        if (hasPaidSnapResiboLine) {
+          const v = await allocateOneForPaidItem(app.prisma, {
+            storeId: STORE_ID,
+            transactionId: transaction.id,
+            receiptNo: transaction.transactionNo,
+            pricePhp,
+          });
+          if (v) snapResiboVouchers.push(v);
+          else snapResiboError = "NO_AVAILABLE_VOUCHERS";
+        }
+        if (qualifiesReward) {
+          const v = await allocateOneForReward(app.prisma, {
+            storeId: STORE_ID,
+            transactionId: transaction.id,
+            receiptNo: transaction.transactionNo,
+          });
+          if (v) snapResiboVouchers.push(v);
+          else if (!snapResiboError) snapResiboError = "NO_AVAILABLE_VOUCHERS";
+        }
+      } catch (e) {
+        app.log.error({ err: e, transactionId: id }, "SnapResibo allocation failed");
+        snapResiboError = "ALLOCATION_FAILED";
+      }
+    }
+
+    const vouchersForPrint = snapResiboVouchers.map((v) => ({
+      voucherId: v!.voucherId,
+      pricePhp: v!.pricePhp,
+    }));
+
+    try {
+      await printReceiptToDevice(txForPrint, receiptHeader, vouchersForPrint.length > 0 ? vouchersForPrint : undefined);
+      return snapResiboError ? { ok: true, snapResiboError } : { ok: true };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err ?? "Receipt print failed");
       app.log.error({ err, transactionId: id }, "Print receipt failed");

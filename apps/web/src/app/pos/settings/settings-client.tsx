@@ -14,6 +14,10 @@ type StoreConfig = {
   splitPaymentEnabled: boolean;
   paymentMethodOrder: PaymentMethod[] | null;
   stickerPrintCategoryIds?: string[];
+  devMode?: boolean;
+  snapResiboEnabled?: boolean;
+  snapResiboPriceCents?: number | null;
+  snapResiboRewardMinimumCents?: number | null;
 };
 
 type DeviceStatus = {
@@ -61,6 +65,16 @@ export default function SettingsClient() {
   const [deviceKeyInput, setDeviceKeyInput] = useState("");
   const [deviceKeySaving, setDeviceKeySaving] = useState(false);
   const [deviceKeyMessage, setDeviceKeyMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [devMode, setDevMode] = useState(false);
+  const [devModeSaving, setDevModeSaving] = useState(false);
+  const [snapResiboEnabled, setSnapResiboEnabled] = useState(false);
+  const [snapResiboPriceCents, setSnapResiboPriceCents] = useState<number | "">(0);
+  const [snapResiboRewardMinimumCents, setSnapResiboRewardMinimumCents] = useState<number | "">(0);
+  const [snapResiboSaving, setSnapResiboSaving] = useState(false);
+  const [snapResiboImporting, setSnapResiboImporting] = useState(false);
+  const [snapResiboImportResult, setSnapResiboImportResult] = useState<string | null>(null);
+  const [snapResiboAvailableCount, setSnapResiboAvailableCount] = useState<number | null>(null);
+  const [publicSnapResiboEnabled, setPublicSnapResiboEnabled] = useState<boolean | null>(null);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -122,6 +136,24 @@ export default function SettingsClient() {
   }, []);
 
   useEffect(() => {
+    fetch("/api/store-config", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => setPublicSnapResiboEnabled(!!d?.snapResiboEnabled))
+      .catch(() => setPublicSnapResiboEnabled(null));
+  }, []);
+
+  const loadSnapResiboCount = useCallback(async () => {
+    try {
+      const res = await fetch("/api/snapresibo/vouchers/count", { cache: "no-store" });
+      const data = await res.json();
+      if (res.ok && typeof data.count === "number") setSnapResiboAvailableCount(data.count);
+      else setSnapResiboAvailableCount(null);
+    } catch {
+      setSnapResiboAvailableCount(null);
+    }
+  }, []);
+
+  useEffect(() => {
     if (isAuthenticated) {
       loadConfig();
       loadStatus();
@@ -132,6 +164,10 @@ export default function SettingsClient() {
       return () => clearInterval(t);
     }
   }, [isAuthenticated, loadStatus, loadPrinters, loadCategories, loadDeviceKeyConfig]);
+
+  useEffect(() => {
+    if (isAuthenticated && config?.snapResiboEnabled) loadSnapResiboCount();
+  }, [isAuthenticated, config?.snapResiboEnabled, loadSnapResiboCount]);
 
   useEffect(() => {
     if (status?.commandState === "updating") setOverlay("updating");
@@ -155,6 +191,10 @@ export default function SettingsClient() {
       setEnabledMethods(data.enabledPaymentMethods || []);
       setSplitEnabled(data.splitPaymentEnabled ?? true);
       setStickerPrintCategoryIds(Array.isArray(data.stickerPrintCategoryIds) ? data.stickerPrintCategoryIds : []);
+      setDevMode(!!data.devMode);
+      setSnapResiboEnabled(!!data.snapResiboEnabled);
+      setSnapResiboPriceCents(data.snapResiboPriceCents ?? "");
+      setSnapResiboRewardMinimumCents(data.snapResiboRewardMinimumCents ?? "");
     } catch (e: any) {
       setError(e.message || String(e));
     } finally {
@@ -383,6 +423,10 @@ export default function SettingsClient() {
           splitPaymentEnabled: splitEnabled,
           paymentMethodOrder: null,
           stickerPrintCategoryIds: stickerPrintCategoryIds.length > 0 ? stickerPrintCategoryIds : null,
+          devMode: config?.devMode ?? false,
+          snapResiboEnabled,
+          snapResiboPriceCents: snapResiboPriceCents === "" ? null : Number(snapResiboPriceCents),
+          snapResiboRewardMinimumCents: snapResiboRewardMinimumCents === "" ? null : Number(snapResiboRewardMinimumCents),
         }),
       });
 
@@ -394,6 +438,9 @@ export default function SettingsClient() {
 
       setConfig(data);
       setStickerPrintCategoryIds(Array.isArray(data.stickerPrintCategoryIds) ? data.stickerPrintCategoryIds : []);
+      setSnapResiboEnabled(!!data.snapResiboEnabled);
+      setSnapResiboPriceCents(data.snapResiboPriceCents ?? "");
+      setSnapResiboRewardMinimumCents(data.snapResiboRewardMinimumCents ?? "");
       setSuccess("Settings saved successfully!");
       setTimeout(() => setSuccess(null), 3000);
     } catch (e: any) {
@@ -418,6 +465,69 @@ export default function SettingsClient() {
       setStickerPrintCategoryIds(stickerPrintCategoryIds.filter((id) => id !== categoryId));
     } else {
       setStickerPrintCategoryIds([...stickerPrintCategoryIds, categoryId]);
+    }
+  }
+
+  function parseCsvForVoucherIds(text: string): string[] {
+    const VCHR_PREFIX = "VCHR_";
+    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    let start = 0;
+    if (lines.length > 0 && lines[0].toLowerCase().includes("voucher")) start = 1;
+    const ids: string[] = [];
+    for (let i = start; i < lines.length; i++) {
+      const id = lines[i].split(",")[0].trim();
+      if (id.startsWith(VCHR_PREFIX) && id.length >= 10) ids.push(id);
+    }
+    return ids;
+  }
+
+  async function handleSnapResiboImport(file: File) {
+    setSnapResiboImportResult(null);
+    setSnapResiboImporting(true);
+    try {
+      const text = await file.text();
+      const voucherIds = parseCsvForVoucherIds(text);
+      if (voucherIds.length === 0) {
+        setSnapResiboImportResult("No valid voucher IDs (VCHR_...) found in file.");
+        return;
+      }
+      const res = await fetch("/api/snapresibo/vouchers/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ voucherIds }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setSnapResiboImportResult(data?.message || data?.error || "Import failed");
+        return;
+      }
+      setSnapResiboImportResult(`Imported: ${data.added} added, ${data.skipped} skipped.`);
+      loadSnapResiboCount();
+    } catch (e) {
+      setSnapResiboImportResult(e instanceof Error ? e.message : "Import failed");
+    } finally {
+      setSnapResiboImporting(false);
+    }
+  }
+
+  async function handleDevModeToggle() {
+    setDevModeSaving(true);
+    setError(null);
+    try {
+      const headers = await getStaffHeaders();
+      const res = await fetch("/api/store-config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify({ devMode: !devMode }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to save");
+      setDevMode(!!data.devMode);
+      if (config) setConfig({ ...config, devMode: !!data.devMode });
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to update Dev Mode");
+    } finally {
+      setDevModeSaving(false);
     }
   }
 
@@ -476,6 +586,40 @@ export default function SettingsClient() {
             {actionLoading === "sync" ? "Syncing…" : "Force catalog sync"}
           </button>
         </div>
+
+        {publicSnapResiboEnabled === true && (
+          <div
+            style={{
+              background: COLORS.bgDark,
+              padding: 24,
+              borderRadius: 12,
+              border: `1px solid ${COLORS.borderLight}`,
+              minWidth: 350,
+            }}
+          >
+            <h2 style={{ marginTop: 0, marginBottom: 8, fontSize: 16, fontWeight: 600, color: COLORS.textPrimary }}>
+              SnapResibo – Import Vouchers
+            </h2>
+            <p style={{ margin: "0 0 16px 0", color: COLORS.textSecondary, fontSize: 14 }}>
+              Upload a CSV file with voucher IDs (one per line or first column). IDs must start with VCHR_ and be at least 10 characters.
+            </p>
+            <input
+              type="file"
+              accept=".csv,.txt"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) handleSnapResiboImport(f);
+                e.target.value = "";
+              }}
+              disabled={snapResiboImporting}
+              style={{ marginBottom: 12, fontSize: 14 }}
+            />
+            {snapResiboImporting && <p style={{ color: COLORS.textSecondary, fontSize: 14 }}>Importing…</p>}
+            {snapResiboImportResult && (
+              <p style={{ fontSize: 14, color: COLORS.primary }}>{snapResiboImportResult}</p>
+            )}
+          </div>
+        )}
 
         <div
           style={{
@@ -627,6 +771,22 @@ export default function SettingsClient() {
           </div>
         )}
 
+        {devMode && (
+          <div
+            style={{
+              padding: 12,
+              marginBottom: 16,
+              background: "rgba(234, 179, 8, 0.2)",
+              border: "1px solid #eab308",
+              borderRadius: 6,
+              color: "#fef08a",
+              fontWeight: 600,
+            }}
+          >
+            TEST MODE ACTIVE – Transactions will be marked as test and can be deleted later from Cloud Admin.
+          </div>
+        )}
+
         {success && (
           <div
             style={{
@@ -641,6 +801,122 @@ export default function SettingsClient() {
             {success}
           </div>
         )}
+
+        <div
+          style={{
+            background: COLORS.bgPanel,
+            borderRadius: 8,
+            padding: 24,
+            marginBottom: 24,
+            border: `1px solid ${COLORS.borderLight}`,
+          }}
+        >
+          <h2 style={{ margin: "0 0 8px 0", fontSize: 18, fontWeight: 600, color: COLORS.textPrimary }}>
+            SnapResibo
+          </h2>
+          <p style={{ color: COLORS.textSecondary, marginBottom: 16, fontSize: 14 }}>
+            When enabled, a SnapResibo category appears in the POS (rightmost). Customers can buy a SnapResibo QR or get one free when the order reaches the reward minimum. Save with the main &quot;Save Changes&quot; button below.
+          </p>
+          <label style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={snapResiboEnabled}
+              onChange={(e) => setSnapResiboEnabled(e.target.checked)}
+              style={{ width: 20, height: 20, cursor: "pointer" }}
+            />
+            <span style={{ color: COLORS.textPrimary, fontWeight: 500 }}>Enable SnapResibo</span>
+          </label>
+          {snapResiboEnabled && (
+            <>
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ display: "block", marginBottom: 4, fontSize: 14, color: COLORS.textSecondary }}>
+                  SnapResibo price (PHP)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={snapResiboPriceCents === "" ? "" : Number(snapResiboPriceCents) / 100}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === "") setSnapResiboPriceCents("");
+                    else setSnapResiboPriceCents(Math.round(parseFloat(v) * 100) || 0);
+                  }}
+                  style={{
+                    width: "100%",
+                    maxWidth: 120,
+                    padding: 10,
+                    fontSize: 14,
+                    border: `1px solid ${COLORS.borderLight}`,
+                    borderRadius: 6,
+                    background: COLORS.bgDark,
+                    color: COLORS.textPrimary,
+                  }}
+                />
+              </div>
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ display: "block", marginBottom: 4, fontSize: 14, color: COLORS.textSecondary }}>
+                  Reward minimum amount (PHP) – order total at or above this gets one free SnapResibo voucher
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={snapResiboRewardMinimumCents === "" ? "" : Number(snapResiboRewardMinimumCents) / 100}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === "") setSnapResiboRewardMinimumCents("");
+                    else setSnapResiboRewardMinimumCents(Math.round(parseFloat(v) * 100) || 0);
+                  }}
+                  style={{
+                    width: "100%",
+                    maxWidth: 120,
+                    padding: 10,
+                    fontSize: 14,
+                    border: `1px solid ${COLORS.borderLight}`,
+                    borderRadius: 6,
+                    background: COLORS.bgDark,
+                    color: COLORS.textPrimary,
+                  }}
+                />
+              </div>
+              {snapResiboAvailableCount !== null && (
+                <p style={{ fontSize: 14, color: COLORS.textSecondary, marginBottom: 8 }}>
+                  Available vouchers: {snapResiboAvailableCount}. Use &quot;Import Vouchers&quot; (above) to add more.
+                </p>
+              )}
+            </>
+          )}
+        </div>
+
+        <div
+          style={{
+            background: COLORS.bgPanel,
+            borderRadius: 8,
+            padding: 24,
+            marginBottom: 24,
+            border: `1px solid ${COLORS.borderLight}`,
+          }}
+        >
+          <h2 style={{ margin: "0 0 8px 0", fontSize: 18, fontWeight: 600, color: COLORS.textPrimary }}>
+            Dev Mode
+          </h2>
+          <p style={{ color: COLORS.textSecondary, marginBottom: 16, fontSize: 14 }}>
+            When ON, all new transactions are marked as test. You can delete them later from Cloud Admin → Settings → Dev.
+          </p>
+          <label style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={devMode}
+              onChange={handleDevModeToggle}
+              disabled={devModeSaving}
+              style={{ width: 20, height: 20, cursor: devModeSaving ? "not-allowed" : "pointer" }}
+            />
+            <span style={{ color: COLORS.textPrimary, fontWeight: 500 }}>
+              {devModeSaving ? "Saving…" : devMode ? "Dev Mode ON" : "Dev Mode OFF"}
+            </span>
+          </label>
+        </div>
 
         <div
           style={{

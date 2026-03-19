@@ -28,6 +28,7 @@ const transactionImportSchema = z.object({
   createdAt: z.string(), // ISO date
   voidedAt: z.string().nullable().optional(),
   voidReason: z.string().nullable().optional(),
+  isTest: z.boolean().optional().default(false),
 });
 
 export async function syncRoutes(app: FastifyInstance) {
@@ -371,6 +372,7 @@ export async function syncRoutes(app: FastifyInstance) {
           createdAt,
           voidedAt,
           voidReason: d.voidReason ?? null,
+          isTest: d.isTest ?? false,
         },
       });
       app.log.info({ id: created.id, transactionNo: d.transactionNo }, "[Sync] Transaction imported");

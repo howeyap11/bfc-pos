@@ -37,6 +37,7 @@ import { adminSyncRoutes } from "./routes/admin/adminSync";
 import { deviceCommandsRoutes } from "./routes/deviceCommands.js";
 import { storeConfigRoutes } from "./routes/storeConfig";
 import { systemPrintersRoutes } from "./routes/systemPrinters";
+import { snapResiboRoutes } from "./routes/snapResibo";
 import { ensureItemForCloudId } from "./services/catalogCache.service";
 import { syncCatalogFromCloud } from "./services/syncCatalog.service.js";
 import { startSyncScheduler, runTransactionSyncFlush } from "./services/syncScheduler.js";
@@ -69,6 +70,7 @@ await app.register(adminSyncRoutes);
 await app.register(deviceCommandsRoutes);
 await app.register(storeConfigRoutes);
 await app.register(systemPrintersRoutes);
+await app.register(snapResiboRoutes);
 
 // Public routes (MUST be before listen)
 app.get("/health", async () => ({ ok: true }));
@@ -133,11 +135,15 @@ app.get("/tables", async () => {
   });
 });
 
+// SnapResibo: virtual category/item id (not in CloudCategory/CloudMenuItem)
+const SNAPRESIBO_CATEGORY_ID = "SNAPRESIBO";
+const SNAPRESIBO_QR_ITEM_ID = "SNAPRESIBO_QR";
+
 // Catalog from local cache - offline-first, no cloud dependency
 // Returns Category[] with items, using CloudCategory, CloudSubCategory, CloudMenuItem
 app.get("/menu", async (req, reply) => {
   try {
-    const [categories, subCategories, items] = await Promise.all([
+    const [categories, subCategories, items, storeConfig] = await Promise.all([
       app.prisma.cloudCategory.findMany({
         where: { storeId: "store_1" },
         orderBy: { sortOrder: "asc" },
@@ -150,9 +156,10 @@ app.get("/menu", async (req, reply) => {
         where: { storeId: "store_1", isActive: true, deletedAt: null },
         orderBy: { name: "asc" },
       }),
+      app.prisma.storeConfig.findUnique({ where: { storeId: "store_1" } }),
     ]);
     const subCategoryMap = new Map((subCategories ?? []).map((s) => [s.cloudId, s.name]));
-    const result = (categories ?? []).map((cat) => ({
+    let result = (categories ?? []).map((cat) => ({
       id: cat.cloudId,
       name: cat.name,
       items: (items ?? [])
@@ -165,7 +172,7 @@ app.get("/menu", async (req, reply) => {
         imageUrl: i.imageUrl,
         series: i.subCategoryCloudId ? subCategoryMap.get(i.subCategoryCloudId) ?? "Other" : "Other",
         hasSizes: i.hasSizes ?? false,
-        })),
+      })),
     }));
     const uncategorized = (items ?? []).filter((i) => !i.categoryCloudId);
     if (uncategorized.length > 0) {
@@ -184,7 +191,24 @@ app.get("/menu", async (req, reply) => {
       });
     }
     if (result.length === 0 && (items ?? []).length > 0) {
-      return [{ id: "menu", name: "Menu", items: (items ?? []).map((i) => ({ id: i.cloudId, name: i.name, basePrice: i.priceCents, description: null, imageUrl: i.imageUrl ?? null, series: "Other", hasSizes: i.hasSizes ?? false })) }];
+      result = [{ id: "menu", name: "Menu", items: (items ?? []).map((i) => ({ id: i.cloudId, name: i.name, basePrice: i.priceCents, description: null, imageUrl: i.imageUrl ?? null, series: "Other", hasSizes: i.hasSizes ?? false })) }];
+    }
+    // SnapResibo: append virtual category as last (rightmost) when enabled
+    if (storeConfig?.snapResiboEnabled) {
+      const snapPrice = Math.max(0, storeConfig.snapResiboPriceCents ?? 0);
+      result = [...result, {
+        id: SNAPRESIBO_CATEGORY_ID,
+        name: "SnapResibo",
+        items: [{
+          id: SNAPRESIBO_QR_ITEM_ID,
+          name: "SnapResibo QR",
+          basePrice: snapPrice,
+          description: null,
+          imageUrl: null,
+          series: "Generate QR",
+          hasSizes: false,
+        }],
+      }];
     }
     return result;
   } catch (err) {
@@ -226,8 +250,46 @@ app.get("/shot-pricing-rules", async () => {
   }));
 });
 
-app.get("/items/:id", async (req) => {
+app.get("/items/:id", async (req, reply) => {
   const { id } = req.params as { id: string };
+
+  // SnapResibo: virtual item has no CloudMenuItem; return minimal detail so POS can add to cart
+  if (id === SNAPRESIBO_QR_ITEM_ID) {
+    const storeConfig = await app.prisma.storeConfig.findUnique({
+      where: { storeId: "store_1" },
+      select: { snapResiboEnabled: true, snapResiboPriceCents: true },
+    });
+    if (!storeConfig?.snapResiboEnabled) {
+      return reply.code(404).send({ error: "NOT_FOUND", message: "SnapResibo is disabled" });
+    }
+    const priceCents = Math.max(0, storeConfig.snapResiboPriceCents ?? 0);
+    return {
+      id: SNAPRESIBO_QR_ITEM_ID,
+      name: "SnapResibo QR",
+      basePrice: priceCents,
+      description: null,
+      imageUrl: null,
+      isDrink: false,
+      serveVessel: null,
+      defaultSizeOptionId: null,
+      defaultMilk: undefined,
+      defaultSubstituteCloudId: null,
+      substitutes: undefined,
+      addOns: undefined,
+      addOnGroups: undefined,
+      supportsShots: false,
+      defaultShots: 0,
+      defaultShots12oz: 0,
+      defaultShots16oz: 0,
+      includedShotsBySizeAndTemp: undefined,
+      shotPricingRule: undefined,
+      itemOptionGroups: [],
+      hasSizes: false,
+      sizesByMode: undefined,
+      drinkModeDefaults: undefined,
+      recipeLines: undefined,
+    };
+  }
 
   // id is cloudId from menu; also support legacy Item.id for backward compat
   const cloud = await app.prisma.cloudMenuItem.findUnique({

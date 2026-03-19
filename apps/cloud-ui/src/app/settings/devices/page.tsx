@@ -263,9 +263,8 @@ export default function DevicesPage() {
                   <button
                     type="button"
                     onClick={() => setResetCacheModal({ deviceId: d.id, name: d.name })}
-                    disabled={!canUseDangerous}
-                    className="rounded border border-amber-500/50 px-2 py-1 text-xs text-amber-400 hover:bg-amber-500/10 disabled:opacity-50 disabled:cursor-not-allowed"
-                    title={!canUseDangerous ? "Dangerous dev tools are disabled in production." : "Force device to re-sync; does not delete any transactions."}
+                    className="rounded border border-amber-500/50 px-2 py-1 text-xs text-amber-400 hover:bg-amber-500/10"
+                    title="Force device to re-sync; does not delete any transactions."
                   >
                     Reset Device Cache
                   </button>
@@ -317,9 +316,17 @@ export default function DevicesPage() {
             </ul>
             <p className="mb-4 text-sm text-white/80">This will NOT:</p>
             <ul className="mb-4 list-inside list-disc text-sm text-white/70">
-              <li>Delete any live production transactions</li>
+              <li>Delete any transactions (test or live)</li>
               <li>Remove fiscal/BIR-relevant sales history</li>
             </ul>
+            <p className="mb-4 text-sm text-amber-200/90">
+              These buttons do not delete any transaction data. They only clear cache/sync state or force re-sync.
+            </p>
+            {!canUseDangerous && (
+              <p className="mb-4 text-sm text-amber-400">
+                This action is disabled in production. It is only available in non-production environments.
+              </p>
+            )}
             <div className="mb-4">
               <label className="mb-1 block text-sm text-white/80">Type to confirm: {RESET_CACHE_PHRASE}</label>
               <input
@@ -336,8 +343,8 @@ export default function DevicesPage() {
               <button
                 type="button"
                 onClick={handleResetDeviceCache}
-                disabled={resetCacheLoading || resetConfirmPhrase.trim().toUpperCase() !== RESET_CACHE_PHRASE}
-                className="rounded border border-amber-500/50 px-4 py-2 text-sm font-medium text-amber-400 hover:bg-amber-500/10 disabled:opacity-50"
+                disabled={!canUseDangerous || resetCacheLoading || resetConfirmPhrase.trim().toUpperCase() !== RESET_CACHE_PHRASE}
+                className="rounded border border-amber-500/50 px-4 py-2 text-sm font-medium text-amber-400 hover:bg-amber-500/10 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {resetCacheLoading ? "…" : "Reset Device Cache"}
               </button>

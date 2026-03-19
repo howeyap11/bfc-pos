@@ -32,6 +32,7 @@ model Store {
   sopTemplates           SopTemplate[]
   staff                  Staff[]
   storeConfig            StoreConfig?
+  snapResiboVouchers     SnapResiboVoucher[]
   tabs                   Tab[]
   tables                 Table[]
   transactions           Transaction[]
@@ -47,9 +48,31 @@ model StoreConfig {
   stickerPrintCategoryIds String?  // JSON array of category cloud ids; when set, only lines in these categories print stickers
   businessName            String?  // Receipt header; shown at top of receipt
   address                 String?  // Receipt header; each comma becomes a new line
+  devMode                 Boolean  @default(false) // When true, synced transactions are marked isTest (demo cleanup)
+  snapResiboEnabled       Boolean  @default(false)
+  snapResiboPriceCents    Int?     // Price in centavos for paid SnapResibo QR item
+  snapResiboRewardMinimumCents Int? // Order total (centavos) above which one free SnapResibo voucher is issued
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
   store                   Store    @relation(fields: [storeId], references: [id])
+}
+
+model SnapResiboVoucher {
+  id             String    @id @default(cuid())
+  storeId        String    @default("store_1")
+  voucherId      String    // e.g. VCHR_xxxxx from import or generated
+  status         String    @default("AVAILABLE") // AVAILABLE | ISSUED | USED
+  source         String?   // IMPORT | PAID_ITEM | REWARD
+  transactionId  String?
+  receiptNo      Int?      // transactionNo when issued
+  createdAt      DateTime  @default(now())
+  issuedAt       DateTime?
+  usedAt        DateTime?
+  store          Store     @relation(fields: [storeId], references: [id])
+
+  @@unique([storeId, voucherId])
+  @@index([storeId])
+  @@index([storeId, status])
 }
 
 model Staff {

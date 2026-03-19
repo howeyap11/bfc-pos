@@ -1,24 +1,11 @@
 /**
- * Store config proxy for Cloud Admin (Settings > Business Details).
- * When POS_BACKEND_URL is set, GET/PUT proxy to the POS backend so business name and address
- * are stored in the same StoreConfig the POS uses for receipts.
+ * Settings > Business Details. Stored in cloud-api DB like other settings (e.g. menu settings).
+ * GET/PUT require JWT. No proxy, no POS_BACKEND_URL.
  */
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 
-const DEFAULT_CONFIG = {
-  storeId: "store_1",
-  businessName: null as string | null,
-  address: null as string | null,
-  enabledPaymentMethods: ["CASH"],
-  splitPaymentEnabled: true,
-  paymentMethodOrder: null,
-  stickerPrintCategoryIds: [] as string[],
-};
-
-function getPosBackendUrl(): string | null {
-  const url = process.env.POS_BACKEND_URL;
-  return typeof url === "string" && url.trim().length > 0 ? url.trim().replace(/\/$/, "") : null;
-}
+const STORE_ID = "store_1";
+const BUSINESS_DETAILS_ID = "1";
 
 async function requireJwt(req: FastifyRequest, reply: FastifyReply) {
   try {
@@ -29,46 +16,47 @@ async function requireJwt(req: FastifyRequest, reply: FastifyReply) {
 }
 
 export async function storeConfigRoutes(app: FastifyInstance) {
-  const base = getPosBackendUrl();
-  const adminKey = process.env.STORE_CONFIG_ADMIN_KEY ?? "";
-
-  app.get("/store-config", { preHandler: requireJwt }, async (req, reply) => {
-    if (!base) {
-      return reply.send(DEFAULT_CONFIG);
-    }
-    try {
-      const res = await fetch(`${base}/store-config`, { method: "GET", cache: "no-store" });
-      const data = await res.json();
-      if (!res.ok) return reply.code(res.status).send(data);
-      return reply.send(data);
-    } catch (err) {
-      app.log.warn({ err }, "[store-config] GET proxy failed");
-      return reply.code(502).send({ error: "PROXY_FAILED", message: "Could not reach POS backend" });
-    }
+  app.get("/store-config", { preHandler: requireJwt }, async (_req, reply) => {
+    const row = await app.prisma.businessDetails.findUnique({
+      where: { id: BUSINESS_DETAILS_ID },
+    });
+    return reply.send({
+      storeId: STORE_ID,
+      businessName: row?.businessName ?? null,
+      address: row?.address ?? null,
+      enabledPaymentMethods: ["CASH"],
+      splitPaymentEnabled: true,
+      paymentMethodOrder: null,
+      stickerPrintCategoryIds: [] as string[],
+    });
   });
 
   app.put("/store-config", { preHandler: requireJwt }, async (req, reply) => {
-    if (!base) {
-      return reply.code(503).send({
-        error: "POS_BACKEND_NOT_CONFIGURED",
-        message: "Set POS_BACKEND_URL and STORE_CONFIG_ADMIN_KEY to save business details from Cloud Admin.",
-      });
-    }
-    const body = req.body as Record<string, unknown>;
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (adminKey) headers["x-store-config-admin-key"] = adminKey;
-    try {
-      const res = await fetch(`${base}/store-config`, {
-        method: "PUT",
-        headers,
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (!res.ok) return reply.code(res.status).send(data);
-      return reply.send(data);
-    } catch (err) {
-      app.log.warn({ err }, "[store-config] PUT proxy failed");
-      return reply.code(502).send({ error: "PROXY_FAILED", message: "Could not reach POS backend" });
-    }
+    const body = req.body as { businessName?: string | null; address?: string | null };
+    const businessName = body.businessName != null ? (String(body.businessName).trim() || null) : undefined;
+    const address = body.address != null ? (String(body.address).trim() || null) : undefined;
+
+    const row = await app.prisma.businessDetails.upsert({
+      where: { id: BUSINESS_DETAILS_ID },
+      update: {
+        ...(businessName !== undefined && { businessName }),
+        ...(address !== undefined && { address }),
+      },
+      create: {
+        id: BUSINESS_DETAILS_ID,
+        businessName: businessName ?? null,
+        address: address ?? null,
+      },
+    });
+
+    return reply.send({
+      storeId: STORE_ID,
+      businessName: row.businessName ?? null,
+      address: row.address ?? null,
+      enabledPaymentMethods: ["CASH"],
+      splitPaymentEnabled: true,
+      paymentMethodOrder: null,
+      stickerPrintCategoryIds: [] as string[],
+    });
   });
 }

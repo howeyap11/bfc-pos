@@ -42,6 +42,12 @@ export async function uploadTransactionToCloud(
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (STORE_SYNC_SECRET) headers["X-Store-Sync-Key"] = STORE_SYNC_SECRET;
 
+  const config = await prisma.storeConfig.findUnique({
+    where: { storeId: tx.storeId },
+    select: { devMode: true },
+  }).catch(() => null);
+  const isTest = config?.devMode ?? false;
+
   const payload = {
     storeId: tx.storeId,
     sourceTransactionId: tx.id,
@@ -59,6 +65,7 @@ export async function uploadTransactionToCloud(
     createdAt: tx.createdAt.toISOString(),
     voidedAt: tx.voidedAt?.toISOString() ?? null,
     voidReason: tx.voidReason ?? null,
+    isTest,
   };
 
   try {

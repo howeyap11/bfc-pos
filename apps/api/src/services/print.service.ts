@@ -48,6 +48,24 @@ const INIT = ESC + "@";
 const LF = "\x0a";
 const FULL_CUT = GS + "V\x00";
 
+/** Raw ESC/POS QR code bytes (model 2). moduleSize 1..16, ecLevel 48(L)|49(M)|50(Q)|51(H). */
+function escPosQrBytes(data: string, moduleSize = 6, ecLevel = 48): Buffer {
+  const store = Buffer.from(data, "utf8");
+  const bytes: number[] = [];
+  const ms = Math.max(1, Math.min(16, moduleSize));
+  const ecl = Math.max(48, Math.min(51, ecLevel));
+  bytes.push(0x1d, 0x28, 0x6b, 0x04, 0x00, 0x31, 0x41, 0x32, 0x00);
+  bytes.push(0x1d, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x43, ms);
+  bytes.push(0x1d, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x45, ecl);
+  const len = store.length + 3;
+  const pL = len & 0xff;
+  const pH = (len >> 8) & 0xff;
+  bytes.push(0x1d, 0x28, 0x6b, pL, pH, 0x31, 0x50, 0x30);
+  for (let i = 0; i < store.length; i++) bytes.push(store[i]);
+  bytes.push(0x1d, 0x28, 0x6b, 0x03, 0x00, 0x31, 0x51, 0x30);
+  return Buffer.from(bytes);
+}
+
 function getPrinterName(value: string | undefined): string | null {
   if (!value || !value.trim()) return null;
   return value.trim();
@@ -486,7 +504,17 @@ export type ReceiptHeaderOptions = {
   address?: string | null;
 };
 
-export function buildReceiptEscPos(tx: TransactionForPrint, header?: ReceiptHeaderOptions | null): Buffer {
+/** SnapResibo voucher to print on receipt (QR + label). */
+export type SnapResiboVoucherForPrint = {
+  voucherId: string;
+  pricePhp: number; // 0 for free reward
+};
+
+export function buildReceiptEscPos(
+  tx: TransactionForPrint,
+  header?: ReceiptHeaderOptions | null,
+  snapResiboVouchers?: SnapResiboVoucherForPrint[] | null
+): Buffer {
   const paymentMethod = tx.payments[0]?.method ?? "CASH";
   const lines: string[] = [];
 
@@ -540,8 +568,20 @@ export function buildReceiptEscPos(tx: TransactionForPrint, header?: ReceiptHead
   lines.push("");
   lines.push("");
 
-  const text = lines.join(LF) + LF;
-  const buf = Buffer.from(INIT + text + LF + LF + FULL_CUT, "utf8");
+  let buf = Buffer.from(INIT + lines.join(LF) + LF + LF, "utf8");
+
+  if (snapResiboVouchers && snapResiboVouchers.length > 0) {
+    const snapParts: Buffer[] = [];
+    for (const v of snapResiboVouchers) {
+      snapParts.push(Buffer.from("SNAPRESIBO" + LF, "utf8"));
+      snapParts.push(Buffer.from(v.pricePhp > 0 ? "PHP " + v.pricePhp + LF : "FREE REWARD" + LF, "utf8"));
+      snapParts.push(escPosQrBytes(v.voucherId, 6, 48));
+      snapParts.push(Buffer.from(LF + v.voucherId + LF + LF, "utf8"));
+    }
+    buf = Buffer.concat([buf, ...snapParts]);
+  }
+
+  buf = Buffer.concat([buf, Buffer.from(FULL_CUT, "utf8")]);
   return buf;
 }
 
@@ -698,12 +738,13 @@ export function buildTestStickerTspl(
 
 export async function printReceiptToDevice(
   tx: TransactionForPrint,
-  header?: ReceiptHeaderOptions | null
+  header?: ReceiptHeaderOptions | null,
+  snapResiboVouchers?: SnapResiboVoucherForPrint[] | null
 ): Promise<void> {
   const config = await getPrinterConfig();
   const name = getPrinterName(config.receiptPrinter);
   if (!name) throw new Error("Printer not configured");
-  const data = buildReceiptEscPos(tx, header);
+  const data = buildReceiptEscPos(tx, header, snapResiboVouchers);
   await sendRawToWindowsPrinter(name, data);
 }
 

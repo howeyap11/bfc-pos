@@ -127,8 +127,15 @@ export default function TransactionSuccessClient() {
         const res = await fetch(`/api/pos/transactions/${transaction.id}/print-receipt`, { method: "POST", headers });
         const data = await res.json();
         if (!res.ok) throw new Error(data.message || data.error || "Print failed");
-        setToastMessage("Receipt sent to printer.");
-        setTimeout(() => setToastMessage(null), 3000);
+        if (data.snapResiboError) {
+          const msg = data.snapResiboError === "NO_AVAILABLE_VOUCHERS"
+            ? "Receipt printed. SnapResibo: no vouchers available – import in Settings."
+            : "Receipt printed. SnapResibo voucher could not be allocated.";
+          setToastMessage(msg);
+        } else {
+          setToastMessage("Receipt sent to printer.");
+        }
+        setTimeout(() => setToastMessage(null), 4000);
       } catch (e: any) {
         setToastMessage(e?.message ?? "Print receipt failed");
         setTimeout(() => setToastMessage(null), 4000);

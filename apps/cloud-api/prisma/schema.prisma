@@ -534,6 +534,14 @@ model StoreSetting {
   updatedAt  DateTime @updatedAt
 }
 
+// Settings > Business Details: name and address (single row, id=1)
+model BusinessDetails {
+  id           String   @id @default("1")
+  businessName String?
+  address      String?
+  updatedAt    DateTime @updatedAt
+}
+
 // Staff (POS cashiers/managers): source of truth for names, PINs, email, roles; syncs to POS
 model Staff {
   id        String   @id @default(cuid())
@@ -569,9 +577,11 @@ model SyncedTransaction {
   createdAt            DateTime
   voidedAt             DateTime?
   voidReason           String?
+  isTest               Boolean   @default(false) // Demo/test only; safe to delete via dev tool
 
   @@index([storeId])
   @@index([storeId, createdAt])
+  @@index([isTest])
 }
 
 // POS devices - one per physical mini PC

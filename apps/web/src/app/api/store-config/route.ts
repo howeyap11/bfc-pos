@@ -9,6 +9,9 @@ const DEFAULT_CONFIG = {
   splitPaymentEnabled: true,
   paymentMethodOrder: null,
   stickerPrintCategoryIds: [] as string[],
+  snapResiboEnabled: false,
+  snapResiboPriceCents: null as number | null,
+  snapResiboRewardMinimumCents: null as number | null,
 };
 
 export async function GET(req: NextRequest) {

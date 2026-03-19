@@ -1148,6 +1148,9 @@ export const api = {
   clearAdminCache(password: string): Promise<{ ok: boolean; message?: string }> {
     return apiFetch("/admin/dev/clear-admin-cache", { method: "POST", body: JSON.stringify({ password }) });
   },
+  deleteTestTransactions(password: string): Promise<{ deletedCount: number }> {
+    return apiFetch("/admin/dev/delete-test-transactions", { method: "POST", body: JSON.stringify({ password }) });
+  },
 
   async uploadIngredientImage(id: string, file: File): Promise<{ imageUrl: string }> {
     const token = typeof window !== "undefined" ? localStorage.getItem("cloud_token") : null;

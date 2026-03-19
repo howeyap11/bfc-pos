@@ -124,4 +124,43 @@ export async function devRoutes(app: FastifyInstance) {
     });
     return { ok: true, message: "Admin cache clear logged. Client should clear local caches." };
   });
+
+  // POST /admin/dev/delete-test-transactions – ONLY delete SyncedTransaction where isTest = true. Requires password.
+  app.post("/dev/delete-test-transactions", async (req: FastifyRequest, reply: FastifyReply) => {
+    if (isProduction()) {
+      reply.code(403);
+      return { error: "FORBIDDEN", message: "Delete test transactions is disabled in production." };
+    }
+    const parsed = z.object({ password: z.string().min(1) }).safeParse(req.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "INVALID_BODY", message: "password required" };
+    }
+    const admin = await getAdminFromReq(req);
+    if (!admin) {
+      reply.code(401);
+      return { error: "UNAUTHORIZED" };
+    }
+    const ok = await verifyPassword(parsed.data.password, admin.passwordHash);
+    if (!ok) {
+      reply.code(401);
+      return { error: "INVALID_PASSWORD", message: "Invalid password" };
+    }
+    const result = await app.prisma.syncedTransaction.deleteMany({
+      where: { isTest: true },
+    });
+    const deletedCount = result.count;
+    await app.prisma.devActionLog.create({
+      data: {
+        adminId: admin.id,
+        adminEmail: admin.email,
+        actionType: "DELETE_TEST_TRANSACTIONS",
+        scope: "SyncedTransaction where isTest = true",
+        affectedCount: deletedCount,
+        result: "SUCCESS",
+        isProduction: false,
+      },
+    });
+    return { deletedCount };
+  });
 }
