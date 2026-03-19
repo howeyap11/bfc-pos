@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import "./pos-shell.css";
 import { useRouter, usePathname } from "next/navigation";
 import { COLORS } from "@/lib/theme";
 import PosErrorBoundary from "./pos-error-boundary";
@@ -67,7 +68,16 @@ export default function PosLayout({ children }: { children: React.ReactNode }) {
   return (
     <PosErrorBoundary>
       <HealthGate>
-        <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
+        <div
+          data-pos-shell
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            height: "100vh",
+            background: COLORS.bgDarkest,
+            color: COLORS.textPrimary,
+          }}
+        >
       {/* Top Bar */}
       <div
         style={{
@@ -128,7 +138,15 @@ export default function PosLayout({ children }: { children: React.ReactNode }) {
       </div>
 
       {/* Main Content — minHeight:0 so nested POS flex + scroll regions can shrink (mini PC / short viewports) */}
-      <div style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative" }}>
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflow: "hidden",
+          position: "relative",
+          background: COLORS.bgDarkest,
+        }}
+      >
         {children}
 
         {/* Left Drawer */}
@@ -153,14 +171,15 @@ export default function PosLayout({ children }: { children: React.ReactNode }) {
                 left: 0,
                 bottom: 0,
                 width: 280,
-                background: "#fff",
-                boxShadow: "2px 0 8px rgba(0,0,0,0.2)",
+                background: COLORS.bgDarker,
+                boxShadow: "2px 0 12px rgba(0,0,0,0.5)",
                 zIndex: 101,
                 overflowY: "auto",
+                borderRight: `1px solid ${COLORS.borderLight}`,
               }}
             >
               <div style={{ padding: 16 }}>
-                <h2 style={{ margin: "0 0 16px 0", fontSize: 18, color: "#333" }}>Menu</h2>
+                <h2 style={{ margin: "0 0 16px 0", fontSize: 18, color: COLORS.textPrimary }}>Menu</h2>
                 {menuItems.map((item, index) => (
                   <button
                     key={index}
@@ -170,13 +189,16 @@ export default function PosLayout({ children }: { children: React.ReactNode }) {
                       padding: "12px 16px",
                       marginBottom: 8,
                       textAlign: "left",
-                      background: pathname === item.route ? COLORS.primaryLight : "#fff",
-                      border: pathname === item.route ? `2px solid ${COLORS.primary}` : "1px solid #ddd",
+                      background: pathname === item.route ? COLORS.primaryLight : COLORS.bgPanel,
+                      border:
+                        pathname === item.route
+                          ? `2px solid ${COLORS.primary}`
+                          : `1px solid ${COLORS.borderLight}`,
                       borderRadius: 4,
                       cursor: "pointer",
                       fontSize: 15,
                       fontWeight: pathname === item.route ? "bold" : "normal",
-                      color: pathname === item.route ? COLORS.primaryDark : "#333",
+                      color: pathname === item.route ? COLORS.primary : COLORS.textPrimary,
                       display: "flex",
                       justifyContent: "space-between",
                       alignItems: "center",

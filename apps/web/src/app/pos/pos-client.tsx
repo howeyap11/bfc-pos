@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { COLORS } from "@/lib/theme";
 
 type RegisterSession = {
   id: string;
@@ -115,15 +116,29 @@ export default function PosClient() {
 
   if (loading) {
     return (
-      <main style={{ padding: 24 }}>
+      <main
+        style={{
+          padding: 24,
+          minHeight: "100%",
+          background: COLORS.bgDarkest,
+          color: COLORS.textPrimary,
+        }}
+      >
         <h1>POS Register</h1>
-        <p>Loading...</p>
+        <p style={{ color: COLORS.textSecondary }}>Loading...</p>
       </main>
     );
   }
 
   return (
-    <main style={{ padding: 24 }}>
+    <main
+      style={{
+        padding: 24,
+        minHeight: "100%",
+        background: COLORS.bgDarkest,
+        color: COLORS.textPrimary,
+      }}
+    >
       <h1>POS Register</h1>
 
       {error && (
@@ -133,7 +148,15 @@ export default function PosClient() {
       )}
 
       {current === null ? (
-        <div style={{ border: "1px solid #ddd", padding: 16, borderRadius: 4, maxWidth: 400 }}>
+        <div
+          style={{
+            border: `1px solid ${COLORS.borderLight}`,
+            padding: 16,
+            borderRadius: 4,
+            maxWidth: 400,
+            background: COLORS.bgPanel,
+          }}
+        >
           <h2>Register Closed</h2>
           <p>Open the register to start a new session.</p>
 
@@ -175,8 +198,16 @@ export default function PosClient() {
           </form>
         </div>
       ) : (
-        <div style={{ border: "1px solid #0a0", padding: 16, borderRadius: 4, maxWidth: 600, background: "#efe" }}>
-          <h2 style={{ color: "#060" }}>✓ Register OPEN</h2>
+        <div
+          style={{
+            border: `1px solid ${COLORS.success}`,
+            padding: 16,
+            borderRadius: 4,
+            maxWidth: 600,
+            background: "rgba(34, 197, 94, 0.12)",
+          }}
+        >
+          <h2 style={{ color: COLORS.success }}>✓ Register OPEN</h2>
 
           <div style={{ marginBottom: 16 }}>
             <p>
@@ -195,7 +226,7 @@ export default function PosClient() {
             )}
           </div>
 
-          <hr style={{ margin: "16px 0", border: "none", borderTop: "1px solid #ccc" }} />
+          <hr style={{ margin: "16px 0", border: "none", borderTop: `1px solid ${COLORS.borderLight}` }} />
 
           <h3>Close Register</h3>
           <form onSubmit={handleCloseRegister}>

@@ -184,14 +184,14 @@ export default function StaffLoginClient() {
 
   if (loading) {
     return (
-      <div style={{ padding: 24, background: "#1f1f1f", minHeight: "100vh", color: "#fff" }}>
+      <div style={{ padding: 24, background: "#0a0a0a", minHeight: "100vh", color: "#fff" }}>
         <p>Loading staff...</p>
       </div>
     );
   }
 
   return (
-    <div style={{ padding: 24, background: "#1f1f1f", minHeight: "100vh", color: "#fff" }}>
+    <div style={{ padding: 24, background: "#0a0a0a", minHeight: "100vh", color: "#fff" }}>
       <h1 style={{ fontSize: 24, fontWeight: "bold", marginBottom: 24 }}>Staff Login</h1>
 
       {error && (
@@ -230,9 +230,9 @@ export default function StaffLoginClient() {
             onClick={handleLogout}
             style={{
               padding: "10px 20px",
-              background: "#fff",
-              color: "#22c55e",
-              border: "none",
+              background: "rgba(0,0,0,0.35)",
+              color: "#fff",
+              border: "2px solid rgba(255,255,255,0.45)",
               borderRadius: 6,
               cursor: "pointer",
               fontSize: 14,

@@ -216,7 +216,15 @@ export default function TransactionSuccessClient() {
 
   if (loading) {
     return (
-      <div style={{ padding: 24, textAlign: "center", background: "#fff", minHeight: "100vh" }}>
+      <div
+        style={{
+          padding: 24,
+          textAlign: "center",
+          background: COLORS.bgDarkest,
+          color: COLORS.textSecondary,
+          minHeight: "100vh",
+        }}
+      >
         <p>Loading transaction...</p>
       </div>
     );
@@ -224,8 +232,16 @@ export default function TransactionSuccessClient() {
 
   if (error || !transaction) {
     return (
-      <div style={{ padding: 24, textAlign: "center", background: "#fff", minHeight: "100vh" }}>
-        <p style={{ color: "#ef4444", marginBottom: 16 }}>{error || "Transaction not found"}</p>
+      <div
+        style={{
+          padding: 24,
+          textAlign: "center",
+          background: COLORS.bgDarkest,
+          color: COLORS.textPrimary,
+          minHeight: "100vh",
+        }}
+      >
+        <p style={{ color: COLORS.error, marginBottom: 16 }}>{error || "Transaction not found"}</p>
         <button
           onClick={handleClose}
           style={{
@@ -250,7 +266,15 @@ export default function TransactionSuccessClient() {
   const paymentMethod = primaryPayment?.method || "CASH";
 
   return (
-    <div style={{ background: "#fff", minHeight: "100vh", display: "flex", flexDirection: "column" }}>
+    <div
+      style={{
+        background: COLORS.bgDarkest,
+        color: COLORS.textPrimary,
+        minHeight: "100vh",
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
       {toastMessage && (
         <div
           style={{
@@ -272,7 +296,7 @@ export default function TransactionSuccessClient() {
       )}
       {/* Header with Close Button */}
       <div style={{ padding: "16px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h1 style={{ fontSize: 20, fontWeight: "bold", margin: 0 }}>Transaction Success</h1>
+        <h1 style={{ fontSize: 20, fontWeight: "bold", margin: 0, color: COLORS.textPrimary }}>Transaction Success</h1>
         <button
           onClick={handleClose}
           style={{
@@ -344,7 +368,7 @@ export default function TransactionSuccessClient() {
             alignItems: "center",
             justifyContent: "center",
             gap: 8,
-            color: "#6b7280",
+            color: COLORS.textSecondary,
             fontSize: 14,
             cursor: "pointer",
             userSelect: "none",
@@ -369,17 +393,19 @@ export default function TransactionSuccessClient() {
             style={{
               flex: 1,
               padding: "12px 16px",
-              border: "1px solid #d1d5db",
+              border: `1px solid ${COLORS.borderLight}`,
               borderRadius: 6,
               fontSize: 14,
+              background: COLORS.bgPanel,
+              color: COLORS.textPrimary,
             }}
           />
           <button
             onClick={() => alert("Email receipt - Not implemented yet")}
             style={{
               padding: "12px 24px",
-              background: "#f3f4f6",
-              border: "1px solid #d1d5db",
+              background: COLORS.bgPanel,
+              border: `1px solid ${COLORS.borderLight}`,
               borderRadius: 6,
               cursor: "pointer",
               fontSize: 14,
@@ -387,6 +413,7 @@ export default function TransactionSuccessClient() {
               display: "flex",
               alignItems: "center",
               gap: 8,
+              color: COLORS.textPrimary,
             }}
           >
             <span>📧</span>
@@ -402,9 +429,11 @@ export default function TransactionSuccessClient() {
             style={{
               flex: 1,
               padding: "12px 16px",
-              border: "1px solid #d1d5db",
+              border: `1px solid ${COLORS.borderLight}`,
               borderRadius: 6,
               fontSize: 14,
+              background: COLORS.bgPanel,
+              color: COLORS.textPrimary,
             }}
           />
           <input
@@ -415,10 +444,12 @@ export default function TransactionSuccessClient() {
             style={{
               width: 80,
               padding: "12px 16px",
-              border: "1px solid #d1d5db",
+              border: `1px solid ${COLORS.borderLight}`,
               borderRadius: 6,
               fontSize: 14,
               textAlign: "center",
+              background: COLORS.bgPanel,
+              color: COLORS.textPrimary,
             }}
           />
         </div>
@@ -525,6 +556,7 @@ export default function TransactionSuccessClient() {
             marginBottom: 16,
             fontSize: 16,
             fontWeight: "600",
+            color: COLORS.textPrimary,
           }}
         >
           Receipt Details
@@ -547,7 +579,14 @@ export default function TransactionSuccessClient() {
         </div>
 
         {/* Line Items */}
-        <div style={{ background: "#f9fafb", borderRadius: 8, padding: 16 }}>
+        <div
+          style={{
+            background: COLORS.bgPanel,
+            border: `1px solid ${COLORS.borderLight}`,
+            borderRadius: 8,
+            padding: 16,
+          }}
+        >
           {transaction.lineItems.map((item) => {
             const { primary, secondary } = formatLineItemOptions(item);
             const hasMods = primary || secondary.length > 0;
@@ -559,7 +598,7 @@ export default function TransactionSuccessClient() {
                   alignItems: "flex-start",
                   gap: 12,
                   padding: "12px 0",
-                  borderBottom: "1px solid #e5e7eb",
+                  borderBottom: `1px solid ${COLORS.borderLight}`,
                 }}
               >
                 {/* Checkmark Icon */}
@@ -583,11 +622,11 @@ export default function TransactionSuccessClient() {
                 {/* Item Details + Price: 2-column so price stays top-right; add-ons below main label in left column only */}
                 <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", alignItems: "start", gap: "8px 12px", flex: 1, minWidth: 0 }}>
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: "500", fontSize: 14, wordBreak: "break-word" }}>
+                    <div style={{ fontWeight: "500", fontSize: 14, wordBreak: "break-word", color: COLORS.textPrimary }}>
                       {getLineItemMainLabel(item)}
                     </div>
                     {hasMods && (
-                      <div style={{ fontSize: 12, color: "#374151", marginTop: 2 }}>
+                      <div style={{ fontSize: 12, color: COLORS.textSecondary, marginTop: 2 }}>
                         {primary && <div>+ {primary}</div>}
                         {secondary.map((s, i) => (
                           <div key={i}>+ {s}</div>
@@ -595,12 +634,21 @@ export default function TransactionSuccessClient() {
                       </div>
                     )}
                     {item.note && (
-                      <div style={{ fontSize: 12, color: "#6b7280", fontStyle: "italic", marginTop: 2 }}>
+                      <div style={{ fontSize: 12, color: COLORS.textMuted, fontStyle: "italic", marginTop: 2 }}>
                         {item.note}
                       </div>
                     )}
                   </div>
-                  <div style={{ fontWeight: "600", fontSize: 14, whiteSpace: "nowrap", flexShrink: 0, alignSelf: "start" }}>
+                  <div
+                    style={{
+                      fontWeight: "600",
+                      fontSize: 14,
+                      whiteSpace: "nowrap",
+                      flexShrink: 0,
+                      alignSelf: "start",
+                      color: COLORS.textPrimary,
+                    }}
+                  >
                     {formatPesos(item.lineTotal)}
                   </div>
                 </div>
@@ -617,6 +665,7 @@ export default function TransactionSuccessClient() {
               paddingTop: 16,
               fontSize: 18,
               fontWeight: "bold",
+              color: COLORS.textPrimary,
             }}
           >
             <span>Total</span>
@@ -631,7 +680,7 @@ export default function TransactionSuccessClient() {
           padding: "16px 24px 32px",
           display: "flex",
           gap: 12,
-          borderTop: "1px solid #e5e7eb",
+          borderTop: `1px solid ${COLORS.borderLight}`,
         }}
       >
         <button
@@ -655,8 +704,8 @@ export default function TransactionSuccessClient() {
           style={{
             flex: 1,
             padding: "16px",
-            background: "#fff",
-            color: "#22c55e",
+            background: COLORS.bgPanel,
+            color: "#86efac",
             border: "2px solid #22c55e",
             borderRadius: 8,
             cursor: "pointer",

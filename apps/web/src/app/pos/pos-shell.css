@@ -1,0 +1,5 @@
+/* Match POS chrome to dark register UI when Windows is in light mode (100% scale shows body behind overscroll). */
+body:has([data-pos-shell]) {
+  background: #0a0a0a;
+  color: #ededed;
+}

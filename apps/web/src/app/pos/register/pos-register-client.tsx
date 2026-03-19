@@ -361,9 +361,9 @@ function StaffSelectorModal({
                 onClick={onLogout}
                 style={{
                   padding: "8px 16px",
-                  background: "#fff",
-                  color: "#22c55e",
-                  border: "none",
+                  background: "rgba(0,0,0,0.35)",
+                  color: "#fff",
+                  border: "2px solid rgba(255,255,255,0.45)",
                   borderRadius: 6,
                   cursor: "pointer",
                   fontSize: 13,

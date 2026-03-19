@@ -419,9 +419,16 @@ export default function PosCartClient() {
 
   if (loading) {
     return (
-      <main style={{ padding: 24 }}>
+      <main
+        style={{
+          padding: 24,
+          minHeight: "100%",
+          background: COLORS.bgDarkest,
+          color: COLORS.textPrimary,
+        }}
+      >
         <h1>POS - Cart & Checkout</h1>
-        <p>Loading menu...</p>
+        <p style={{ color: COLORS.textSecondary }}>Loading menu...</p>
       </main>
     );
   }
@@ -429,7 +436,14 @@ export default function PosCartClient() {
   const currentCategory = menu.find((c) => c.id === selectedCategory);
 
   return (
-    <main style={{ padding: 24 }}>
+    <main
+      style={{
+        padding: 24,
+        minHeight: "100%",
+        background: COLORS.bgDarkest,
+        color: COLORS.textPrimary,
+      }}
+    >
       <h1>POS - Cart & Checkout</h1>
 
       {error && (
@@ -443,7 +457,15 @@ export default function PosCartClient() {
 
       <div style={{ display: "flex", gap: 16 }}>
         {/* LEFT: Categories & Items */}
-        <div style={{ flex: 1, border: "1px solid #ddd", padding: 12, borderRadius: 4 }}>
+        <div
+          style={{
+            flex: 1,
+            border: `1px solid ${COLORS.borderLight}`,
+            padding: 12,
+            borderRadius: 4,
+            background: COLORS.bgDark,
+          }}
+        >
           <h2>Menu</h2>
           <div style={{ marginBottom: 12, display: "flex", flexWrap: "wrap", gap: 8 }}>
             {menu.map((cat) => (
@@ -465,25 +487,34 @@ export default function PosCartClient() {
                 onClick={() => openItemSelector(item.id)}
                 style={{
                   padding: 12,
-                  border: "1px solid #ccc",
+                  border: `1px solid ${COLORS.borderLight}`,
                   borderRadius: 4,
                   textAlign: "left",
                   cursor: "pointer",
-                  background: "#fff",
+                  background: COLORS.bgPanel,
+                  color: COLORS.textPrimary,
                 }}
               >
                 <div style={{ fontWeight: "bold", marginBottom: 4 }}>{item.name}</div>
-                <div style={{ fontSize: 14, color: "#666" }}>{formatPesos(item.basePrice)}</div>
+                <div style={{ fontSize: 14, color: COLORS.textSecondary }}>{formatPesos(item.basePrice)}</div>
               </button>
             ))}
           </div>
         </div>
 
         {/* MIDDLE: Cart */}
-        <div style={{ flex: 1, border: "1px solid #ddd", padding: 12, borderRadius: 4 }}>
+        <div
+          style={{
+            flex: 1,
+            border: `1px solid ${COLORS.borderLight}`,
+            padding: 12,
+            borderRadius: 4,
+            background: COLORS.bgDark,
+          }}
+        >
           <h2>Cart ({cart.length})</h2>
           {cart.length === 0 ? (
-            <p style={{ color: "#999" }}>Cart is empty</p>
+            <p style={{ color: COLORS.textMuted }}>Cart is empty</p>
           ) : (
             <div>
               {cart.map((item) => {
@@ -536,7 +567,15 @@ export default function PosCartClient() {
         </div>
 
         {/* RIGHT: Totals & Checkout */}
-        <div style={{ width: 300, border: "1px solid #ddd", padding: 12, borderRadius: 4 }}>
+        <div
+          style={{
+            width: 300,
+            border: `1px solid ${COLORS.borderLight}`,
+            padding: 12,
+            borderRadius: 4,
+            background: COLORS.bgDark,
+          }}
+        >
           <h2>Totals</h2>
 
           <div style={{ marginBottom: 16 }}>
@@ -612,18 +651,29 @@ export default function PosCartClient() {
         >
           <div
             style={{
-              background: "#fff",
+              background: COLORS.bgDark,
+              color: COLORS.textPrimary,
               padding: 24,
               borderRadius: 8,
               maxWidth: 500,
               maxHeight: "80vh",
               overflow: "auto",
+              border: `1px solid ${COLORS.borderLight}`,
             }}
             onClick={(e) => e.stopPropagation()}
           >
             <div style={{ display: "flex", gap: 16, marginBottom: 16 }}>
               {selectingItem.imageUrl ? (
-                <div style={{ flexShrink: 0, width: 80, height: 80, borderRadius: 8, overflow: "hidden", background: "#eee" }}>
+                <div
+                  style={{
+                    flexShrink: 0,
+                    width: 80,
+                    height: 80,
+                    borderRadius: 8,
+                    overflow: "hidden",
+                    background: COLORS.bgPanel,
+                  }}
+                >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={selectingItem.imageUrl} alt={selectingItem.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                 </div>
@@ -636,7 +686,7 @@ export default function PosCartClient() {
 
             {selectingItem.hasSizes && selectingItem.sizesByMode ? (
               <>
-                <p style={{ fontSize: 13, color: "#666", marginBottom: 12 }}>Temperature & Size</p>
+                <p style={{ fontSize: 13, color: COLORS.textSecondary, marginBottom: 12 }}>Temperature & Size</p>
                 {(["HOT", "ICED", "CONCENTRATED"] as const).map((mode) => {
                   const sizes = selectingItem.sizesByMode![mode];
                   if (!sizes || sizes.length === 0) return null;
@@ -664,12 +714,12 @@ export default function PosCartClient() {
                               }}
                               style={{
                                 padding: "8px 12px",
-                                border: `2px solid ${isSelected ? accent : "#ddd"}`,
+                                border: `2px solid ${isSelected ? accent : COLORS.borderLight}`,
                                 borderRadius: 4,
-                                background: isSelected ? `${accent}20` : "#fff",
+                                background: isSelected ? `${accent}20` : COLORS.bgPanel,
                                 cursor: "pointer",
                                 fontWeight: isSelected ? "bold" : "normal",
-                                color: isSelected ? accent : "#333",
+                                color: isSelected ? accent : COLORS.textPrimary,
                               }}
                             >
                               {opt.name}
@@ -693,7 +743,7 @@ export default function PosCartClient() {
                 <h3>
                   {group.name} {group.isRequired && <span style={{ color: "red" }}>*</span>}
                 </h3>
-                <p style={{ fontSize: 13, color: "#666", marginBottom: 8 }}>
+                <p style={{ fontSize: 13, color: COLORS.textSecondary, marginBottom: 8 }}>
                   {group.type === "SINGLE" ? "Choose one" : `Choose up to ${group.maxSelect}`}
                 </p>
 
@@ -706,10 +756,11 @@ export default function PosCartClient() {
                         display: "block",
                         padding: 8,
                         marginBottom: 4,
-                        border: `1px solid ${isSelected ? "#00a" : "#ddd"}`,
+                        border: `1px solid ${isSelected ? COLORS.tempIced : COLORS.borderLight}`,
                         borderRadius: 4,
                         cursor: "pointer",
-                        background: isSelected ? "#eef" : "#fff",
+                        background: isSelected ? "rgba(37, 99, 235, 0.15)" : COLORS.bgPanel,
+                        color: COLORS.textPrimary,
                       }}
                     >
                       <input
@@ -737,7 +788,14 @@ export default function PosCartClient() {
                 value={itemNote}
                 onChange={(e) => setItemNote(e.target.value)}
                 placeholder="e.g., Extra hot"
-                style={{ width: "100%", padding: 8 }}
+                style={{
+                  width: "100%",
+                  padding: 8,
+                  background: COLORS.bgPanel,
+                  border: `1px solid ${COLORS.borderLight}`,
+                  color: COLORS.textPrimary,
+                  borderRadius: 4,
+                }}
               />
             </div>
 
@@ -751,7 +809,13 @@ export default function PosCartClient() {
               </button>
               <button
                 onClick={() => setSelectingItem(null)}
-                style={{ padding: "10px 16px", background: "#ccc", border: "none", borderRadius: 4 }}
+                style={{
+                  padding: "10px 16px",
+                  background: COLORS.bgPanel,
+                  color: COLORS.textPrimary,
+                  border: `1px solid ${COLORS.borderLight}`,
+                  borderRadius: 4,
+                }}
               >
                 Cancel
               </button>
@@ -778,13 +842,15 @@ export default function PosCartClient() {
         >
           <div
             style={{
-              background: "#fff",
+              background: COLORS.bgDark,
+              color: COLORS.textPrimary,
               padding: 24,
               borderRadius: 8,
               maxWidth: 600,
               width: "90%",
               maxHeight: "80vh",
               overflow: "auto",
+              border: `1px solid ${COLORS.borderLight}`,
             }}
           >
             {isFullyPaid() ? (
