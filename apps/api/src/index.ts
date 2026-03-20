@@ -45,6 +45,13 @@ import { startDeviceCommandPolling } from "./services/deviceCommandPolling.servi
 import { getCommandState } from "./services/commandState.service.js";
 import { getSyncStatus } from "./services/syncScheduler.js";
 import { getDeviceKey } from "./services/deviceKey.service.js";
+import {
+  cleanupStaleMenuImages,
+  getCachedMenuImageFile,
+  getImagePath,
+  initMenuImageCache,
+  preloadMissingMenuImages,
+} from "./services/menuImageCache.service";
 
 const app = Fastify({ logger: true });
 
@@ -75,6 +82,15 @@ await app.register(devRoutes);
 
 // Public routes (MUST be before listen)
 app.get("/health", async () => ({ ok: true }));
+
+app.get("/cache/menu-images/:fileName", async (req, reply) => {
+  const { fileName } = req.params as { fileName: string };
+  const cached = await getCachedMenuImageFile(fileName);
+  if (!cached) {
+    return reply.code(404).send({ error: "IMAGE_NOT_FOUND" });
+  }
+  return reply.type(cached.contentType).send(cached.body);
+});
 
 app.get("/device/status", async () => {
   const { state: commandState, errorMessage, lastUpdateAt } = getCommandState();
@@ -159,40 +175,61 @@ app.get("/menu", async (req, reply) => {
       }),
       app.prisma.storeConfig.findUnique({ where: { storeId: "store_1" } }),
     ]);
+    await preloadMissingMenuImages(
+      (items ?? []).map((i) => ({ id: i.cloudId, imageUrl: i.imageUrl }))
+    );
     const subCategoryMap = new Map((subCategories ?? []).map((s) => [s.cloudId, s.name]));
-    let result = (categories ?? []).map((cat) => ({
-      id: cat.cloudId,
-      name: cat.name,
-      items: (items ?? [])
-        .filter((i) => i.categoryCloudId === cat.cloudId)
-      .map((i) => ({
-        id: i.cloudId,
-        name: i.name,
-        basePrice: i.priceCents,
-        description: null,
-        imageUrl: i.imageUrl,
-        series: i.subCategoryCloudId ? subCategoryMap.get(i.subCategoryCloudId) ?? "Other" : "Other",
-        hasSizes: i.hasSizes ?? false,
-      })),
-    }));
+    let result = await Promise.all(
+      (categories ?? []).map(async (cat) => ({
+        id: cat.cloudId,
+        name: cat.name,
+        items: await Promise.all(
+          (items ?? [])
+            .filter((i) => i.categoryCloudId === cat.cloudId)
+            .map(async (i) => ({
+              id: i.cloudId,
+              name: i.name,
+              basePrice: i.priceCents,
+              description: null,
+              imageUrl: await getImagePath({ id: i.cloudId, imageUrl: i.imageUrl }),
+              series: i.subCategoryCloudId ? subCategoryMap.get(i.subCategoryCloudId) ?? "Other" : "Other",
+              hasSizes: i.hasSizes ?? false,
+            }))
+        ),
+      }))
+    );
     const uncategorized = (items ?? []).filter((i) => !i.categoryCloudId);
     if (uncategorized.length > 0) {
       result.push({
       id: "_uncategorized",
       name: "Uncategorized",
-      items: uncategorized.map((i) => ({
-        id: i.cloudId,
-        name: i.name,
-        basePrice: i.priceCents,
-        description: null,
-        imageUrl: i.imageUrl,
-        series: i.subCategoryCloudId ? subCategoryMap.get(i.subCategoryCloudId) ?? "Other" : "Other",
-        hasSizes: i.hasSizes ?? false,
-      })),
+      items: await Promise.all(
+        uncategorized.map(async (i) => ({
+          id: i.cloudId,
+          name: i.name,
+          basePrice: i.priceCents,
+          description: null,
+          imageUrl: await getImagePath({ id: i.cloudId, imageUrl: i.imageUrl }),
+          series: i.subCategoryCloudId ? subCategoryMap.get(i.subCategoryCloudId) ?? "Other" : "Other",
+          hasSizes: i.hasSizes ?? false,
+        }))
+      ),
       });
     }
     if (result.length === 0 && (items ?? []).length > 0) {
-      result = [{ id: "menu", name: "Menu", items: (items ?? []).map((i) => ({ id: i.cloudId, name: i.name, basePrice: i.priceCents, description: null, imageUrl: i.imageUrl ?? null, series: "Other", hasSizes: i.hasSizes ?? false })) }];
+      result = [{
+        id: "menu",
+        name: "Menu",
+        items: await Promise.all((items ?? []).map(async (i) => ({
+          id: i.cloudId,
+          name: i.name,
+          basePrice: i.priceCents,
+          description: null,
+          imageUrl: await getImagePath({ id: i.cloudId, imageUrl: i.imageUrl ?? null }),
+          series: "Other",
+          hasSizes: i.hasSizes ?? false,
+        }))),
+      }];
     }
     // SnapResibo: append virtual category as last (rightmost) when enabled
     if (storeConfig?.snapResiboEnabled) {
@@ -524,7 +561,7 @@ app.get("/items/:id", async (req, reply) => {
       name: cloud.name,
       basePrice: cloud.priceCents,
       description: null,
-      imageUrl: cloud.imageUrl,
+      imageUrl: await getImagePath({ id: cloud.cloudId, imageUrl: cloud.imageUrl }),
       isDrink: cloud.isDrink,
       serveVessel: cloud.serveVessel,
       defaultSizeOptionId: (cloud as { defaultSizeOptionCloudId?: string | null }).defaultSizeOptionCloudId ?? null,
@@ -719,8 +756,23 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 try {
+  await initMenuImageCache();
   await app.listen({ host: "0.0.0.0", port });
   app.log.info({ port, dbPath, mode }, "API started");
+  try {
+    const existingItems = await app.prisma.cloudMenuItem.findMany({
+      where: { storeId: "store_1", isActive: true, deletedAt: null },
+      select: { cloudId: true, imageUrl: true },
+    });
+    const activeIds = existingItems.map((i) => i.cloudId);
+    const removed = await cleanupStaleMenuImages(activeIds);
+    if (removed > 0) app.log.info({ removed }, "Startup: menu image cache cleaned stale entries");
+    await preloadMissingMenuImages(
+      existingItems.map((i) => ({ id: i.cloudId, imageUrl: i.imageUrl }))
+    );
+  } catch (err) {
+    app.log.warn({ err }, "Startup menu image preload failed");
+  }
 
   const syncEnv = {
     CLOUD_URL: (process.env.CLOUD_URL ?? "").trim() ? "present" : "missing",
@@ -741,7 +793,18 @@ try {
   );
   app.log.info("runCatalogSync(app) invoked (promise pending); next log: runCatalogSync: started");
   runCatalogSync(app)
-    .then(() => {
+    .then(async () => {
+      try {
+        const cloudItems = await app.prisma.cloudMenuItem.findMany({
+          where: { storeId: "store_1", isActive: true, deletedAt: null },
+          select: { cloudId: true, imageUrl: true },
+        });
+        await preloadMissingMenuImages(
+          cloudItems.map((i) => ({ id: i.cloudId, imageUrl: i.imageUrl }))
+        );
+      } catch (err) {
+        app.log.warn({ err }, "Menu image preload after initial sync failed");
+      }
       startSyncScheduler(app);
       app.log.info({ syncEnv }, "Cloud sync startup enabled; scheduler started");
     })

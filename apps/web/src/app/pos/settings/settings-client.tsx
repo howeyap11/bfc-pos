@@ -464,6 +464,37 @@ export default function SettingsClient() {
     }
   }
 
+  async function handleCloudTransactionsBackfill() {
+    if (
+      !window.confirm(
+        "Enqueue PAID/VOID sales that are not yet queued for cloud sync? Uploads run in the background (usually within ~30s). Requires admin staff role."
+      )
+    )
+      return;
+    setError(null);
+    setSuccess(null);
+    setActionLoading("txBackfill");
+    try {
+      const headers = await getStaffHeaders();
+      const res = await fetch("/api/admin/sync/transactions/backfill", {
+        method: "POST",
+        headers: { "content-type": "application/json", ...headers },
+        body: "{}",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || data.error || "Backfill failed");
+      const msg =
+        data.message ??
+        `Enqueued ${data.enqueued ?? 0} for cloud sync (${data.skippedAlreadyQueued ?? 0} already queued).`;
+      setSuccess(msg);
+      setTimeout(() => setSuccess(null), 8000);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Backfill failed");
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
   async function handleForceFullResync() {
     if (
       !window.confirm(
@@ -1729,7 +1760,8 @@ export default function SettingsClient() {
             System actions
           </h2>
           <p style={{ color: COLORS.textSecondary, marginBottom: 16, fontSize: 14 }}>
-            These actions require admin role and staff session.
+            These actions require admin role and staff session. Use &quot;Backfill cloud transaction sync&quot; to queue
+            local sales that never reached the cloud (e.g. after connectivity issues); uploads continue automatically.
           </p>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <button
@@ -1745,6 +1777,14 @@ export default function SettingsClient() {
               style={btnStyle(!!actionLoading && actionLoading !== "resync")}
             >
               {actionLoading === "resync" ? "Resyncing…" : "Force full catalog resync"}
+            </button>
+            <button
+              type="button"
+              onClick={handleCloudTransactionsBackfill}
+              disabled={busy || !!actionLoading}
+              style={btnStyle(!!actionLoading && actionLoading !== "txBackfill")}
+            >
+              {actionLoading === "txBackfill" ? "Queueing…" : "Backfill cloud transaction sync"}
             </button>
             <button
               onClick={() => handleAction("update", "/api/device/commands/update")}

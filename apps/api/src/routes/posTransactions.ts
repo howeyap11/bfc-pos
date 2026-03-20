@@ -19,6 +19,8 @@ import {
   allocateVouchersForTransaction,
   getSnapResiboVoucherForTransaction,
 } from "../services/snapResiboVoucher.service";
+import { getBusinessDayZReadingRange, printZReading } from "../services/zReading.service";
+import { getTransactionSummary } from "../services/transactionSummary.service";
 
 const STORE_ID = "store_1";
 const SNAPRESIBO_QR_ITEM_ID = "SNAPRESIBO_QR";
@@ -127,17 +129,40 @@ function calculateMilkUpcharge(milkChoice: MilkType | undefined, defaultMilk: Mi
 export async function posTransactionsRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requireStaffHook);
 
-  // List recent transactions with pagination
+  // List recent transactions with pagination. Optional selectedDate (YYYY-MM-DD) filters by business-day range.
   const listTransactions = async (req: any) => {
-    const query = req.query as { limit?: string; cursor?: string };
+    const query = req.query as { limit?: string; cursor?: string; selectedDate?: string };
     const limit = Math.min(parseInt(query.limit || "30") || 30, 100);
     const cursor = query.cursor ? parseInt(query.cursor) : null;
-    
+    const selectedDate = typeof query.selectedDate === "string" ? query.selectedDate.trim() : null;
+
+    const dateRange =
+      selectedDate && /^\d{4}-\d{2}-\d{2}$/.test(selectedDate)
+        ? getBusinessDayZReadingRange(selectedDate)
+        : null;
+
+    if (dateRange) {
+      app.log.info(
+        {
+          event: "transactions_list_date_filter",
+          selectedDate,
+          from: dateRange.from.toISOString(),
+          to: dateRange.to.toISOString(),
+        },
+        "[Transactions] list with business-day filter"
+      );
+    }
+
+    const whereClause: Record<string, unknown> = { storeId: STORE_ID };
+    if (dateRange) {
+      whereClause.createdAt = { gte: dateRange.from, lt: dateRange.to };
+    }
+    if (cursor != null) {
+      whereClause.transactionNo = { lt: cursor };
+    }
+
     const transactions = await app.prisma.transaction.findMany({
-      where: { 
-        storeId: STORE_ID,
-        ...(cursor ? { transactionNo: { lt: cursor } } : {}),
-      },
+      where: whereClause,
       orderBy: { transactionNo: "desc" },
       take: limit + 1, // Fetch one extra to determine if there's a next page
       include: {
@@ -194,6 +219,40 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
 
   app.get("/pos/transactions", listTransactions);
   app.get("/pos/transactions/list", listTransactions);
+
+  // Full-range summary for selected day (decoupled from pagination). Uses same business-day range as Z-reading.
+  app.get("/pos/transactions/summary", async (req, reply) => {
+    const query = req.query as { selectedDate?: string };
+    const selectedDate = typeof query.selectedDate === "string" ? query.selectedDate.trim() : null;
+    if (!selectedDate || !/^\d{4}-\d{2}-\d{2}$/.test(selectedDate)) {
+      reply.code(400);
+      return { error: "INVALID_DATE", message: "selectedDate (YYYY-MM-DD) is required" };
+    }
+
+    try {
+      const range = getBusinessDayZReadingRange(selectedDate);
+      const summary = await getTransactionSummary(app.prisma, selectedDate);
+
+      app.log.info(
+        {
+          event: "transactions_summary",
+          selectedDate,
+          from: range.from.toISOString(),
+          to: range.to.toISOString(),
+          transactionCount: summary.transactionCount,
+          grossSalesCents: summary.grossSalesCents,
+        },
+        "[Transactions] summary loaded for selected date"
+      );
+
+      return summary;
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err ?? "Summary failed");
+      app.log.error({ err, selectedDate }, "[Transactions] summary failed");
+      reply.code(500);
+      return { error: "SUMMARY_FAILED", message };
+    }
+  });
 
   // Create transaction + line items (no payment yet)
   app.post("/pos/transactions", async (req, reply) => {
@@ -1425,6 +1484,63 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       app.log.error({ err, transactionId: id }, "Print stickers failed");
       reply.code(500);
       return { error: "PRINT_FAILED", message: err?.message ?? "Sticker print failed" };
+    }
+  });
+
+  app.post("/pos/transactions/z-reading/print", async (req, reply) => {
+    const body = (req.body ?? {}) as { selectedDate?: string };
+    const selectedDate = String(body.selectedDate ?? "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(selectedDate)) {
+      reply.code(400);
+      return { error: "INVALID_DATE", message: "selectedDate must be YYYY-MM-DD" };
+    }
+
+    const printerConfig = await app.prisma.storeConfig.findUnique({
+      where: { storeId: STORE_ID },
+      select: { enabledPaymentMethods: true },
+    });
+
+    const range = getBusinessDayZReadingRange(selectedDate);
+    app.log.info(
+      {
+        event: "z_reading_print_request",
+        selectedDate,
+        from: range.from.toISOString(),
+        to: range.to.toISOString(),
+        enabledPaymentMethods: printerConfig?.enabledPaymentMethods ?? null,
+      },
+      "[Z_READING] print request"
+    );
+
+    try {
+      const report = await printZReading(app.prisma, selectedDate);
+      app.log.info(
+        {
+          event: "z_reading_print_success",
+          selectedDate,
+          printerName: report.printerName,
+          from: report.from.toISOString(),
+          to: report.to.toISOString(),
+          transactionCount: report.totals.transactionCount,
+          totals: report.totals,
+        },
+        "[Z_READING] printed"
+      );
+      return {
+        ok: true,
+        selectedDate,
+        from: report.from.toISOString(),
+        to: report.to.toISOString(),
+        transactionCount: report.totals.transactionCount,
+      };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err ?? "Z-reading print failed");
+      app.log.error(
+        { err, selectedDate, event: "z_reading_print_failure" },
+        "[Z_READING] print failed — check [BFC_PRINTER] logs for printer name loaded from settings and print result"
+      );
+      reply.code(500);
+      return { error: "PRINT_FAILED", message };
     }
   });
 }

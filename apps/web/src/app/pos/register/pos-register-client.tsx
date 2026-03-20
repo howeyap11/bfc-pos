@@ -20,6 +20,7 @@ import {
   resolveChargeableExtraShots,
 } from "@/lib/shotHelpers";
 import { resolveInitialHasSizesModeAndSize } from "@/lib/posItemInitialSize";
+import { enqueueSyncItem, processSyncQueue } from "@/lib/syncQueue";
 
 /**
  * POS Register Client Component
@@ -1680,6 +1681,7 @@ export default function PosRegisterClient() {
   
   // Cart Panel State Machine
   const [cartPanelMode, setCartPanelMode] = useState<"CART" | "SUCCESS">("CART");
+  const [pendingSyncCount, setPendingSyncCount] = useState(0);
   const [lastCompletedTransaction, setLastCompletedTransaction] = useState<{
     id: string;
     transactionNo: number;
@@ -1807,6 +1809,36 @@ export default function PosRegisterClient() {
       console.warn("[Register] Failed to persist cart", e);
     }
   }, [cart, qrOrderId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const updateCount = () => {
+      if (cancelled) return;
+      try {
+        const raw = localStorage.getItem("bfc_sync_queue_v1");
+        const parsed = raw ? JSON.parse(raw) : [];
+        setPendingSyncCount(Array.isArray(parsed) ? parsed.length : 0);
+      } catch {
+        setPendingSyncCount(0);
+      }
+    };
+    const runSync = async () => {
+      await processSyncQueue();
+      updateCount();
+    };
+
+    runSync(); // app start
+    const onOnline = () => runSync(); // reconnect
+    window.addEventListener("online", onOnline);
+    const timer = window.setInterval(runSync, 15000); // periodic worker
+    updateCount();
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener("online", onOnline);
+      window.clearInterval(timer);
+    };
+  }, []);
 
   function checkActiveStaff() {
     try {
@@ -2114,6 +2146,45 @@ export default function PosRegisterClient() {
     } catch {
       throw new Error(`Invalid JSON from ${url}. First 120 chars: ${text.slice(0, 120)}`);
     }
+  }
+
+  async function queueOfflineTransactionSync(params: {
+    txBody: Record<string, unknown>;
+    payments: Array<{ method: string; amountCents: number }>;
+    methodLabel: string;
+    cartSnapshot: CartItem[];
+  }) {
+    const transactionId = crypto.randomUUID();
+    enqueueSyncItem({
+      id: transactionId,
+      type: "transaction",
+      payload: {
+        transactionId,
+        transactionBody: { ...params.txBody, transactionId },
+        payments: params.payments,
+        staffKey: activeStaff?.staffKey,
+      },
+      status: "pending",
+      retries: 0,
+    });
+
+    setPendingSyncCount((prev) => prev + 1);
+    setLastCompletedTransaction({
+      id: transactionId,
+      transactionNo: 0,
+      totalCents: params.payments.reduce((sum, p) => sum + p.amountCents, 0),
+      method: `${params.methodLabel} (QUEUED)`,
+      items: params.cartSnapshot,
+      createdAt: new Date().toISOString(),
+      staffName: activeStaff?.name,
+    });
+    setCart([]);
+    setAmountReceivedPesos("");
+    setCurrentTransaction(null);
+    setPaymentMethod("CASH");
+    setCartPanelMode("SUCCESS");
+    setBusy(false);
+    setError("Offline: transaction queued and will sync automatically when online.");
   }
 
   async function loadStoreConfig() {
@@ -2904,6 +2975,20 @@ export default function PosRegisterClient() {
     try {
       const serviceType = cart[0]?.transactionTypeCode ?? "FOR_HERE";
       const body = buildCreateTransactionBody({ cart, discountCents: 0, serviceType, ...(qrOrderId && { orderId: qrOrderId }) });
+      if (!navigator.onLine) {
+        const totalCents = calculateTotal();
+        const paymentAmountCents = Math.round((parseFloat(amountReceivedPesos) || 0) * 100);
+        const hasPayment = paymentAmountCents > 0 || paymentMethod === "CASH";
+        await queueOfflineTransactionSync({
+          txBody: body as Record<string, unknown>,
+          payments: hasPayment
+            ? [{ method: paymentMethod, amountCents: paymentAmountCents > 0 ? paymentAmountCents : totalCents }]
+            : [],
+          methodLabel: paymentMethod,
+          cartSnapshot: [...cart],
+        });
+        return;
+      }
 
       const data = await fetchJson("/api/pos/transactions", {
         method: "POST",
@@ -3127,6 +3212,16 @@ export default function PosRegisterClient() {
         console.log("[SplitPayment] Creating sale first");
         const serviceType = cart[0]?.transactionTypeCode ?? "FOR_HERE";
         const body = buildCreateTransactionBody({ cart, discountCents: 0, serviceType, ...(qrOrderId && { orderId: qrOrderId }) });
+        if (!navigator.onLine) {
+          await queueOfflineTransactionSync({
+            txBody: body as Record<string, unknown>,
+            payments: payments.map((p) => ({ method: p.method, amountCents: p.amountCents })),
+            methodLabel: "SPLIT",
+            cartSnapshot: [...cart],
+          });
+          setShowSplitPaymentModal(false);
+          return;
+        }
         const data = await fetchJson("/api/pos/transactions", {
           method: "POST",
           headers: buildHeaders(),
@@ -3234,6 +3329,16 @@ export default function PosRegisterClient() {
 
       const serviceType = cartSnapshot[0]?.transactionTypeCode ?? "FOR_HERE";
       const txBody = buildCreateTransactionBody({ cart: cartSnapshot, discountCents: 0, serviceType });
+      if (!navigator.onLine) {
+        const offlineTotalCents = calculateTotal();
+        await queueOfflineTransactionSync({
+          txBody: txBody as Record<string, unknown>,
+          payments: [{ method, amountCents: offlineTotalCents }],
+          methodLabel: method,
+          cartSnapshot,
+        });
+        return;
+      }
 
       console.log("[PAY] TX BODY", { 
         itemCount: cartSnapshot.length,
@@ -4708,6 +4813,11 @@ export default function PosRegisterClient() {
       >
         <div style={{ flexShrink: 0, padding: 12, borderBottom: "1px solid #2a2a2a", background: "#1f1f1f" }}>
           <h2 style={{ margin: 0, fontSize: 18, color: "#fff" }}>Current Order</h2>
+          {pendingSyncCount > 0 && (
+            <p style={{ margin: "6px 0 0", fontSize: 12, color: "#facc15" }}>
+              Offline sync queue: {pendingSyncCount} pending
+            </p>
+          )}
         </div>
 
         {/* Staff Selector (UTAK Style - Top of Cart) */}
@@ -5425,6 +5535,7 @@ function TransactionSuccessPanel({
     item?.itemName?.toLowerCase().includes("latte") ||
     item?.itemName?.toLowerCase().includes("matcha")
   );
+  const isQueuedOffline = transaction.transactionNo <= 0;
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", padding: 16, overflow: "auto" }}>
@@ -5485,7 +5596,12 @@ function TransactionSuccessPanel({
       {/* Print Buttons - UTAK Style (ABOVE items) */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
         <button
+          disabled={isQueuedOffline}
           onClick={async () => {
+            if (isQueuedOffline) {
+              alert("This receipt can be printed after the queued transaction syncs.");
+              return;
+            }
             const headers: Record<string, string> = {};
             if (activeStaff?.staffKey?.trim()) headers["x-staff-key"] = activeStaff.staffKey.trim();
             try {
@@ -5516,13 +5632,19 @@ function TransactionSuccessPanel({
             color: "#fff",
             border: "1px solid #4a4a4a",
             borderRadius: 6,
-            cursor: "pointer",
+            cursor: isQueuedOffline ? "not-allowed" : "pointer",
+            opacity: isQueuedOffline ? 0.6 : 1,
           }}
         >
           🧾 Receipt
         </button>
         <button
+          disabled={isQueuedOffline}
           onClick={async () => {
+            if (isQueuedOffline) {
+              alert("Stickers can be printed after the queued transaction syncs.");
+              return;
+            }
             const headers: Record<string, string> = {};
             if (activeStaff?.staffKey?.trim()) headers["x-staff-key"] = activeStaff.staffKey.trim();
             try {
@@ -5545,7 +5667,8 @@ function TransactionSuccessPanel({
             color: "#fff",
             border: "1px solid #4a4a4a",
             borderRadius: 6,
-            cursor: "pointer",
+            cursor: isQueuedOffline ? "not-allowed" : "pointer",
+            opacity: isQueuedOffline ? 0.6 : 1,
           }}
         >
           🏷️ Sticker

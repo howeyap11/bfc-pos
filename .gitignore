@@ -24,3 +24,6 @@ build
 
 # Prisma
 prisma/migrations/dev.db
+
+# Menu image cache (offline images)
+cache/

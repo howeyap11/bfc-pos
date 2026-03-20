@@ -1,7 +1,10 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { requireStaffHook } from "../../plugins/staffGuard.js";
 import { syncCatalogFromCloud, requireAdminRole } from "../../services/syncCatalog.service.js";
-import { processTransactionSyncOutbox } from "../../services/outbox.service.js";
+import {
+  backfillTransactionSyncOutbox,
+  processTransactionSyncOutbox,
+} from "../../services/outbox.service.js";
 import { uploadTransactionToCloud } from "../../services/transactionSync.service.js";
 
 function getBranchFromRequest(req: FastifyRequest): string {
@@ -70,6 +73,40 @@ export async function adminSyncRoutes(app: FastifyInstance) {
         50
       );
       return result;
+    }
+  );
+
+  /** Enqueue PAID/VOID transactions missing from cloud-sync outbox (one-time catch-up). */
+  app.post(
+    "/admin/sync/transactions/backfill",
+    {
+      preHandler: [
+        requireStaffHook,
+        async (req: FastifyRequest, reply: FastifyReply) => {
+          if (!requireAdminRole(req as { staff?: { role?: string } })) {
+            return reply.code(403).send({
+              error: "FORBIDDEN",
+              message: "Admin role required",
+            });
+          }
+        },
+      ],
+    },
+    async () => {
+      const result = await backfillTransactionSyncOutbox(app.prisma);
+      const flush = await processTransactionSyncOutbox(
+        app.prisma,
+        uploadTransactionToCloud,
+        50
+      );
+      return {
+        ok: true,
+        message: `Enqueued ${result.enqueued} transaction(s) for cloud sync; ${result.skippedAlreadyQueued} already queued or synced.`,
+        ...result,
+        flushProcessed: flush.processed,
+        flushSucceeded: flush.succeeded,
+        flushFailed: flush.failed,
+      };
     }
   );
 }

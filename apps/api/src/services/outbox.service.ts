@@ -23,6 +23,63 @@ export async function enqueueOutbox(
 }
 
 /**
+ * Enqueue PAID/VOID transactions that are not already covered by a PENDING or SENT
+ * transaction.cloud.sync outbox row. Use after outages or before cloud was configured.
+ */
+export async function backfillTransactionSyncOutbox(prisma: PrismaClient): Promise<{
+  scanned: number;
+  enqueued: number;
+  skippedAlreadyQueued: number;
+}> {
+  if (!prisma.localOutbox) {
+    throw new Error(
+      "Prisma client missing LocalOutbox model. Run: cd apps/api && pnpm exec prisma generate"
+    );
+  }
+
+  const outboxItems = await prisma.localOutbox.findMany({
+    where: { topic: "transaction.cloud.sync" },
+    select: { status: true, payloadJson: true },
+  });
+
+  const alreadyQueued = new Set<string>();
+  for (const item of outboxItems) {
+    if (item.status !== "SENT" && item.status !== "PENDING") continue;
+    try {
+      const payload = JSON.parse(item.payloadJson) as { transactionId?: unknown };
+      if (typeof payload.transactionId === "string") {
+        alreadyQueued.add(payload.transactionId);
+      }
+    } catch {
+      // ignore malformed payload
+    }
+  }
+
+  const transactions = await prisma.transaction.findMany({
+    where: { status: { in: ["PAID", "VOID"] } },
+    select: { id: true, storeId: true },
+  });
+
+  let enqueued = 0;
+  for (const tx of transactions) {
+    if (alreadyQueued.has(tx.id)) continue;
+    await enqueueOutbox(prisma, {
+      storeId: tx.storeId,
+      topic: "transaction.cloud.sync",
+      payload: { transactionId: tx.id },
+    });
+    enqueued++;
+    alreadyQueued.add(tx.id);
+  }
+
+  return {
+    scanned: transactions.length,
+    enqueued,
+    skippedAlreadyQueued: transactions.length - enqueued,
+  };
+}
+
+/**
  * Process PENDING outbox items for a topic.
  * Call from cron or admin endpoint to retry failed inventory deductions.
  */

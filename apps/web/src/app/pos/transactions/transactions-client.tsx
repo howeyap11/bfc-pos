@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import { COLORS } from "@/lib/theme";
+import "./transactions-responsive.css";
 import { useOnScreenKeyboard, OnScreenKeyboard } from "@/lib/useOnScreenKeyboard";
 import { lineItemDisplayParts, getLineItemMainLabel } from "@/lib/printHelpers";
 
@@ -92,7 +93,22 @@ export default function TransactionsClient() {
   const [refundError, setRefundError] = useState("");
 
   const [selectedDateKey, setSelectedDateKey] = useState<string | null>(null);
+  const [summary, setSummary] = useState<{
+    dateLabel: string;
+    grossSalesCents: number;
+    transactionCount: number;
+    skuCount: number;
+    totalQuantity: number;
+    categories: Array<{ name: string; qty: number; amountCents: number }>;
+    cashiers: string[];
+    ejournalRows: Array<{ id: string; label: string; categoryName: string | null; cashier: string; qty: number; amountCents: number }>;
+    ejournalTotalQty: number;
+    ejournalTotalAmountCents: number;
+  } | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
   const [ejournalCashierFilter, setEjournalCashierFilter] = useState<string>("ALL");
+  const [zReadingDate, setZReadingDate] = useState<string>("");
+  const [zReadingBusy, setZReadingBusy] = useState(false);
 
   useEffect(() => {
     // Load active staff from localStorage
@@ -137,7 +153,7 @@ export default function TransactionsClient() {
     }
   }
 
-  async function loadTransactions(cursor: number | null = null) {
+  async function loadTransactions(cursor: number | null = null, selectedDate: string | null = null) {
     if (!activeStaff?.staffKey) {
       setError("No active staff session. Please login from the Register page first.");
       return;
@@ -145,22 +161,29 @@ export default function TransactionsClient() {
 
     setLoading(true);
     setError(null);
-    
+
+    const params = new URLSearchParams({ limit: "30" });
+    if (cursor != null) params.set("cursor", String(cursor));
+    if (selectedDate) params.set("selectedDate", selectedDate);
+
     try {
-      const cursorParam = cursor != null ? `&cursor=${cursor}` : "";
-      const res = await fetch(`/api/pos/transactions/list?limit=30${cursorParam}`, { 
+      const res = await fetch(`/api/pos/transactions/list?${params}`, {
         cache: "no-store",
-        headers: {
-          "x-staff-key": activeStaff.staffKey,
-        },
+        headers: { "x-staff-key": activeStaff.staffKey },
       });
       const data = await res.json();
-      
+
       if (res.ok) {
         setTransactions(data.items || []);
         setNextCursor(data.nextCursor ?? null);
         setHasMore(data.hasMore ?? false);
         setCursorUsedForCurrentPage(cursor);
+
+        console.log("[Transactions] list loaded", {
+          selectedDate,
+          currentPageRowCount: (data.items || []).length,
+          hasMore: data.hasMore,
+        });
       } else {
         setError(data.error || data.message || "Failed to load transactions");
       }
@@ -171,17 +194,75 @@ export default function TransactionsClient() {
     }
   }
 
+  async function loadSummary(selectedDate: string) {
+    if (!activeStaff?.staffKey) return;
+
+    setSummaryLoading(true);
+    try {
+      const res = await fetch(
+        `/api/pos/transactions/summary?selectedDate=${encodeURIComponent(selectedDate)}`,
+        { cache: "no-store", headers: { "x-staff-key": activeStaff.staffKey } }
+      );
+      const data = await res.json();
+
+      if (res.ok && !data.error) {
+        setSummary({
+          dateLabel: data.dateLabel ?? "",
+          grossSalesCents: data.grossSalesCents ?? 0,
+          transactionCount: data.transactionCount ?? 0,
+          skuCount: data.skuCount ?? 0,
+          totalQuantity: data.totalQuantity ?? 0,
+          categories: data.categories ?? [],
+          cashiers: data.cashiers ?? [],
+          ejournalRows: data.ejournalRows ?? [],
+          ejournalTotalQty: data.ejournalTotalQty ?? 0,
+          ejournalTotalAmountCents: data.ejournalTotalAmountCents ?? 0,
+        });
+
+        console.log("[Transactions] summary loaded", {
+          selectedDate,
+          computedBusinessRange: data.from && data.to ? `from ${data.from} to ${data.to}` : "N/A",
+          totalMatchingTransactionCount: data.transactionCount,
+          grossSalesFromSummary: data.grossSalesCents,
+        });
+      } else {
+        setSummary(null);
+      }
+    } catch (e) {
+      console.error("[Transactions] summary load failed", e);
+      setSummary(null);
+    } finally {
+      setSummaryLoading(false);
+    }
+  }
+
+  function loadForSelectedDate(dateKey: string) {
+    setSelectedDateKey(dateKey);
+    setPrevCursors([]);
+    loadSummary(dateKey);
+    loadTransactions(null, dateKey);
+  }
+
+  function loadAllDates() {
+    userRequestedAllDatesRef.current = true;
+    setSelectedDateKey(null);
+    setSummary(null);
+    setPrevCursors([]);
+    hasAutoSelectedRef.current = false;
+    loadTransactions(null, null);
+  }
+
   function goToNextPage() {
     if (!hasMore || nextCursor == null) return;
     setPrevCursors((prev) => [...prev, cursorUsedForCurrentPage]);
-    loadTransactions(nextCursor);
+    loadTransactions(nextCursor, selectedDateKey);
   }
 
   function goToPrevPage() {
     if (prevCursors.length === 0) return;
     const prevCursor = prevCursors[prevCursors.length - 1];
     setPrevCursors((prev) => prev.slice(0, -1));
-    loadTransactions(prevCursor);
+    loadTransactions(prevCursor, selectedDateKey);
   }
 
   function getDateKey(dateStr: string): string {
@@ -368,117 +449,66 @@ export default function TransactionsClient() {
     [transactions]
   );
 
+  const hasAutoSelectedRef = React.useRef(false);
+  const userRequestedAllDatesRef = React.useRef(false);
+
   useEffect(() => {
     if (transactions.length === 0 || dateGroups.length === 0) {
       setSelectedDateKey(null);
+      setSummary(null);
+      hasAutoSelectedRef.current = false;
+      userRequestedAllDatesRef.current = false;
       return;
     }
 
+    if (userRequestedAllDatesRef.current) return;
+
+    if (selectedDateKey && dateGroups.some((g) => g.dateKey === selectedDateKey)) {
+      return;
+    }
+
+    if (hasAutoSelectedRef.current) return;
+
     const todayKey = getDateKey(new Date().toISOString());
     const hasToday = dateGroups.some((g) => g.dateKey === todayKey);
+    const nextKey = hasToday ? todayKey : dateGroups[0]?.dateKey ?? null;
 
-    setSelectedDateKey((prev) => {
-      if (prev && dateGroups.some((g) => g.dateKey === prev)) {
-        return prev;
-      }
-      if (hasToday) return todayKey;
-      return dateGroups[0]?.dateKey ?? prev;
-    });
-  }, [transactions, dateGroups]);
+    if (nextKey) {
+      hasAutoSelectedRef.current = true;
+      loadForSelectedDate(nextKey);
+    }
+  }, [transactions, dateGroups, selectedDateKey]);
 
   useEffect(() => {
     setEjournalCashierFilter("ALL");
   }, [selectedDateKey]);
 
+  useEffect(() => {
+    if (!selectedDateKey) return;
+    setZReadingDate((prev) => prev || selectedDateKey);
+  }, [selectedDateKey]);
+
   const report = useMemo(() => {
-    if (!selectedDateKey) return null;
-    const group = dateGroups.find((g) => g.dateKey === selectedDateKey);
-    if (!group) return null;
+    if (!selectedDateKey || !summary) return null;
 
-    const txsForReport = group.transactions.filter((tx) => tx.status !== "VOID");
-    if (txsForReport.length === 0) return null;
-
-    const categoriesMap = new Map<
-      string,
-      { name: string; qty: number; amountCents: number }
-    >();
-    const cashierSet = new Set<string>();
-    const ejournalRows: {
-      id: string;
-      label: string;
-      categoryName: string | null;
-      cashier: string;
-      qty: number;
-      amountCents: number;
-    }[] = [];
-    let totalQty = 0;
-    let totalAmountCents = 0;
-
-    for (const tx of txsForReport) {
-      const cashier = tx.createdBy || "Unknown";
-      cashierSet.add(cashier);
-      const includeThisTxInFilter =
-        ejournalCashierFilter === "ALL" || ejournalCashierFilter === cashier;
-
-      for (const line of tx.lineItems) {
-        const totalRefundedQty = line.refundItems.reduce(
-          (sum, ri) => sum + ri.qtyRefunded,
-          0
-        );
-        const totalRefundedAmount = line.refundItems.reduce(
-          (sum, ri) => sum + ri.amountRefundedCents,
-          0
-        );
-        const netQty = line.qty - totalRefundedQty;
-        const netAmount = line.lineTotal - totalRefundedAmount;
-        if (netQty <= 0 && netAmount <= 0) continue;
-
-        const categoryName =
-          line.categoryName ?? (line.item?.category?.name ?? null);
-        const catKey = categoryName?.trim() ? categoryName.trim() : "Uncategorized";
-        const existingCat = categoriesMap.get(catKey) || {
-          name: catKey,
-          qty: 0,
-          amountCents: 0,
-        };
-        existingCat.qty += netQty;
-        existingCat.amountCents += netAmount;
-        categoriesMap.set(catKey, existingCat);
-
-        if (includeThisTxInFilter) {
-          ejournalRows.push({
-            id: `${tx.id}-${line.id}`,
-            label: line.displayLabel ?? line.name,
-            categoryName,
-            cashier,
-            qty: netQty,
-            amountCents: netAmount,
-          });
-          totalQty += netQty;
-          totalAmountCents += netAmount;
-        }
-      }
-    }
-
-    const categories = Array.from(categoriesMap.values()).sort(
-      (a, b) => b.amountCents - a.amountCents
-    );
-    const cashiers = Array.from(cashierSet.values()).sort();
+    const filteredRows =
+      ejournalCashierFilter === "ALL"
+        ? summary.ejournalRows
+        : summary.ejournalRows.filter((r) => r.cashier === ejournalCashierFilter);
+    const filteredTotalQty = filteredRows.reduce((s, r) => s + r.qty, 0);
+    const filteredTotalAmount = filteredRows.reduce((s, r) => s + r.amountCents, 0);
 
     return {
-      dateLabel:
-        group.transactions.length > 0
-          ? formatDate(group.transactions[0].createdAt)
-          : "",
-      categories,
+      dateLabel: summary.dateLabel,
+      categories: summary.categories,
       ejournal: {
-        cashiers,
-        rows: ejournalRows,
-        totalQty,
-        totalAmountCents,
+        cashiers: summary.cashiers,
+        rows: filteredRows,
+        totalQty: filteredTotalQty,
+        totalAmountCents: filteredTotalAmount,
       },
     };
-  }, [selectedDateKey, dateGroups, ejournalCashierFilter]);
+  }, [selectedDateKey, summary, ejournalCashierFilter]);
 
   function handlePrintCategorySummary() {
     if (!report) return;
@@ -522,6 +552,38 @@ export default function TransactionsClient() {
       `Print eJournal\n${report.dateLabel}\n${scopeLabel}\n\n` +
         lines.join("\n")
     );
+  }
+
+  async function handlePrintZReading() {
+    if (!activeStaff?.staffKey) {
+      alert("No active staff session. Please login from the Register page first.");
+      return;
+    }
+    const selected = zReadingDate || selectedDateKey;
+    if (!selected) {
+      alert("Please select a date for Z-Reading.");
+      return;
+    }
+    setZReadingBusy(true);
+    try {
+      const res = await fetch("/api/pos/transactions/z-reading/print", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-staff-key": activeStaff.staffKey,
+        },
+        body: JSON.stringify({ selectedDate: selected }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.message || data?.error || "Z-Reading print failed");
+      }
+      alert(`Z-Reading sent to receipt printer for ${selected}.`);
+    } catch (e: any) {
+      alert(`Failed to print Z-Reading: ${e?.message ?? String(e)}`);
+    } finally {
+      setZReadingBusy(false);
+    }
   }
 
   if (!authenticated) {
@@ -660,21 +722,29 @@ export default function TransactionsClient() {
   }
 
   return (
-    <div style={{ 
-      height: "100vh", 
-      display: "flex", 
-      flexDirection: "column",
-      background: "#1f1f1f", 
-      color: "#fff" 
-    }}>
-      <div style={{ 
-        flex: "0 0 auto",
-        padding: 24,
-        maxWidth: 1600,
-        width: "100%",
-        margin: "0 auto"
-      }}>
-        <h1 style={{ marginBottom: 24, fontSize: 28, fontWeight: "bold" }}>Transactions</h1>
+    <div
+      className="pos-transactions-root"
+      style={{
+        height: "100vh",
+        display: "flex",
+        flexDirection: "column",
+        background: "#1f1f1f",
+        color: "#fff",
+      }}
+    >
+      <div
+        className="pos-transactions-header-wrap"
+        style={{
+          flex: "0 0 auto",
+          padding: 24,
+          maxWidth: 1600,
+          width: "100%",
+          margin: "0 auto",
+        }}
+      >
+        <h1 style={{ marginBottom: 24, fontSize: "clamp(20px, 5vw, 28px)", fontWeight: "bold" }}>
+          Transactions
+        </h1>
 
         {error && (
           <div style={{ 
@@ -706,24 +776,37 @@ export default function TransactionsClient() {
       </div>
 
       {/* Scrollable Transactions Table + Reporting Panel */}
-      <div style={{ 
-        flex: "1 1 auto",
-        overflowY: "auto",
-        paddingLeft: 24,
-        paddingRight: 24,
-        paddingBottom: 24
-      }}>
+      <div
+        className="pos-transactions-scroll-wrap"
+        style={{
+          flex: "1 1 auto",
+          overflowY: "auto",
+          paddingLeft: 24,
+          paddingRight: 24,
+          paddingBottom: 24,
+        }}
+      >
         <div
+          className="pos-transactions-content"
           style={{
             maxWidth: 1600,
             margin: "0 auto",
             display: "grid",
-            gridTemplateColumns: "minmax(0, 2.3fr) minmax(320px, 1.7fr)",
+            gridTemplateColumns: "minmax(0, 2.3fr) minmax(280px, 1.7fr)",
             gap: 16,
           }}
         >
-          <div style={{ overflowX: "auto", background: "#2a2a2a", borderRadius: 8, border: "1px solid #3a3a3a" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <div
+            className="pos-transactions-table-wrap"
+            style={{
+              overflowX: "auto",
+              WebkitOverflowScrolling: "touch",
+              background: "#2a2a2a",
+              borderRadius: 8,
+              border: "1px solid #3a3a3a",
+            }}
+          >
+          <table className="pos-transactions-table" style={{ width: "100%", minWidth: 600, borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: "#1a1a1a", borderBottom: "2px solid #3a3a3a" }}>
                 <th style={{ padding: 16, textAlign: "left", fontWeight: "600", fontSize: 13, color: "#aaa", textTransform: "uppercase" }}>
@@ -760,7 +843,7 @@ export default function TransactionsClient() {
                       <td colSpan={6} style={{ padding: 0, borderBottom: "1px solid #3a3a3a" }}>
                         <button
                           type="button"
-                          onClick={() => setSelectedDateKey(group.dateKey)}
+                          onClick={() => loadForSelectedDate(group.dateKey)}
                           style={{
                             width: "100%",
                             textAlign: "left",
@@ -792,7 +875,9 @@ export default function TransactionsClient() {
                               color: "#f9fafb",
                             }}
                           >
-                            {group.transactions.length} tx
+                            {selectedDateKey === group.dateKey && summary != null
+                              ? `${summary.transactionCount} tx`
+                              : `${group.transactions.length} tx`}
                           </span>
                         </button>
                       </td>
@@ -1024,14 +1109,16 @@ export default function TransactionsClient() {
           </table>
           {/* Pagination: 30 per page, Prev / Next */}
           <div
+            className="pos-transactions-pagination"
             style={{
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
+              flexWrap: "wrap",
               padding: "12px 16px",
               borderTop: "1px solid #3a3a3a",
               background: "#1a1a1a",
-              gap: 16,
+              gap: 12,
             }}
           >
             <span style={{ fontSize: 13, color: "#888" }}>
@@ -1079,6 +1166,7 @@ export default function TransactionsClient() {
 
         {/* Right-side reporting panel */}
         <div
+          className="pos-transactions-report-panel"
           style={{
             background: "#111827",
             borderRadius: 8,
@@ -1112,9 +1200,29 @@ export default function TransactionsClient() {
                 style={{
                   fontSize: 13,
                   color: "#9ca3af",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
                 }}
               >
                 {report?.dateLabel || "Select a date from the list"}
+                {selectedDateKey && (
+                  <button
+                    type="button"
+                    onClick={loadAllDates}
+                    style={{
+                      padding: "2px 8px",
+                      fontSize: 11,
+                      borderRadius: 4,
+                      border: "1px solid #4b5563",
+                      background: "transparent",
+                      color: "#9ca3af",
+                      cursor: "pointer",
+                    }}
+                  >
+                    All dates
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -1138,21 +1246,52 @@ export default function TransactionsClient() {
               }}
             >
               <div style={{ fontSize: 14, fontWeight: 700 }}>All Categories</div>
-              <button
-                type="button"
-                onClick={handlePrintCategorySummary}
-                style={{
-                  padding: "6px 10px",
-                  fontSize: 12,
-                  borderRadius: 999,
-                  border: "1px solid #4b5563",
-                  background: "#111827",
-                  color: "#e5e7eb",
-                  cursor: "pointer",
-                }}
-              >
-                🖨️ Print
-              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="date"
+                  value={zReadingDate}
+                  onChange={(e) => setZReadingDate(e.target.value)}
+                  style={{
+                    padding: "6px 8px",
+                    fontSize: 12,
+                    borderRadius: 6,
+                    border: "1px solid #4b5563",
+                    background: "#0f172a",
+                    color: "#e5e7eb",
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={handlePrintZReading}
+                  disabled={zReadingBusy}
+                  style={{
+                    padding: "6px 10px",
+                    fontSize: 12,
+                    borderRadius: 999,
+                    border: "1px solid #4b5563",
+                    background: zReadingBusy ? "#1f2937" : "#111827",
+                    color: "#e5e7eb",
+                    cursor: zReadingBusy ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {zReadingBusy ? "Printing..." : "Z-Reading"}
+                </button>
+                <button
+                  type="button"
+                  onClick={handlePrintCategorySummary}
+                  style={{
+                    padding: "6px 10px",
+                    fontSize: 12,
+                    borderRadius: 999,
+                    border: "1px solid #4b5563",
+                    background: "#111827",
+                    color: "#e5e7eb",
+                    cursor: "pointer",
+                  }}
+                >
+                  🖨️ Print
+                </button>
+              </div>
             </div>
             <div
               style={{

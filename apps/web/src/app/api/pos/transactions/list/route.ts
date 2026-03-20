@@ -5,12 +5,15 @@ export async function GET(req: Request) {
     const url = new URL(req.url);
     const limit = url.searchParams.get("limit") || "30";
     const cursor = url.searchParams.get("cursor") ?? "";
-    
+    const selectedDate = url.searchParams.get("selectedDate") ?? "";
+
     // Pass through x-staff-key from client request
     const staffKey = req.headers.get("x-staff-key") ?? "";
 
-    const cursorParam = cursor ? `&cursor=${cursor}` : "";
-    const upstream = await fetch(`${getBackendUrl()}/pos/transactions/list?limit=${limit}${cursorParam}`, {
+    const params = new URLSearchParams({ limit });
+    if (cursor) params.set("cursor", cursor);
+    if (selectedDate) params.set("selectedDate", selectedDate);
+    const upstream = await fetch(`${getBackendUrl()}/pos/transactions/list?${params}`, {
       cache: "no-store",
       headers: { "x-staff-key": staffKey },
     });

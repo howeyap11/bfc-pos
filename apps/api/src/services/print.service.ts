@@ -107,6 +107,12 @@ const GS = "\x1d";
 const INIT = ESC + "@";
 const LF = "\x0a";
 const FULL_CUT = GS + "V\x00";
+const OPEN_CASH_DRAWER_PULSE = Buffer.from([0x1b, 0x70, 0x00, 0x19, 0xfa]);
+
+/** Fire-and-forget drawer pulse; failures must never affect receipt printing. */
+async function pulseCashDrawer(printerName: string): Promise<void> {
+  await printReceiptESC(OPEN_CASH_DRAWER_PULSE, printerName);
+}
 
 /** Raw ESC/POS QR code bytes (model 2). moduleSize 1..16, ecLevel 48(L)|49(M)|50(Q)|51(H). */
 function escPosQrBytes(data: string, moduleSize = 6, ecLevel = 48): Buffer {
@@ -819,7 +825,10 @@ export function buildStickerTspl(
   const blocks: string[] = [tsplHeader(widthMm, heightMm)];
   for (const line of tx.lineItems) {
     const { lines: lineLabels, topRowCount, topRoles } = getStickerLineLabel(line);
-    blocks.push(buildOneLabelTspl(lineLabels, transactionTypeLabel, widthMm, heightMm, topRowCount, topRoles));
+    const copies = Math.max(1, Math.trunc(line.qty || 1));
+    for (let i = 0; i < copies; i++) {
+      blocks.push(buildOneLabelTspl(lineLabels, transactionTypeLabel, widthMm, heightMm, topRowCount, topRoles));
+    }
   }
   blocks.push("FORM 2,0\n"); // small feed so last label is not clipped
   return blocks.join("\n");
@@ -842,6 +851,14 @@ export async function printReceiptToDevice(
 ): Promise<void> {
   const config = await getPrinterConfig();
   const name = requireResolvedWindowsQueue(config.receiptPrinter, "receipt", config.receiptPrinter);
+  const shouldOpenDrawer = tx.payments.some((p) => p.method === "CASH");
+
+  if (shouldOpenDrawer) {
+    void pulseCashDrawer(name).catch(() => {
+      // Fail silently by design so drawer issues never block receipt printing.
+    });
+  }
+
   const data = buildReceiptEscPos(tx, header, snapResiboVouchers);
   await printReceiptESC(data, name);
 }
@@ -854,7 +871,8 @@ export async function printStickersToDevice(
   const config = await getPrinterConfig();
   const name = requireResolvedWindowsQueue(config.stickerPrinter, "sticker", config.receiptPrinter);
   const stickerLines = tx.lineItems.filter((line) => shouldPrintSticker(line, opts.stickerPrintCategoryIds));
-  if (stickerLines.length === 0) return { printed: 0 };
+  const totalStickerCopies = stickerLines.reduce((sum, line) => sum + Math.max(1, Math.trunc(line.qty || 1)), 0);
+  if (totalStickerCopies === 0) return { printed: 0 };
   const tspl = buildStickerTspl(
     { ...tx, lineItems: stickerLines },
     config.stickerWidthMm,
@@ -912,7 +930,7 @@ export async function printStickersToDevice(
   console.log("[STICKER_VERIFY] === END ===");
 
   await printStickerTSPL(tspl, name);
-  return { printed: stickerLines.length };
+  return { printed: totalStickerCopies };
 }
 
 export function buildTestReceiptEscPos(): Buffer {
@@ -925,6 +943,30 @@ export async function printTestReceiptToDevice(): Promise<void> {
   const name = requireResolvedWindowsQueue(config.receiptPrinter, "receipt", config.receiptPrinter);
   const data = buildTestReceiptEscPos();
   await printReceiptESC(data, name);
+}
+
+/** Print raw ESC/POS bytes to the configured receipt printer queue. Uses same printer-config.json as Settings -> Printer. */
+export async function printRawEscPosToReceiptPrinter(data: Buffer): Promise<void> {
+  const config = await getPrinterConfig();
+  const configuredFromSettings = config.receiptPrinter;
+  console.log("[BFC_PRINTER] report print: printer name loaded from settings (printer-config.json)", {
+    receiptPrinter: configuredFromSettings,
+  });
+  const name = requireResolvedWindowsQueue(config.receiptPrinter, "receipt", config.receiptPrinter);
+  console.log("[BFC_PRINTER] report print: printer name passed into print service (resolved Windows queue)", {
+    resolvedQueueName: name,
+  });
+  try {
+    await printReceiptESC(data, name);
+    console.log("[BFC_PRINTER] report print: print result OK", { printerName: name });
+  } catch (err) {
+    console.error("[BFC_PRINTER] report print: print failure", {
+      printerName: name,
+      configuredFromSettings,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
 }
 
 export async function printTestStickerToDevice(): Promise<void> {

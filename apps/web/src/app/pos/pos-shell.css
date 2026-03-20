@@ -3,3 +3,56 @@ body:has([data-pos-shell]) {
   background: #0a0a0a;
   color: #ededed;
 }
+
+/* Mobile: body scroll lock when drawer is open */
+body.pos-drawer-open {
+  overflow: hidden;
+  position: fixed;
+  width: 100%;
+}
+
+/* Drawer backdrop - fade in */
+.pos-drawer-backdrop {
+  animation: pos-drawer-backdrop-in 0.2s ease-out forwards;
+}
+
+@keyframes pos-drawer-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Drawer panel - slide in from left */
+.pos-drawer-panel {
+  animation: pos-drawer-panel-in 0.25s ease-out forwards;
+}
+
+@keyframes pos-drawer-panel-in {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+/* Mobile breakpoint - compact Customer Display (icon only) */
+@media (max-width: 1023px) {
+  .pos-header-compact .pos-customer-display-text {
+    display: none !important;
+  }
+  .pos-header-compact .pos-customer-display-icon {
+    display: inline-flex !important;
+  }
+}
+
+.pos-customer-display-icon {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+}

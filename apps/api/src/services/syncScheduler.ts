@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { syncCatalogFromCloud } from "./syncCatalog.service";
 import { processTransactionSyncOutbox } from "./outbox.service";
 import { uploadTransactionToCloud } from "./transactionSync.service";
+import { cleanupStaleMenuImages } from "./menuImageCache.service";
 
 let catalogInFlight = false;
 let transactionFlushInFlight = false;
@@ -35,6 +36,16 @@ export async function runCatalogSync(app: FastifyInstance): Promise<void> {
       lastCatalogSyncOk = true;
       lastCatalogSyncError = null;
       app.log.info({ result: outcome.result }, "Catalog sync completed");
+      try {
+        const activeItems = await app.prisma.cloudMenuItem.findMany({
+          where: { storeId: "store_1", isActive: true, deletedAt: null },
+          select: { cloudId: true },
+        });
+        const removed = await cleanupStaleMenuImages(activeItems.map((i) => i.cloudId));
+        if (removed > 0) app.log.info({ removed }, "Menu image cache: cleaned stale entries");
+      } catch (err) {
+        app.log.warn({ err }, "Menu image cache cleanup failed");
+      }
     } else {
       lastCatalogSyncOk = false;
       lastCatalogSyncError = outcome.error ?? "Sync failed";
