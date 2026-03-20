@@ -22,12 +22,11 @@ Thumbs.db
 # Build
 build
 
-# Prisma
-prisma/migrations/dev.db
-
-# Prisma local DB
+# Prisma local SQLite DB (each POS machine has its own; never track)
+apps/api/prisma/prisma/*.db
+apps/api/prisma/prisma/*.db-journal
 *.db
-apps/api/prisma/prisma/dev.db
+*.db-journal
 
 # Menu image cache (offline images)
 cache/

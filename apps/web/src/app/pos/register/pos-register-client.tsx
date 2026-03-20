@@ -13,7 +13,13 @@ import {
   type CartSnapshotItem,
 } from "@/lib/customerDisplaySnapshot";
 import { extractSizeTemp } from "@/lib/lineItemDisplay";
-import { lineItemDisplayParts, getLineItemMainLabel } from "@/lib/printHelpers";
+import {
+  lineItemDisplayParts,
+  getLineItemMainLabel,
+  printReceipt,
+  printSticker,
+  cartToReceiptTransaction,
+} from "@/lib/printHelpers";
 import {
   resolveIncludedShots,
   resolveIncludedShotsBySizeName,
@@ -2155,6 +2161,7 @@ export default function PosRegisterClient() {
     cartSnapshot: CartItem[];
   }) {
     const transactionId = crypto.randomUUID();
+    console.log("[Offline] transaction saved locally (queued)", { transactionId });
     enqueueSyncItem({
       id: transactionId,
       type: "transaction",
@@ -2975,20 +2982,6 @@ export default function PosRegisterClient() {
     try {
       const serviceType = cart[0]?.transactionTypeCode ?? "FOR_HERE";
       const body = buildCreateTransactionBody({ cart, discountCents: 0, serviceType, ...(qrOrderId && { orderId: qrOrderId }) });
-      if (!navigator.onLine) {
-        const totalCents = calculateTotal();
-        const paymentAmountCents = Math.round((parseFloat(amountReceivedPesos) || 0) * 100);
-        const hasPayment = paymentAmountCents > 0 || paymentMethod === "CASH";
-        await queueOfflineTransactionSync({
-          txBody: body as Record<string, unknown>,
-          payments: hasPayment
-            ? [{ method: paymentMethod, amountCents: paymentAmountCents > 0 ? paymentAmountCents : totalCents }]
-            : [],
-          methodLabel: paymentMethod,
-          cartSnapshot: [...cart],
-        });
-        return;
-      }
 
       const data = await fetchJson("/api/pos/transactions", {
         method: "POST",
@@ -3003,7 +2996,25 @@ export default function PosRegisterClient() {
         await addPayment(data.id);
       }
     } catch (e: any) {
-      setError(e?.message ?? String(e));
+      const isNetworkError =
+        e?.message?.toLowerCase().includes("fetch") ||
+        e?.message?.toLowerCase().includes("network") ||
+        e?.name === "TypeError";
+      if (isNetworkError) {
+        const totalCents = calculateTotal();
+        const paymentAmountCents = Math.round((parseFloat(amountReceivedPesos) || 0) * 100);
+        const hasPayment = paymentAmountCents > 0 || paymentMethod === "CASH";
+        const serviceType = cart[0]?.transactionTypeCode ?? "FOR_HERE";
+        const body = buildCreateTransactionBody({ cart, discountCents: 0, serviceType, ...(qrOrderId && { orderId: qrOrderId }) });
+        await queueOfflineTransactionSync({
+          txBody: body as Record<string, unknown>,
+          payments: hasPayment ? [{ method: paymentMethod, amountCents: paymentAmountCents > 0 ? paymentAmountCents : totalCents }] : [],
+          methodLabel: paymentMethod,
+          cartSnapshot: [...cart],
+        });
+      } else {
+        setError(e?.message ?? String(e));
+      }
     } finally {
       setBusy(false);
     }
@@ -3212,16 +3223,6 @@ export default function PosRegisterClient() {
         console.log("[SplitPayment] Creating sale first");
         const serviceType = cart[0]?.transactionTypeCode ?? "FOR_HERE";
         const body = buildCreateTransactionBody({ cart, discountCents: 0, serviceType, ...(qrOrderId && { orderId: qrOrderId }) });
-        if (!navigator.onLine) {
-          await queueOfflineTransactionSync({
-            txBody: body as Record<string, unknown>,
-            payments: payments.map((p) => ({ method: p.method, amountCents: p.amountCents })),
-            methodLabel: "SPLIT",
-            cartSnapshot: [...cart],
-          });
-          setShowSplitPaymentModal(false);
-          return;
-        }
         const data = await fetchJson("/api/pos/transactions", {
           method: "POST",
           headers: buildHeaders(),
@@ -3282,6 +3283,24 @@ export default function PosRegisterClient() {
     } catch (e: any) {
       console.error("[SplitPayment] Error:", e);
 
+      const isNetworkError =
+        e?.message?.toLowerCase().includes("fetch") ||
+        e?.message?.toLowerCase().includes("network") ||
+        e?.name === "TypeError";
+      if (isNetworkError) {
+        const serviceType = cart[0]?.transactionTypeCode ?? "FOR_HERE";
+        const body = buildCreateTransactionBody({ cart, discountCents: 0, serviceType, ...(qrOrderId && { orderId: qrOrderId }) });
+        await queueOfflineTransactionSync({
+          txBody: body as Record<string, unknown>,
+          payments: payments.map((p) => ({ method: p.method, amountCents: p.amountCents })),
+          methodLabel: "SPLIT",
+          cartSnapshot: [...cart],
+        });
+        setShowSplitPaymentModal(false);
+        setBusy(false);
+        return;
+      }
+
       // Handle invalid staff key with recovery
       if (e?.message?.includes("Invalid staff key") && !isRetry) {
         console.warn("[SplitPayment] Invalid staff key detected - clearing session and requesting re-authentication");
@@ -3307,38 +3326,26 @@ export default function PosRegisterClient() {
   async function finalizePayment(method: PaymentMode, isRetry = false) {
     console.log("[PAY] START", { method, cartLength: cart.length, activeStaff, isRetry });
 
+    if (!cart.length) {
+      console.log("[PAY] EMPTY CART");
+      setError("Cart is empty");
+      return;
+    }
+
+    const hasValidStaff = await requireStaffForPayment();
+    if (!hasValidStaff) {
+      console.warn("[PAY] Staff authentication required - aborting");
+      return;
+    }
+
+    setBusy(true);
+    const cartSnapshot = JSON.parse(JSON.stringify(cart));
+
     try {
-      // Pre-flight validation
-      if (!cart.length) {
-        console.log("[PAY] EMPTY CART");
-        setError("Cart is empty");
-        return;
-      }
-
-      // Ensure staff is authenticated with valid key
-      const hasValidStaff = await requireStaffForPayment();
-      if (!hasValidStaff) {
-        console.warn("[PAY] Staff authentication required - aborting");
-        return;
-      }
-
-      setBusy(true);
-      const cartSnapshot = JSON.parse(JSON.stringify(cart));
-
       console.log("[PAY] Creating transaction...", { itemCount: cartSnapshot.length });
 
       const serviceType = cartSnapshot[0]?.transactionTypeCode ?? "FOR_HERE";
       const txBody = buildCreateTransactionBody({ cart: cartSnapshot, discountCents: 0, serviceType });
-      if (!navigator.onLine) {
-        const offlineTotalCents = calculateTotal();
-        await queueOfflineTransactionSync({
-          txBody: txBody as Record<string, unknown>,
-          payments: [{ method, amountCents: offlineTotalCents }],
-          methodLabel: method,
-          cartSnapshot,
-        });
-        return;
-      }
 
       console.log("[PAY] TX BODY", { 
         itemCount: cartSnapshot.length,
@@ -3443,6 +3450,28 @@ export default function PosRegisterClient() {
 
     } catch (err: any) {
       console.error("[PAY] CRASH", err);
+
+      // API/network unreachable - queue for offline sync (booth offline-first)
+      const isNetworkError =
+        err?.name === "TypeError" ||
+        err?.message?.toLowerCase().includes("fetch") ||
+        err?.message?.toLowerCase().includes("network");
+      if (isNetworkError && !err?.code) {
+        const offlineTotalCents = calculateTotal();
+        const txBody = buildCreateTransactionBody({
+          cart: cartSnapshot,
+          discountCents: 0,
+          serviceType: cartSnapshot[0]?.transactionTypeCode ?? "FOR_HERE",
+        });
+        await queueOfflineTransactionSync({
+          txBody: txBody as Record<string, unknown>,
+          payments: [{ method, amountCents: offlineTotalCents }],
+          methodLabel: method,
+          cartSnapshot,
+        });
+        setBusy(false);
+        return;
+      }
 
       // Handle invalid staff key with one retry
       if (err?.name === "InvalidStaffKeyError" && !isRetry) {
@@ -4813,11 +4842,6 @@ export default function PosRegisterClient() {
       >
         <div style={{ flexShrink: 0, padding: 12, borderBottom: "1px solid #2a2a2a", background: "#1f1f1f" }}>
           <h2 style={{ margin: 0, fontSize: 18, color: "#fff" }}>Current Order</h2>
-          {pendingSyncCount > 0 && (
-            <p style={{ margin: "6px 0 0", fontSize: 12, color: "#facc15" }}>
-              Offline sync queue: {pendingSyncCount} pending
-            </p>
-          )}
         </div>
 
         {/* Staff Selector (UTAK Style - Top of Cart) */}
@@ -4936,6 +4960,7 @@ export default function PosRegisterClient() {
                 formatPesos={formatPesos}
                 router={router}
                 activeStaff={activeStaff}
+                storeConfig={storeConfig as { businessName?: string | null; address?: string | null; stickerPrintCategoryIds?: string[] | null } | null}
               />
             );
           }
@@ -5501,6 +5526,7 @@ function TransactionSuccessPanel({
   formatPesos,
   router,
   activeStaff,
+  storeConfig,
 }: {
   transaction: {
     id: string;
@@ -5515,6 +5541,7 @@ function TransactionSuccessPanel({
   formatPesos: (cents: number) => string;
   router: ReturnType<typeof useRouter>;
   activeStaff: { id: string; name: string; role: string; staffKey: string } | null;
+  storeConfig?: { businessName?: string | null; address?: string | null; stickerPrintCategoryIds?: string[] | null } | null;
 }) {
   console.log("[SUCCESS PANEL RENDER]", { transaction });
 
@@ -5530,12 +5557,29 @@ function TransactionSuccessPanel({
     return null;
   }
 
-  const hasDrinks = transaction.items.some(item => 
-    item?.itemName?.toLowerCase().includes("coffee") || 
+  const hasDrinks = transaction.items.some(item =>
+    item?.itemName?.toLowerCase().includes("coffee") ||
     item?.itemName?.toLowerCase().includes("latte") ||
     item?.itemName?.toLowerCase().includes("matcha")
   );
   const isQueuedOffline = transaction.transactionNo <= 0;
+
+  // Client-side print from local data (for queued/offline transactions)
+  function handlePrintFromLocal(type: "receipt" | "sticker") {
+    console.log("[Print] triggered from local transaction", { type, transactionId: transaction.id });
+    const rx = cartToReceiptTransaction(
+      { ...transaction, items: transaction.items },
+      { businessName: storeConfig?.businessName ?? null, address: storeConfig?.address ?? null }
+    );
+    if (type === "receipt") {
+      printReceipt(rx);
+    } else {
+      const printed = printSticker(rx, {
+        stickerPrintCategoryIds: storeConfig?.stickerPrintCategoryIds ?? undefined,
+      });
+      if (!printed) alert("No sticker items for this order (check Settings > Sticker categories).");
+    }
+  }
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", padding: 16, overflow: "auto" }}>
@@ -5564,7 +5608,9 @@ function TransactionSuccessPanel({
       <div style={{ background: "#1a1a1a", padding: 16, borderRadius: 8, marginBottom: 16 }}>
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
           <span style={{ color: "#aaa", fontSize: 13 }}>Transaction #</span>
-          <strong style={{ color: "#fff", fontSize: 13 }}>{transaction.transactionNo}</strong>
+          <strong style={{ color: "#fff", fontSize: 13 }}>
+            {isQueuedOffline ? "Pending sync" : transaction.transactionNo}
+          </strong>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
           <span style={{ color: "#aaa", fontSize: 13 }}>Total</span>
@@ -5593,13 +5639,12 @@ function TransactionSuccessPanel({
         )}
       </div>
 
-      {/* Print Buttons - UTAK Style (ABOVE items) */}
+      {/* Print Buttons - UTAK Style (ABOVE items). Work offline from local data when queued. */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
         <button
-          disabled={isQueuedOffline}
           onClick={async () => {
             if (isQueuedOffline) {
-              alert("This receipt can be printed after the queued transaction syncs.");
+              handlePrintFromLocal("receipt");
               return;
             }
             const headers: Record<string, string> = {};
@@ -5632,17 +5677,15 @@ function TransactionSuccessPanel({
             color: "#fff",
             border: "1px solid #4a4a4a",
             borderRadius: 6,
-            cursor: isQueuedOffline ? "not-allowed" : "pointer",
-            opacity: isQueuedOffline ? 0.6 : 1,
+            cursor: "pointer",
           }}
         >
           🧾 Receipt
         </button>
         <button
-          disabled={isQueuedOffline}
           onClick={async () => {
             if (isQueuedOffline) {
-              alert("Stickers can be printed after the queued transaction syncs.");
+              handlePrintFromLocal("sticker");
               return;
             }
             const headers: Record<string, string> = {};
@@ -5667,8 +5710,7 @@ function TransactionSuccessPanel({
             color: "#fff",
             border: "1px solid #4a4a4a",
             borderRadius: 6,
-            cursor: isQueuedOffline ? "not-allowed" : "pointer",
-            opacity: isQueuedOffline ? 0.6 : 1,
+            cursor: "pointer",
           }}
         >
           🏷️ Sticker

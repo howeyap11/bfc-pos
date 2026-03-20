@@ -261,25 +261,7 @@ export default function HealthGate({ children }: { children: React.ReactNode }) 
   }, [softDisconnected, check]);
 
   if (gateState === "ready" && everReady) {
-    return (
-      <>
-        {softDisconnected && (
-          <div
-            style={{
-              padding: "8px 16px",
-              background: "rgba(234, 179, 8, 0.95)",
-              color: "#000",
-              fontSize: 13,
-              textAlign: "center",
-              zIndex: 9998,
-            }}
-          >
-            Connection issue — retrying in the background. Last known data is still shown.
-          </div>
-        )}
-        <HealthGateReady systemStatus={systemStatus}>{children}</HealthGateReady>
-      </>
-    );
+    return <HealthGateReady systemStatus={systemStatus}>{children}</HealthGateReady>;
   }
 
   const { title, sub } = getMessage(
@@ -312,34 +294,9 @@ export default function HealthGate({ children }: { children: React.ReactNode }) 
 
 function HealthGateReady({
   children,
-  systemStatus,
 }: {
   children: React.ReactNode;
   systemStatus: SystemStatus | null;
 }) {
-  const degraded = systemStatus?.runtimeStatus === "degraded";
-  if (!degraded) return <>{children}</>;
-
-  const msg =
-    systemStatus?.sync?.lastError ||
-    systemStatus?.errorMessage ||
-    "Some services are degraded. POS remains usable.";
-
-  return (
-    <>
-      <div
-        style={{
-          padding: "8px 16px",
-          background: COLORS.warning,
-          color: "#000",
-          fontSize: 13,
-          textAlign: "center",
-          zIndex: 9998,
-        }}
-      >
-        ⚠ {msg}
-      </div>
-      {children}
-    </>
-  );
+  return <>{children}</>;
 }

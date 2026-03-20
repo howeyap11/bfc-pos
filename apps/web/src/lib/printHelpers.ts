@@ -266,3 +266,81 @@ export function printSticker(tx: ReceiptTransaction, opts?: StickerPrintOptions)
   }
   return writeStickerAndPrint(w, tx, opts);
 }
+
+/** Cart-item shape from register success panel (offline/queued transactions). */
+export type CartItemForPrint = {
+  tempId: string;
+  itemName: string;
+  basePrice: number;
+  qty: number;
+  baseType?: string;
+  sizeLabel?: string;
+  milkChoice?: string;
+  shotsQty?: number;
+  optionTotalCents: number;
+  surchargeCents?: number;
+  discountAmount?: number;
+  selectedOptions: Array<{ name: string; groupName: string }>;
+  note?: string;
+};
+
+/**
+ * Convert queued/offline transaction with cart items to ReceiptTransaction for client-side printing.
+ * Use when transaction is in localStorage queue and not yet in API/DB.
+ */
+export function cartToReceiptTransaction(
+  tx: {
+    id: string;
+    transactionNo: number;
+    totalCents: number;
+    method: string;
+    items: CartItemForPrint[];
+    createdAt: string;
+  },
+  opts?: { businessName?: string | null; address?: string | null }
+): ReceiptTransaction {
+  const paymentMethod = tx.method.replace(/\s*\(QUEUED\)\s*$/i, "").trim() || "CASH";
+  const lineItems: ReceiptLineItem[] = tx.items.map((item) => {
+    const qty = Math.max(1, item.qty || 1);
+    const lineTotal =
+      item.basePrice * qty +
+      (item.optionTotalCents ?? 0) +
+      (item.surchargeCents ?? 0) -
+      (item.discountAmount ?? 0);
+    const unitPrice = Math.round(lineTotal / qty);
+    const opts: unknown[] = [];
+    if (item.baseType || item.sizeLabel) {
+      opts.push({ type: "size", baseType: item.baseType ?? "", sizeLabel: item.sizeLabel ?? "" });
+    }
+    if (item.milkChoice) opts.push({ type: "milk", choice: item.milkChoice });
+    if ((item.shotsQty ?? 0) >= 1) opts.push({ type: "shots", qty: item.shotsQty ?? 0 });
+    (item.selectedOptions ?? []).forEach((o) => {
+      if (o.name) opts.push({ name: o.name, group: o.groupName });
+    });
+    const { temp, size } = extractSizeTemp(item);
+    const sizeTemp = [temp, size].filter(Boolean).join(" ");
+    const displayLabel = sizeTemp ? `${item.itemName} – ${sizeTemp}` : item.itemName;
+    return {
+      id: item.tempId,
+      name: item.itemName,
+      qty,
+      unitPrice,
+      lineTotal,
+      note: item.note ?? null,
+      optionsJson: opts.length > 0 ? JSON.stringify(opts) : null,
+      displayLabel,
+    };
+  });
+  return {
+    id: tx.id,
+    transactionNo: tx.transactionNo,
+    totalCents: tx.totalCents,
+    subtotalCents: tx.totalCents,
+    discountCents: 0,
+    createdAt: tx.createdAt,
+    lineItems,
+    payments: [{ method: paymentMethod, amountCents: tx.totalCents }],
+    businessName: opts?.businessName ?? null,
+    address: opts?.address ?? null,
+  };
+}
