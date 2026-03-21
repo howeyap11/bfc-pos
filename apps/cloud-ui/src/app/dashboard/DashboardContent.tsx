@@ -115,9 +115,9 @@ export function DashboardContent() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-teal-50/60">
-      <div className="mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col p-6">
-        {/* 1. Top summary cards */}
-        <div className="mb-6 grid shrink-0 grid-cols-2 gap-4 sm:grid-cols-4">
+      <div className="mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col p-4 sm:p-6">
+        {/* 1. Top summary cards - 2 columns on mobile, 4 on larger screens */}
+        <div className="mb-4 grid shrink-0 grid-cols-2 gap-3 sm:mb-6 sm:gap-4 sm:grid-cols-4">
           <SummaryCard
             title="Total Net Sales"
             value={kpis ? formatPesos(kpis.totalNetSalesCents) : "—"}
@@ -169,7 +169,7 @@ export function DashboardContent() {
         </div>
 
         {/* 2. Greeting + date filter + last synced */}
-        <div className="mb-6 flex shrink-0 flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="mb-4 flex shrink-0 flex-col gap-3 sm:mb-6 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
           <h2 className="text-lg font-semibold text-teal-900">
             {getGreeting()}, {storeName}!
           </h2>

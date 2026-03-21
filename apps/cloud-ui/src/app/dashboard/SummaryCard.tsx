@@ -21,7 +21,7 @@ export function SummaryCard({ title, value, gradient = "blue", icon, loading }: 
   const bg = CARD_GRADIENTS[gradient] ?? CARD_GRADIENTS.blue;
   return (
     <div
-      className="relative overflow-hidden rounded-2xl p-5 shadow-sm ring-1 ring-black/5"
+      className="relative overflow-hidden rounded-2xl p-4 shadow-sm ring-1 ring-black/5 sm:p-5"
       style={{ background: bg, color: "rgba(0,0,0,0.85)" }}
     >
       {icon && (
@@ -32,7 +32,7 @@ export function SummaryCard({ title, value, gradient = "blue", icon, loading }: 
       {loading ? (
         <div className="h-10 w-24 animate-pulse rounded bg-black/10" />
       ) : (
-        <div className="text-2xl font-bold tracking-tight">{value}</div>
+        <div className="text-xl font-bold tracking-tight sm:text-2xl">{value}</div>
       )}
       <div className="mt-1 text-sm font-medium opacity-90">{title}</div>
     </div>

@@ -2,7 +2,6 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import { COLORS } from "@/lib/theme";
-import "./transactions-responsive.css";
 import { useOnScreenKeyboard, OnScreenKeyboard } from "@/lib/useOnScreenKeyboard";
 import { lineItemDisplayParts, getLineItemMainLabel } from "@/lib/printHelpers";
 import {
@@ -202,50 +201,14 @@ export default function TransactionsClient() {
       const data = await res.json();
 
       if (res.ok) {
-        const apiItems: Transaction[] = data.items || [];
-        const queue = getSyncQueueItems();
-        setPendingSyncCount(queue.length);
-        const apiIds = new Set(apiItems.map((t) => t.id));
-        const queuedRows: Transaction[] = queue
-          .filter((q) => q.type === "transaction" && !apiIds.has(q.payload.transactionId))
-          .map((q) => {
-            const p = q.payload;
-            const totalCents = (p.payments || []).reduce((s: number, pay: { amountCents: number }) => s + pay.amountCents, 0);
-            return {
-              id: p.transactionId,
-              transactionNo: 0,
-              status: "PAID",
-              source: "POS",
-              serviceType: "FOR_HERE",
-              totalCents,
-              subtotalCents: totalCents,
-              discountCents: 0,
-              serviceCents: 0,
-              createdAt: new Date().toISOString(),
-              createdBy: null,
-              voidedAt: null,
-              voidReason: null,
-              lineItems: [],
-              payments: (p.payments || []).map((pay: { method: string; amountCents: number }) => ({
-                id: "",
-                method: pay.method,
-                amountCents: pay.amountCents,
-                status: "COMPLETED",
-              })),
-              refunds: [],
-            } as Transaction;
-          });
-        setTransactions([...queuedRows, ...apiItems]);
+        setTransactions(data.items || []);
         setNextCursor(data.nextCursor ?? null);
         setHasMore(data.hasMore ?? false);
         setCursorUsedForCurrentPage(cursor);
 
         console.log("[Transactions] list loaded", {
           selectedDate,
-          localCount: queuedRows.length,
-          remoteCount: apiItems.length,
-          mergedCount: queuedRows.length + apiItems.length,
-          offlineQueueSize: queue.length,
+          currentPageRowCount: (data.items || []).length,
           hasMore: data.hasMore,
         });
       } else {
@@ -253,38 +216,6 @@ export default function TransactionsClient() {
       }
     } catch (e: any) {
       setError(e?.message ?? String(e));
-      const queue = getSyncQueueItems();
-      setPendingSyncCount(queue.length);
-      const queuedRows: Transaction[] = queue
-        .filter((q) => q.type === "transaction")
-        .map((q) => {
-          const p = q.payload;
-          const totalCents = (p.payments || []).reduce((s: number, pay: { amountCents: number }) => s + pay.amountCents, 0);
-          return {
-            id: p.transactionId,
-            transactionNo: 0,
-            status: "PAID",
-            source: "POS",
-            serviceType: "FOR_HERE",
-            totalCents,
-            subtotalCents: totalCents,
-            discountCents: 0,
-            serviceCents: 0,
-            createdAt: new Date().toISOString(),
-            createdBy: null,
-            voidedAt: null,
-            voidReason: null,
-            lineItems: [],
-            payments: (p.payments || []).map((pay: { method: string; amountCents: number }) => ({
-              id: "",
-              method: pay.method,
-              amountCents: pay.amountCents,
-              status: "COMPLETED",
-            })),
-            refunds: [],
-          } as Transaction;
-        });
-      setTransactions(queuedRows);
     } finally {
       setLoading(false);
     }
@@ -911,37 +842,24 @@ export default function TransactionsClient() {
       </div>
 
       {/* Scrollable Transactions Table + Reporting Panel */}
-      <div
-        className="pos-transactions-scroll-wrap"
-        style={{
-          flex: "1 1 auto",
-          overflowY: "auto",
-          paddingLeft: 24,
-          paddingRight: 24,
-          paddingBottom: 24,
-        }}
-      >
+      <div style={{ 
+        flex: "1 1 auto",
+        overflowY: "auto",
+        paddingLeft: 24,
+        paddingRight: 24,
+        paddingBottom: 24
+      }}>
         <div
-          className="pos-transactions-content"
           style={{
             maxWidth: 1600,
             margin: "0 auto",
             display: "grid",
-            gridTemplateColumns: "minmax(0, 2.3fr) minmax(280px, 1.7fr)",
+            gridTemplateColumns: "minmax(0, 2.3fr) minmax(320px, 1.7fr)",
             gap: 16,
           }}
         >
-          <div
-            className="pos-transactions-table-wrap"
-            style={{
-              overflowX: "auto",
-              WebkitOverflowScrolling: "touch",
-              background: "#2a2a2a",
-              borderRadius: 8,
-              border: "1px solid #3a3a3a",
-            }}
-          >
-          <table className="pos-transactions-table" style={{ width: "100%", minWidth: 600, borderCollapse: "collapse" }}>
+          <div style={{ overflowX: "auto", background: "#2a2a2a", borderRadius: 8, border: "1px solid #3a3a3a" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: "#1a1a1a", borderBottom: "2px solid #3a3a3a" }}>
                 <th style={{ padding: 16, textAlign: "left", fontWeight: "600", fontSize: 13, color: "#aaa", textTransform: "uppercase" }}>
@@ -1021,7 +939,6 @@ export default function TransactionsClient() {
                       const netTotal = calculateNetTotal(tx);
                       const hasRefunds = tx.refunds.length > 0;
                       const isVoided = tx.status === "VOID";
-                      const isPendingSync = tx.transactionNo <= 0;
                       
                       // Get unique payment methods
                       const paymentMethods = [...new Set(tx.payments.map(p => p.method))];
@@ -1109,11 +1026,7 @@ export default function TransactionsClient() {
 
                           {/* Receipt # */}
                           <td style={{ padding: 16, verticalAlign: "top", fontSize: 14, color: "#ddd", fontWeight: "600" }}>
-                            {isPendingSync ? (
-                              <span style={{ fontSize: 11, color: "#facc15" }}>Pending sync</span>
-                            ) : (
-                              <>#{tx.transactionNo}</>
-                            )}
+                            #{tx.transactionNo}
                           </td>
 
                           {/* Cashier */}
@@ -1124,10 +1037,7 @@ export default function TransactionsClient() {
                           {/* Items */}
                           <td style={{ padding: 16, verticalAlign: "top" }}>
                             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                              {isPendingSync && tx.lineItems.length === 0 ? (
-                                <span style={{ fontSize: 12, color: "#888" }}>—</span>
-                              ) : (
-                              tx.lineItems.map(line => {
+                              {tx.lineItems.map(line => {
                                 const refunded = isLineRefunded(line);
                                 const { primary, secondary } = lineItemDisplayParts(line);
                                 const mods = [primary, ...secondary].filter(Boolean);
@@ -1179,8 +1089,7 @@ export default function TransactionsClient() {
                                     </span>
                                   </div>
                                 );
-                              })
-                              )}
+                              })}
                             </div>
                           </td>
 
@@ -1211,7 +1120,7 @@ export default function TransactionsClient() {
                               )}
                             </div>
                             
-                            {!isVoided && !isPendingSync && (
+                            {!isVoided && (
                               <button
                                 onClick={() => openRefundModal(tx)}
                                 style={{
@@ -1253,16 +1162,14 @@ export default function TransactionsClient() {
           </table>
           {/* Pagination: 30 per page, Prev / Next */}
           <div
-            className="pos-transactions-pagination"
             style={{
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
-              flexWrap: "wrap",
               padding: "12px 16px",
               borderTop: "1px solid #3a3a3a",
               background: "#1a1a1a",
-              gap: 12,
+              gap: 16,
             }}
           >
             <span style={{ fontSize: 13, color: "#888" }}>
@@ -1310,7 +1217,6 @@ export default function TransactionsClient() {
 
         {/* Right-side reporting panel */}
         <div
-          className="pos-transactions-report-panel"
           style={{
             background: "#111827",
             borderRadius: 8,
@@ -1720,6 +1626,7 @@ export default function TransactionsClient() {
             </div>
           </div>
         </div>
+        </div>
       </div>
 
       {/* Refund Modal */}
@@ -1993,7 +1900,6 @@ export default function TransactionsClient() {
         onValueChange={keyboard.updateValue}
         onDone={keyboard.handleDone}
       />
-    </div>
     </div>
   );
 }

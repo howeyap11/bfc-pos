@@ -114,33 +114,33 @@ export function TransactionsContent() {
 
   return (
     <div
-      className="min-h-screen p-6"
+      className="min-h-screen p-4 sm:p-6"
       style={{ background: COLORS.bgDark, color: "#ddd" }}
     >
       <div className="mx-auto max-w-6xl">
-        <h1 className="mb-4 text-2xl font-semibold text-white">Transactions</h1>
+        <h1 className="mb-4 text-xl font-semibold text-white sm:text-2xl">Transactions</h1>
 
-        {/* Controls */}
-        <div className="mb-6 flex flex-wrap items-end gap-4">
+        {/* Controls - stack on mobile */}
+        <div className="mb-4 flex flex-col gap-4 sm:mb-6 sm:flex-row sm:flex-wrap sm:items-end">
           {activeTab === "Transactions" && (
             <>
-              <div>
+              <div className="w-full sm:w-auto">
                 <label className="mb-1 block text-xs text-white/70">From</label>
                 <input
                   type="date"
                   value={from}
                   onChange={(e) => setFrom(e.target.value)}
-                  className="rounded border px-3 py-2 text-sm"
+                  className="w-full rounded border px-3 py-2.5 text-base sm:w-auto sm:text-sm"
                   style={{ background: COLORS.bgPanel, borderColor: COLORS.borderLight, color: "#fff" }}
                 />
               </div>
-              <div>
+              <div className="w-full sm:w-auto">
                 <label className="mb-1 block text-xs text-white/70">To</label>
                 <input
                   type="date"
                   value={to}
                   onChange={(e) => setTo(e.target.value)}
-                  className="rounded border px-3 py-2 text-sm"
+                  className="w-full rounded border px-3 py-2.5 text-base sm:w-auto sm:text-sm"
                   style={{ background: COLORS.bgPanel, borderColor: COLORS.borderLight, color: "#fff" }}
                 />
               </div>
@@ -193,7 +193,7 @@ export function TransactionsContent() {
                 type="button"
                 onClick={handleGo}
                 disabled={loading}
-                className="rounded px-4 py-2 text-sm font-medium text-black"
+                className="min-h-[44px] rounded px-5 py-3 text-base font-medium text-black sm:min-h-0 sm:py-2 sm:text-sm"
                 style={{ background: COLORS.primary }}
               >
                 {loading ? "Loading..." : "Go"}
@@ -223,13 +223,13 @@ export function TransactionsContent() {
           )}
         </div>
 
-        {/* Tabs */}
-        <div className="mb-4 flex gap-1 border-b" style={{ borderColor: COLORS.borderLight }}>
+        {/* Tabs - finger-friendly on mobile */}
+        <div className="mb-4 flex gap-0.5 overflow-x-auto border-b sm:gap-1" style={{ borderColor: COLORS.borderLight }}>
           {TABS.map((tab) => (
             <a
               key={tab}
               href={`/transactions?tab=${tab}`}
-              className="px-4 py-2 text-sm font-medium transition-colors"
+              className="min-w-0 flex-1 px-3 py-3 text-center text-xs font-medium transition-colors sm:flex-none sm:px-4 sm:py-2 sm:text-sm"
               style={{
                 borderBottom: activeTab === tab ? `2px solid ${COLORS.primary}` : "2px solid transparent",
                 color: activeTab === tab ? COLORS.primary : "#888",
@@ -258,8 +258,8 @@ export function TransactionsContent() {
           )}
 
           {activeTab === "Transactions" && (
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse">
+            <div className="overflow-x-auto" style={{ WebkitOverflowScrolling: "touch" } as React.CSSProperties}>
+              <table className="w-full min-w-[600px] border-collapse">
                 <thead>
                   <tr style={{ background: "#1a1a1a", borderBottom: `2px solid ${COLORS.borderLight}` }}>
                     <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-white/70">Date / ID / Payment</th>
