@@ -1,6 +1,8 @@
 import type { PrismaClient } from "@prisma/client";
 import { printRawEscPosToReceiptPrinter } from "./print.service";
 import { getPrinterConfig } from "./printerConfig.service";
+import { getTransactionSummary } from "./transactionSummary.service";
+import { getCalendarDayRange } from "./dayRange.service";
 
 const RECEIPT_WIDTH = 48;
 const STORE_ID = "store_1";
@@ -14,6 +16,8 @@ export type ZReadingTotals = {
   snrDiscountCents: number;
   regularDiscountCents: number;
   vatCents: number;
+  refundCount: number;
+  refundAmountCents: number;
   voidedCount: number;
   voidedAmountCents: number;
   transactionCount: number;
@@ -88,100 +92,30 @@ function classifyDiscountTag(tag: string | null | undefined): "PWD" | "SNR" | "R
   return "REGULAR";
 }
 
+/**
+ * @deprecated Use getCalendarDayRange from dayRange.service.ts
+ * Kept for backward compatibility; now returns strict calendar day range.
+ */
 export function getBusinessDayZReadingRange(selectedDate: string | Date): { from: Date; to: Date } {
-  const base = selectedDate instanceof Date ? new Date(selectedDate) : new Date(`${selectedDate}T00:00:00`);
-  const from = new Date(base);
-  from.setHours(0, 0, 0, 0);
-  const to = new Date(from);
-  to.setDate(to.getDate() + 1);
-  to.setHours(1, 0, 0, 0);
-  return { from, to };
+  return getCalendarDayRange(selectedDate);
 }
 
+/**
+ * Generate Z-Reading report from the transaction summary (single source of truth).
+ * Uses strict calendar day: selected day 12:00 AM to 11:59:59 PM.
+ */
 export async function generateZReadingReport(
   prisma: PrismaClient,
   selectedDate: string
 ): Promise<ZReadingReport> {
-  const { from, to } = getBusinessDayZReadingRange(selectedDate);
+  const summary = await getTransactionSummary(prisma, selectedDate);
   const printerConfig = await getPrinterConfig();
   const storeConfig = await prisma.storeConfig.findUnique({
     where: { storeId: STORE_ID },
     select: { enabledPaymentMethods: true },
   });
 
-  const txs = await prisma.transaction.findMany({
-    where: {
-      storeId: STORE_ID,
-      createdAt: { gte: from, lt: to },
-    },
-    include: {
-      lineItems: { include: { refundItems: true } },
-      payments: true,
-    },
-    orderBy: { transactionNo: "asc" },
-  });
-
-  const paidTxs = txs.filter((tx) => tx.status === "PAID");
-  const voidedTxs = txs.filter((tx) => tx.status === "VOID");
-
-  let grossSalesCents = 0;
-  let pwdDiscountCents = 0;
-  let snrDiscountCents = 0;
-  let regularDiscountCents = 0;
-  let transactionCount = 0;
-  let skuCount = 0;
-  let totalQuantity = 0;
-  let startReceipt: number | null = null;
-  let endReceipt: number | null = null;
-  const paymentTotalsCents: ZReadingPaymentTotals = {};
-  const discountSourceLog: Array<{ txNo: number; lineName: string; tag: string | null; amountCents: number; kind: "PWD" | "SNR" | "REGULAR" }> = [];
-
-  for (const tx of paidTxs) {
-    const refundedCents = tx.lineItems.reduce(
-      (sum, li) => sum + li.refundItems.reduce((inner, ri) => inner + ri.amountRefundedCents, 0),
-      0
-    );
-    const netSales = Math.max(0, tx.totalCents - refundedCents);
-    grossSalesCents += netSales;
-    regularDiscountCents += Math.max(0, tx.discountCents ?? 0);
-    transactionCount += 1;
-
-    if (startReceipt == null || tx.transactionNo < startReceipt) startReceipt = tx.transactionNo;
-    if (endReceipt == null || tx.transactionNo > endReceipt) endReceipt = tx.transactionNo;
-
-    for (const li of tx.lineItems) {
-      const refundedQty = li.refundItems.reduce((sum, ri) => sum + ri.qtyRefunded, 0);
-      const netQty = Math.max(0, li.qty - refundedQty);
-      if (netQty > 0) {
-        skuCount += 1;
-        totalQuantity += netQty;
-      }
-
-      if (refundedQty > 0) continue;
-      if (!li.optionsJson) continue;
-      try {
-        const opts = JSON.parse(li.optionsJson) as Array<{ type?: string; amountCents?: number; tag?: string | null }>;
-        for (const o of opts) {
-          if (o.type !== "discount" || (o.amountCents ?? 0) <= 0) continue;
-          const amount = Math.max(0, Math.trunc(o.amountCents ?? 0));
-          const kind = classifyDiscountTag(o.tag);
-          if (kind === "PWD") pwdDiscountCents += amount;
-          else if (kind === "SNR") snrDiscountCents += amount;
-          else regularDiscountCents += amount;
-          discountSourceLog.push({ txNo: tx.transactionNo, lineName: li.name, tag: o.tag ?? null, amountCents: amount, kind });
-        }
-      } catch {
-        // ignore malformed optionsJson
-      }
-    }
-
-    for (const p of tx.payments) {
-      if (p.status !== "PAID") continue;
-      const method = normalizePaymentMethod(p.method);
-      paymentTotalsCents[method] = (paymentTotalsCents[method] ?? 0) + p.amountCents;
-    }
-  }
-
+  const paymentTotalsCents: ZReadingPaymentTotals = { ...summary.paymentTotalsCents };
   let enabledMethods: string[] = [];
   try {
     enabledMethods = storeConfig?.enabledPaymentMethods
@@ -190,45 +124,48 @@ export async function generateZReadingReport(
   } catch {
     enabledMethods = [];
   }
-  const presentMethods = Object.keys(paymentTotalsCents);
   const methodOrderSeed = ["CASH", "GCASH", "CARD", "FOODPANDA", "GRAB", "BFCAPP"];
-  const methodsToPrint = Array.from(new Set([...methodOrderSeed, ...enabledMethods, ...presentMethods]));
+  const methodsToPrint = Array.from(new Set([...methodOrderSeed, ...enabledMethods, ...Object.keys(paymentTotalsCents)]));
   for (const m of methodsToPrint) {
     if (!(m in paymentTotalsCents)) paymentTotalsCents[m] = 0;
   }
 
   const cashSalesCents = paymentTotalsCents.CASH ?? 0;
-  const voidedAmountCents = voidedTxs.reduce((sum, tx) => sum + tx.totalCents, 0);
-  const voidedCount = voidedTxs.length;
 
-  console.log("[Z_READING] discount breakdown", {
-    pwdDiscountTotal: pwdDiscountCents,
-    snrDiscountTotal: snrDiscountCents,
-    regularDiscountTotal: regularDiscountCents,
-    discountSourceCount: discountSourceLog.length,
-    rawDiscountSources: discountSourceLog.slice(0, 20),
+  console.log("[Z_READING] from summary", {
+    selectedDate,
+    from: summary.from.toISOString(),
+    to: summary.to.toISOString(),
+    transactionCount: summary.transactionCount,
+    grossSalesCents: summary.grossSalesCents,
+    refundCount: summary.refundCount,
+    refundAmountCents: summary.refundAmountCents,
+    startReceipt: summary.startReceipt,
+    endReceipt: summary.endReceipt,
   });
 
   const report: ZReadingReport = {
     selectedDate,
-    from,
-    to,
+    from: summary.from,
+    to: summary.to,
     printedAt: new Date(),
     printerName: printerConfig.receiptPrinter,
     totals: {
-      grossSalesCents,
+      grossSalesCents: summary.grossSalesCents,
       cashSalesCents,
-      pwdDiscountCents,
-      snrDiscountCents,
-      regularDiscountCents,
+      pwdDiscountCents: summary.pwdDiscountCents,
+      snrDiscountCents: summary.snrDiscountCents,
+      regularDiscountCents: summary.regularDiscountCents,
       vatCents: 0,
-      voidedCount,
-      voidedAmountCents,
-      transactionCount,
-      skuCount,
-      totalQuantity,
-      startReceipt,
-      endReceipt,
+      refundCount: summary.refundCount,
+      refundAmountCents: summary.refundAmountCents,
+      voidedCount: summary.voidedCount,
+      voidedAmountCents: summary.voidedAmountCents,
+      transactionCount: summary.transactionCount,
+      skuCount: summary.skuCount,
+      totalQuantity: summary.totalQuantity,
+      startReceipt: summary.startReceipt,
+      endReceipt: summary.endReceipt,
       paymentTotalsCents,
     },
   };
@@ -263,6 +200,8 @@ export function formatZReadingReceipt(report: ZReadingReport): Buffer {
   lines.push(lineKV("SNR Discount", moneyFromCents(report.totals.snrDiscountCents)));
   lines.push(lineKV("Regular Discount", moneyFromCents(report.totals.regularDiscountCents)));
   lines.push(lineKV("VAT", moneyFromCents(report.totals.vatCents)));
+  lines.push(lineKV("Refund Count", String(report.totals.refundCount)));
+  lines.push(lineKV("Refund Amount", moneyFromCents(report.totals.refundAmountCents)));
   lines.push(lineKV("Voided Tx", String(report.totals.voidedCount)));
   lines.push(lineKV("Voided Amount", moneyFromCents(report.totals.voidedAmountCents)));
   lines.push(sep);

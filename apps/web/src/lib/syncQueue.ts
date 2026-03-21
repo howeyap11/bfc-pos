@@ -16,7 +16,22 @@ export type SyncQueueItem = {
   payload: QueuedTransactionPayload;
   status: SyncQueueStatus;
   retries: number;
+  lastError?: string;
 };
+
+const SYNC_QUEUE_UPDATED_EVENT = "bfc-sync-queue-updated";
+
+/** Dispatches an event so components can refresh their pending count. Call after processSyncQueue. */
+export function notifySyncQueueUpdated() {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(SYNC_QUEUE_UPDATED_EVENT));
+}
+
+export function addSyncQueueUpdatedListener(cb: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(SYNC_QUEUE_UPDATED_EVENT, cb);
+  return () => window.removeEventListener(SYNC_QUEUE_UPDATED_EVENT, cb);
+}
 
 const STORAGE_KEY = "bfc_sync_queue_v1";
 export const MAX_SYNC_RETRIES = 5;
@@ -48,6 +63,8 @@ export function enqueueSyncItem(item: SyncQueueItem) {
 export function getSyncQueueItems() {
   return readQueue();
 }
+
+let syncInProgress = false;
 
 async function processTransaction(item: SyncQueueItem) {
   const payload = item.payload;
@@ -85,33 +102,61 @@ async function processTransaction(item: SyncQueueItem) {
 }
 
 export async function processSyncQueue() {
-  if (typeof window === "undefined" || !navigator.onLine) return;
+  if (typeof window === "undefined") return;
+  if (syncInProgress) {
+    if (process.env.NODE_ENV === "development") {
+      console.log("[Sync] Skipped: sync already in progress");
+    }
+    return;
+  }
   const queue = readQueue();
   if (!queue.length) return;
 
-  const nextQueue: SyncQueueItem[] = [];
-  for (const item of queue) {
-    if (item.retries >= MAX_SYNC_RETRIES) {
-      nextQueue.push({ ...item, status: "failed" });
-      continue;
-    }
-    try {
-      if (item.type === "transaction") {
-        await processTransaction(item);
-      } else {
-        throw new Error(`Unsupported sync item type: ${item.type}`);
-      }
-      // done -> remove from queue
-    } catch {
-      const retries = item.retries + 1;
-      nextQueue.push({
-        ...item,
-        retries,
-        status: retries >= MAX_SYNC_RETRIES ? "failed" : "pending",
-      });
-    }
+  syncInProgress = true;
+  const wasOnline = navigator.onLine;
+  if (process.env.NODE_ENV === "development") {
+    console.log("[Sync] Starting", { queueSize: queue.length, navigatorOnLine: wasOnline });
   }
 
-  writeQueue(nextQueue);
+  try {
+    const nextQueue: SyncQueueItem[] = [];
+    for (let i = 0; i < queue.length; i++) {
+      const item = queue[i];
+      if (item.retries >= MAX_SYNC_RETRIES) {
+        nextQueue.push({ ...item, status: "failed" });
+        if (process.env.NODE_ENV === "development") {
+          console.log("[Sync] Item skipped (max retries)", { id: item.id, retries: item.retries });
+        }
+        continue;
+      }
+      try {
+        if (item.type === "transaction") {
+          await processTransaction(item);
+          if (process.env.NODE_ENV === "development") {
+            console.log("[Sync] Item synced", { id: item.id, type: item.type });
+          }
+          // success -> remove from queue (don't push to nextQueue)
+        } else {
+          throw new Error(`Unsupported sync item type: ${item.type}`);
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const retries = item.retries + 1;
+        nextQueue.push({
+          ...item,
+          retries,
+          status: retries >= MAX_SYNC_RETRIES ? "failed" : "pending",
+          lastError: errMsg,
+        });
+        if (process.env.NODE_ENV === "development") {
+          console.warn("[Sync] Item failed", { id: item.id, retries, error: errMsg });
+        }
+      }
+    }
+    writeQueue(nextQueue);
+    notifySyncQueueUpdated();
+  } finally {
+    syncInProgress = false;
+  }
 }
 

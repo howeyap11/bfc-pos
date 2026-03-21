@@ -7,6 +7,7 @@ import { COLORS } from "@/lib/theme";
 import { clearActiveStaff } from "@/lib/staffAuth";
 import PosErrorBoundary from "./pos-error-boundary";
 import HealthGate from "./health-gate";
+import SyncWorker from "./sync-worker";
 
 const ROUTE_TITLES: Record<string, string> = {
   "/pos/register": "Register",
@@ -226,6 +227,7 @@ export default function PosLayout({ children }: { children: React.ReactNode }) {
               background: COLORS.bgDarkest,
             }}
           >
+            <SyncWorker />
             {children}
 
             {/* Left Drawer */}

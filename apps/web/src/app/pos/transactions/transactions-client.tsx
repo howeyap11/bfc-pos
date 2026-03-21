@@ -5,7 +5,12 @@ import { COLORS } from "@/lib/theme";
 import "./transactions-responsive.css";
 import { useOnScreenKeyboard, OnScreenKeyboard } from "@/lib/useOnScreenKeyboard";
 import { lineItemDisplayParts, getLineItemMainLabel } from "@/lib/printHelpers";
-import { getSyncQueueItems } from "@/lib/syncQueue";
+import {
+  getSyncQueueItems,
+  processSyncQueue,
+  notifySyncQueueUpdated,
+  addSyncQueueUpdatedListener,
+} from "@/lib/syncQueue";
 
 type Transaction = {
   id: string;
@@ -94,6 +99,7 @@ export default function TransactionsClient() {
   const [refundError, setRefundError] = useState("");
 
   const [pendingSyncCount, setPendingSyncCount] = useState(0);
+  const [syncRetrying, setSyncRetrying] = useState(false);
   const [selectedDateKey, setSelectedDateKey] = useState<string | null>(null);
   const [summary, setSummary] = useState<{
     dateLabel: string;
@@ -126,6 +132,26 @@ export default function TransactionsClient() {
       console.error("[Transactions] Failed to load active staff", e);
     }
   }, []);
+
+  useEffect(() => {
+    const updateCount = () => {
+      const queue = getSyncQueueItems();
+      setPendingSyncCount(queue.length);
+    };
+    updateCount();
+    const unsubscribe = addSyncQueueUpdatedListener(updateCount);
+    return unsubscribe;
+  }, []);
+
+  async function handleRetrySync() {
+    setSyncRetrying(true);
+    try {
+      await processSyncQueue();
+      notifySyncQueueUpdated();
+    } finally {
+      setSyncRetrying(false);
+    }
+  }
 
   async function handlePinSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -291,9 +317,11 @@ export default function TransactionsClient() {
 
         console.log("[Transactions] summary loaded", {
           selectedDate,
-          computedBusinessRange: data.from && data.to ? `from ${data.from} to ${data.to}` : "N/A",
-          totalMatchingTransactionCount: data.transactionCount,
-          grossSalesFromSummary: data.grossSalesCents,
+          computedDayRange: data.from && data.to ? `from ${data.from} to ${data.to}` : "N/A",
+          fullDayTransactionCount: data.transactionCount,
+          grossSalesCents: data.grossSalesCents,
+          refundCount: data.refundCount ?? 0,
+          refundAmountCents: data.refundAmountCents ?? 0,
         });
       } else {
         setSummary(null);
@@ -819,6 +847,9 @@ export default function TransactionsClient() {
           {pendingSyncCount > 0 && (
             <span
               style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
                 padding: "6px 12px",
                 fontSize: 12,
                 background: "rgba(234, 179, 8, 0.2)",
@@ -828,6 +859,24 @@ export default function TransactionsClient() {
               }}
             >
               Offline sync queue: {pendingSyncCount} pending
+              <button
+                type="button"
+                onClick={handleRetrySync}
+                disabled={syncRetrying}
+                style={{
+                  padding: "4px 8px",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  background: "rgba(234, 179, 8, 0.4)",
+                  color: "#0a0a0a",
+                  border: "1px solid rgba(234, 179, 8, 0.8)",
+                  borderRadius: 4,
+                  cursor: syncRetrying ? "not-allowed" : "pointer",
+                  opacity: syncRetrying ? 0.7 : 1,
+                }}
+              >
+                {syncRetrying ? "Syncing…" : "Retry sync"}
+              </button>
             </span>
           )}
         </div>

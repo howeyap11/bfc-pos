@@ -19,7 +19,8 @@ import {
   allocateVouchersForTransaction,
   getSnapResiboVoucherForTransaction,
 } from "../services/snapResiboVoucher.service";
-import { getBusinessDayZReadingRange, printZReading } from "../services/zReading.service";
+import { getCalendarDayRange } from "../services/dayRange.service";
+import { printZReading } from "../services/zReading.service";
 import { getTransactionSummary } from "../services/transactionSummary.service";
 
 const STORE_ID = "store_1";
@@ -129,7 +130,7 @@ function calculateMilkUpcharge(milkChoice: MilkType | undefined, defaultMilk: Mi
 export async function posTransactionsRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requireStaffHook);
 
-  // List recent transactions with pagination. Optional selectedDate (YYYY-MM-DD) filters by business-day range.
+  // List recent transactions with pagination. Optional selectedDate (YYYY-MM-DD) filters by calendar day.
   const listTransactions = async (req: any) => {
     const query = req.query as { limit?: string; cursor?: string; selectedDate?: string };
     const limit = Math.min(parseInt(query.limit || "30") || 30, 100);
@@ -138,7 +139,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
 
     const dateRange =
       selectedDate && /^\d{4}-\d{2}-\d{2}$/.test(selectedDate)
-        ? getBusinessDayZReadingRange(selectedDate)
+        ? getCalendarDayRange(selectedDate)
         : null;
 
     if (dateRange) {
@@ -149,13 +150,13 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
           from: dateRange.from.toISOString(),
           to: dateRange.to.toISOString(),
         },
-        "[Transactions] list with business-day filter"
+        "[Transactions] list with calendar-day filter"
       );
     }
 
     const whereClause: Record<string, unknown> = { storeId: STORE_ID };
     if (dateRange) {
-      whereClause.createdAt = { gte: dateRange.from, lt: dateRange.to };
+      whereClause.createdAt = { gte: dateRange.from, lt: dateRange.toExclusive };
     }
     if (cursor != null) {
       whereClause.transactionNo = { lt: cursor };
@@ -195,6 +196,16 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     const rawItems = hasMore ? transactions.slice(0, limit) : transactions;
     const nextCursor = hasMore ? rawItems[rawItems.length - 1].transactionNo : null;
 
+    if (dateRange) {
+      app.log.info({
+        event: "transactions_list_loaded",
+        selectedDate,
+        fullDayCount: transactions.length,
+        currentPageRowCount: rawItems.length,
+        hasMore,
+      });
+    }
+
     const items = rawItems.map((tx) => ({
       ...tx,
       lineItems: tx.lineItems.map((li) => ({
@@ -220,7 +231,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
   app.get("/pos/transactions", listTransactions);
   app.get("/pos/transactions/list", listTransactions);
 
-  // Full-range summary for selected day (decoupled from pagination). Uses same business-day range as Z-reading.
+  // Full-range summary for selected day (decoupled from pagination). Uses strict calendar day range.
   app.get("/pos/transactions/summary", async (req, reply) => {
     const query = req.query as { selectedDate?: string };
     const selectedDate = typeof query.selectedDate === "string" ? query.selectedDate.trim() : null;
@@ -230,7 +241,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     }
 
     try {
-      const range = getBusinessDayZReadingRange(selectedDate);
+      const range = getCalendarDayRange(selectedDate);
       const summary = await getTransactionSummary(app.prisma, selectedDate);
 
       app.log.info(
@@ -1500,7 +1511,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       select: { enabledPaymentMethods: true },
     });
 
-    const range = getBusinessDayZReadingRange(selectedDate);
+    const range = getCalendarDayRange(selectedDate);
     app.log.info(
       {
         event: "z_reading_print_request",

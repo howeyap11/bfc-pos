@@ -26,7 +26,7 @@ import {
   resolveChargeableExtraShots,
 } from "@/lib/shotHelpers";
 import { resolveInitialHasSizesModeAndSize } from "@/lib/posItemInitialSize";
-import { enqueueSyncItem, processSyncQueue } from "@/lib/syncQueue";
+import { enqueueSyncItem, addSyncQueueUpdatedListener } from "@/lib/syncQueue";
 
 /**
  * POS Register Client Component
@@ -1817,9 +1817,7 @@ export default function PosRegisterClient() {
   }, [cart, qrOrderId]);
 
   useEffect(() => {
-    let cancelled = false;
     const updateCount = () => {
-      if (cancelled) return;
       try {
         const raw = localStorage.getItem("bfc_sync_queue_v1");
         const parsed = raw ? JSON.parse(raw) : [];
@@ -1828,22 +1826,9 @@ export default function PosRegisterClient() {
         setPendingSyncCount(0);
       }
     };
-    const runSync = async () => {
-      await processSyncQueue();
-      updateCount();
-    };
-
-    runSync(); // app start
-    const onOnline = () => runSync(); // reconnect
-    window.addEventListener("online", onOnline);
-    const timer = window.setInterval(runSync, 15000); // periodic worker
-    updateCount();
-
-    return () => {
-      cancelled = true;
-      window.removeEventListener("online", onOnline);
-      window.clearInterval(timer);
-    };
+    updateCount(); // initial
+    const unsubscribe = addSyncQueueUpdatedListener(updateCount);
+    return unsubscribe;
   }, []);
 
   function checkActiveStaff() {

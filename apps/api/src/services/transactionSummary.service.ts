@@ -1,9 +1,14 @@
 /**
  * Transaction summary for the Transactions UI panel.
- * Uses the same business-day range as Z-reading. Aggregation is decoupled from pagination.
+ * Uses strict calendar day range (00:00–23:59:59). Single source of truth for day aggregation.
+ * Z-Reading consumes this summary. Aggregation is decoupled from pagination.
+ *
+ * Refund rule: Refunds are linked to the original transaction. We report by transaction
+ * sale date (createdAt). Refunded amounts reduce gross sales for that transaction.
+ * Refunds processed on a different day still reduce the original sale's net.
  */
 import type { PrismaClient } from "@prisma/client";
-import { getBusinessDayZReadingRange } from "./zReading.service";
+import { getCalendarDayRange } from "./dayRange.service";
 import { formatTransactionLineLabel } from "./print.service";
 
 const STORE_ID = "store_1";
@@ -42,20 +47,24 @@ export type TransactionSummary = {
   pwdDiscountCents: number;
   snrDiscountCents: number;
   regularDiscountCents: number;
+  refundCount: number;
+  refundAmountCents: number;
   voidedCount: number;
   voidedAmountCents: number;
+  startReceipt: number | null;
+  endReceipt: number | null;
 };
 
 export async function getTransactionSummary(
   prisma: PrismaClient,
   selectedDate: string
 ): Promise<TransactionSummary> {
-  const { from, to } = getBusinessDayZReadingRange(selectedDate);
+  const { from, to, toExclusive } = getCalendarDayRange(selectedDate);
 
   const txs = await prisma.transaction.findMany({
     where: {
       storeId: STORE_ID,
-      createdAt: { gte: from, lt: to },
+      createdAt: { gte: from, lt: toExclusive },
     },
     include: {
       lineItems: {
@@ -69,6 +78,7 @@ export async function getTransactionSummary(
         },
       },
       payments: true,
+      refunds: true,
     },
     orderBy: { transactionNo: "asc" },
   });
@@ -90,6 +100,10 @@ export async function getTransactionSummary(
   let pwdDiscountCents = 0;
   let snrDiscountCents = 0;
   let regularDiscountCents = 0;
+  let refundCount = 0;
+  let refundAmountCents = 0;
+  let startReceipt: number | null = null;
+  let endReceipt: number | null = null;
 
   const normalizePaymentMethod = (m: string) => {
     const s = String(m ?? "").trim().toUpperCase();
@@ -110,19 +124,33 @@ export async function getTransactionSummary(
       (sum, li) => sum + li.refundItems.reduce((s, ri) => s + ri.amountRefundedCents, 0),
       0
     );
+    if (refundedCents > 0) {
+      refundCount += (tx as { refunds?: { id: string }[] }).refunds?.length ?? 0;
+      refundAmountCents += refundedCents;
+    }
     const netSales = Math.max(0, tx.totalCents - refundedCents);
     grossSalesCents += netSales;
     transactionCount += 1;
+
+    if (startReceipt == null || tx.transactionNo < startReceipt) startReceipt = tx.transactionNo;
+    if (endReceipt == null || tx.transactionNo > endReceipt) endReceipt = tx.transactionNo;
 
     const cashier = tx.createdBy || "Unknown";
     salesByCashier[cashier] = (salesByCashier[cashier] ?? 0) + netSales;
 
     regularDiscountCents += Math.max(0, tx.discountCents ?? 0);
 
+    const totalCollected = tx.payments
+      .filter((p) => p.status === "PAID")
+      .reduce((s, p) => s + p.amountCents, 0);
     for (const p of tx.payments) {
       if (p.status !== "PAID") continue;
       const method = normalizePaymentMethod(p.method);
-      paymentTotalsCents[method] = (paymentTotalsCents[method] ?? 0) + p.amountCents;
+      const netPaymentCents =
+        totalCollected > 0 && refundedCents > 0
+          ? Math.round((p.amountCents * netSales) / totalCollected)
+          : p.amountCents;
+      paymentTotalsCents[method] = (paymentTotalsCents[method] ?? 0) + netPaymentCents;
     }
 
     for (const li of tx.lineItems) {
@@ -191,6 +219,18 @@ export async function getTransactionSummary(
     year: "numeric",
   });
 
+  console.log("[TransactionSummary]", {
+    selectedDate,
+    from: from.toISOString(),
+    to: to.toISOString(),
+    totalTransactionsLoaded: txs.length,
+    refundRecordsTotal: refundCount,
+    refundAmountCents,
+    grossSalesCents,
+    transactionCount,
+    voidedCount,
+  });
+
   return {
     selectedDate,
     from,
@@ -210,7 +250,11 @@ export async function getTransactionSummary(
     pwdDiscountCents,
     snrDiscountCents,
     regularDiscountCents,
+    refundCount,
+    refundAmountCents,
     voidedCount,
     voidedAmountCents,
+    startReceipt,
+    endReceipt,
   };
 }
