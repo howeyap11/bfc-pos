@@ -51,7 +51,7 @@ export function DonutChartCard({
 
   if (loading) {
     return (
-      <div className="flex min-h-[360px] max-h-[520px] flex-col rounded-2xl border border-teal-100 bg-white p-6 shadow-sm">
+      <div className="flex min-h-[360px] max-h-[520px] flex-col overflow-hidden rounded-2xl border border-teal-100 bg-white p-6 shadow-sm">
         <h3 className="shrink-0 text-lg font-semibold text-gray-800">{title}</h3>
         <p className="mb-3 shrink-0 text-sm text-gray-500">{rangeLabel}</p>
         <div
@@ -66,7 +66,7 @@ export function DonutChartCard({
   }
 
   return (
-    <div className="flex min-h-[360px] max-h-[520px] flex-col rounded-2xl border border-teal-100 bg-white p-6 shadow-sm">
+    <div className="flex min-h-[360px] max-h-[520px] flex-col overflow-hidden rounded-2xl border border-teal-100 bg-white p-6 shadow-sm">
       <h3 className="shrink-0 text-lg font-semibold text-gray-800">{title}</h3>
       <p className="mb-3 shrink-0 text-sm text-gray-500">{rangeLabel}</p>
       {chartData.length === 0 ? (
@@ -100,7 +100,7 @@ export function DonutChartCard({
             </ResponsiveContainer>
           </div>
           <div
-            className="mt-3 min-h-0 shrink-0 overflow-y-auto border-t border-gray-100 pt-2 pr-1"
+            className="mt-3 min-h-0 flex-1 overflow-y-auto border-t border-gray-100 pt-2 pr-1"
             style={{ maxHeight: LEGEND_MAX_HEIGHT }}
             role="list"
             aria-label={`${title} legend`}

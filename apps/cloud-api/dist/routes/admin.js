@@ -6,6 +6,7 @@ import { bumpCatalogVersion } from "../lib/catalogVersion.js";
 import { hashPassword } from "../lib/password.js";
 import { getDrinkSizesOptionGroup, getDrinkSizesOptionIds } from "../lib/drinkSizes.js";
 import { getDashboardKpis, getSalesByDate, getPaymentTypeTotals, getSalesByCategory, getSalesByItem, getSalesByCashier, getSalesByPayment, getItemsSold, getLastSyncedAt, getStoreName, buildDateRange, getDefaultDateRange, } from "../services/dashboard.service.js";
+import { localBusinessDateRangeToUtc, localBusinessDayToUtcRange, localBusinessMonthToUtcRange, } from "../lib/businessDay.js";
 function generateSlug(name) {
     return name
         .toLowerCase()
@@ -2847,19 +2848,15 @@ export async function adminRoutes(app) {
             reply.code(400);
             return { error: "INVALID_QUERY", message: "from and to date required (YYYY-MM-DD)" };
         }
-        const from = new Date(fromStr + "T00:00:00.000Z");
-        const to = new Date(toStr + "T23:59:59.999Z");
-        if (isNaN(from.getTime()) || isNaN(to.getTime())) {
-            reply.code(400);
-            return { error: "INVALID_DATES", message: "Invalid date format" };
-        }
-        if (from > to) {
+        if (fromStr > toStr) {
             reply.code(400);
             return { error: "INVALID_RANGE", message: "From date must be before or equal to To date" };
         }
+        // Asia/Manila: selected dates are local calendar days. Convert to UTC [start, end) for correct filtering.
+        const { start, end } = localBusinessDateRangeToUtc(fromStr, toStr);
         const maxExport = 10000;
         const items = await app.prisma.syncedTransaction.findMany({
-            where: { storeId, createdAt: { gte: from, lte: to } },
+            where: { storeId, createdAt: { gte: start, lt: end } },
             orderBy: [{ createdAt: "desc" }, { id: "desc" }],
             take: maxExport + 1,
         });
@@ -2906,17 +2903,26 @@ export async function adminRoutes(app) {
     // Synced transactions list (for Cloud Admin)
     app.get("/transactions", async (req, reply) => {
         const storeId = req.query.storeId || "store_1";
-        const from = req.query.from ? new Date(req.query.from + "T00:00:00.000Z") : null;
-        const to = req.query.to ? new Date(req.query.to + "T23:59:59.999Z") : null;
+        const fromStr = req.query.from;
+        const toStr = req.query.to;
         const limit = Math.min(parseInt(req.query.limit || "50", 10) || 50, 200);
         const cursor = req.query.cursor ? req.query.cursor : null;
         const where = { storeId };
-        if (from || to) {
+        if (fromStr || toStr) {
             where.createdAt = {};
-            if (from)
-                where.createdAt.gte = from;
-            if (to)
-                where.createdAt.lte = to;
+            if (fromStr && toStr) {
+                const { start, end } = localBusinessDateRangeToUtc(fromStr, toStr);
+                where.createdAt.gte = start;
+                where.createdAt.lt = end;
+            }
+            else if (fromStr) {
+                const { start } = localBusinessDayToUtcRange(fromStr);
+                where.createdAt.gte = start;
+            }
+            else if (toStr) {
+                const { end } = localBusinessDayToUtcRange(toStr);
+                where.createdAt.lt = end;
+            }
         }
         const skip = cursor ? parseInt(cursor, 10) || 0 : 0;
         const items = await app.prisma.syncedTransaction.findMany({
@@ -2966,14 +2972,13 @@ export async function adminRoutes(app) {
         });
         return { items: rows, nextCursor, hasMore };
     });
-    // Daily report
+    // Daily report (Asia/Manila: selected date is local calendar day)
     app.get("/reports/daily", async (req, reply) => {
         const storeId = req.query.storeId || "store_1";
-        const dateStr = req.query.date || new Date().toISOString().slice(0, 10);
-        const start = new Date(dateStr + "T00:00:00.000Z");
-        const end = new Date(dateStr + "T23:59:59.999Z");
+        const dateStr = req.query.date || getDefaultDateRange().startDate;
+        const { start, end } = localBusinessDayToUtcRange(dateStr);
         const txs = await app.prisma.syncedTransaction.findMany({
-            where: { storeId, status: "PAID", createdAt: { gte: start, lte: end } },
+            where: { storeId, status: "PAID", createdAt: { gte: start, lt: end } },
         });
         let totalSales = 0;
         let totalDiscounts = 0;
@@ -3002,15 +3007,14 @@ export async function adminRoutes(app) {
             byPaymentMethod: byMethod,
         };
     });
-    // Monthly report
+    // Monthly report (Asia/Manila: selected year/month is local calendar month)
     app.get("/reports/monthly", async (req, reply) => {
         const storeId = req.query.storeId || "store_1";
         const year = parseInt(req.query.year || String(new Date().getFullYear()), 10);
         const month = parseInt(req.query.month || String(new Date().getMonth() + 1), 10);
-        const start = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0));
-        const end = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999));
+        const { start, end } = localBusinessMonthToUtcRange(year, month);
         const txs = await app.prisma.syncedTransaction.findMany({
-            where: { storeId, status: "PAID", createdAt: { gte: start, lte: end } },
+            where: { storeId, status: "PAID", createdAt: { gte: start, lt: end } },
         });
         let totalSales = 0;
         let totalDiscounts = 0;

@@ -4,10 +4,14 @@
  */
 
 import type { PrismaClient } from "@prisma/client";
+import { localBusinessDateRangeToUtc, getBusinessTzOffsetHours } from "../lib/businessDay.js";
 
 const DEFAULT_STORE_ID = "store_1";
 
-type DateRange = { start: Date; end: Date };
+export type DateRange = { start: Date; end: Date };
+
+/** Re-export for backwards compatibility. Uses Asia/Manila for business-day boundaries. */
+export const buildDateRange = localBusinessDateRangeToUtc;
 
 function parsePayments(paymentsJson: string): { method: string; amountCents: number }[] {
   try {
@@ -149,7 +153,7 @@ export async function getSalesByDate(
     select: { createdAt: true, totalCents: true },
   });
 
-  const offsetHours = getDashboardTzOffsetHours();
+  const offsetHours = getBusinessTzOffsetHours();
   const buckets = new Map<string, number>();
   for (const t of txs) {
     const d = new Date(t.createdAt);
@@ -458,49 +462,5 @@ export function getStoreName(): string {
   return process.env.STORE_NAME || process.env.BUSINESS_NAME || "Store";
 }
 
-/** Business timezone offset in hours (e.g. 8 for Asia/Manila UTC+8). Used for dashboard date boundaries. */
-function getDashboardTzOffsetHours(): number {
-  const v = process.env.DASHBOARD_TZ_OFFSET_HOURS;
-  if (v !== undefined && v !== "") {
-    const n = parseInt(v, 10);
-    if (!Number.isNaN(n) && n >= -14 && n <= 14) return n;
-  }
-  return 8;
-}
-
-/**
- * Start of the given calendar day in business timezone, as a UTC Date.
- * e.g. "2026-03-19" with offset +8 => 2026-03-18T16:00:00.000Z (midnight Mar 19 in Manila).
- */
-function startOfDayUtc(y: number, m: number, d: number, offsetHours: number): Date {
-  const ms = Date.UTC(y, m - 1, d, 0, 0, 0, 0) - offsetHours * 60 * 60 * 1000;
-  return new Date(ms);
-}
-
-/**
- * Build date range for dashboard queries.
- * Interprets startDate/endDate as calendar days in business timezone (e.g. Asia/Manila).
- * Returns [start, end) so use createdAt >= start && createdAt < end.
- * DB stores UTC; this converts the selected local day(s) to exact UTC instants once.
- */
-export function buildDateRange(startDate: string, endDate: string): DateRange {
-  const offsetHours = getDashboardTzOffsetHours();
-  const [sy, sm, sd] = startDate.split("-").map(Number);
-  const [ey, em, ed] = endDate.split("-").map(Number);
-  const start = startOfDayUtc(sy, sm, sd, offsetHours);
-  const end = startOfDayUtc(ey, em, ed + 1, offsetHours);
-  return { start, end };
-}
-
-/** Default date filter: today in business timezone (so 1:00 AM local is still "today"). */
-export function getDefaultDateRange(): { startDate: string; endDate: string } {
-  const n = new Date();
-  const offsetHours = getDashboardTzOffsetHours();
-  const businessMs = n.getTime() + offsetHours * 60 * 60 * 1000;
-  const b = new Date(businessMs);
-  const y = b.getUTCFullYear();
-  const m = String(b.getUTCMonth() + 1).padStart(2, "0");
-  const d = String(b.getUTCDate()).padStart(2, "0");
-  const date = `${y}-${m}-${d}`;
-  return { startDate: date, endDate: date };
-}
+// buildDateRange and getDefaultDateRange are re-exported from lib/businessDay.ts
+export { getDefaultDateRange } from "../lib/businessDay.js";

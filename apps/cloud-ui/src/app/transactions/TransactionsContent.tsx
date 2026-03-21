@@ -39,6 +39,9 @@ export function TransactionsContent() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+
+  const PAGE_SIZE = 30;
 
   async function handleGo() {
     setError("");
@@ -49,9 +52,10 @@ export function TransactionsContent() {
     setLoading(true);
     try {
       if (activeTab === "Transactions") {
-        const res = await api.getTransactions({ from, to, limit: 50 });
+        const res = await api.getTransactions({ from, to, limit: PAGE_SIZE });
         setTransactions(res.items);
         setNextCursor(res.nextCursor);
+        setHasMore(res.hasMore ?? !!res.nextCursor);
       } else if (activeTab === "Daily") {
         const r = await api.getDailyReport({ date });
         setDailyReport(r);
@@ -61,6 +65,22 @@ export function TransactionsContent() {
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleLoadMore() {
+    if (!nextCursor || loading) return;
+    setError("");
+    setLoading(true);
+    try {
+      const res = await api.getTransactions({ from, to, limit: PAGE_SIZE, cursor: nextCursor });
+      setTransactions(res.items);
+      setNextCursor(res.nextCursor);
+      setHasMore(res.hasMore ?? !!res.nextCursor);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load more");
     } finally {
       setLoading(false);
     }
@@ -258,7 +278,8 @@ export function TransactionsContent() {
           )}
 
           {activeTab === "Transactions" && (
-            <div className="overflow-x-auto" style={{ WebkitOverflowScrolling: "touch" } as React.CSSProperties}>
+            <div className="flex flex-col">
+              <div className="overflow-x-auto" style={{ WebkitOverflowScrolling: "touch" } as React.CSSProperties}>
               <table className="w-full min-w-[600px] border-collapse">
                 <thead>
                   <tr style={{ background: "#1a1a1a", borderBottom: `2px solid ${COLORS.borderLight}` }}>
@@ -372,6 +393,20 @@ export function TransactionsContent() {
                   )}
                 </tbody>
               </table>
+              </div>
+              {(hasMore || nextCursor) && (
+                <div className="flex justify-end border-t px-4 py-3" style={{ borderColor: COLORS.borderLight }}>
+                  <button
+                    type="button"
+                    onClick={handleLoadMore}
+                    disabled={loading || !nextCursor}
+                    className="rounded px-4 py-2 text-sm font-medium"
+                    style={{ background: COLORS.primary, color: "#000" }}
+                  >
+                    {loading ? "Loading..." : "Next"}
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
