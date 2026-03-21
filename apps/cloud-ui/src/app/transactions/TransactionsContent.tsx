@@ -40,8 +40,12 @@ export function TransactionsContent() {
   const [error, setError] = useState("");
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
+  const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
+  const [currentCursor, setCurrentCursor] = useState<string | null>(null);
 
   const PAGE_SIZE = 30;
+  const canGoPrevious = cursorStack.length > 0;
+  const canGoNext = !!nextCursor;
 
   async function handleGo() {
     setError("");
@@ -56,6 +60,8 @@ export function TransactionsContent() {
         setTransactions(res.items);
         setNextCursor(res.nextCursor);
         setHasMore(res.hasMore ?? !!res.nextCursor);
+        setCursorStack([]);
+        setCurrentCursor(null);
       } else if (activeTab === "Daily") {
         const r = await api.getDailyReport({ date });
         setDailyReport(r);
@@ -73,14 +79,38 @@ export function TransactionsContent() {
   async function handleLoadMore() {
     if (!nextCursor || loading) return;
     setError("");
+    setCursorStack((s) => [...s, currentCursor]);
     setLoading(true);
+    const cursorToFetch = nextCursor;
     try {
-      const res = await api.getTransactions({ from, to, limit: PAGE_SIZE, cursor: nextCursor });
+      const res = await api.getTransactions({ from, to, limit: PAGE_SIZE, cursor: cursorToFetch });
       setTransactions(res.items);
       setNextCursor(res.nextCursor);
       setHasMore(res.hasMore ?? !!res.nextCursor);
+      setCurrentCursor(cursorToFetch);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load more");
+      setCursorStack((s) => s.slice(0, -1));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleLoadPrevious() {
+    if (cursorStack.length === 0 || loading) return;
+    setError("");
+    const prevCursor = cursorStack[cursorStack.length - 1];
+    setCursorStack((s) => s.slice(0, -1));
+    setLoading(true);
+    try {
+      const res = await api.getTransactions({ from, to, limit: PAGE_SIZE, cursor: prevCursor ?? undefined });
+      setTransactions(res.items);
+      setNextCursor(res.nextCursor);
+      setHasMore(res.hasMore ?? !!res.nextCursor);
+      setCurrentCursor(prevCursor);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load previous");
+      setCursorStack((s) => [...s, prevCursor]);
     } finally {
       setLoading(false);
     }
@@ -243,21 +273,53 @@ export function TransactionsContent() {
           )}
         </div>
 
-        {/* Tabs - finger-friendly on mobile */}
-        <div className="mb-4 flex gap-0.5 overflow-x-auto border-b sm:gap-1" style={{ borderColor: COLORS.borderLight }}>
-          {TABS.map((tab) => (
-            <a
-              key={tab}
-              href={`/transactions?tab=${tab}`}
-              className="min-w-0 flex-1 px-3 py-3 text-center text-xs font-medium transition-colors sm:flex-none sm:px-4 sm:py-2 sm:text-sm"
-              style={{
-                borderBottom: activeTab === tab ? `2px solid ${COLORS.primary}` : "2px solid transparent",
-                color: activeTab === tab ? COLORS.primary : "#888",
-              }}
-            >
-              {tab}
-            </a>
-          ))}
+        {/* Tabs - finger-friendly on mobile; pagination in same row when Transactions tab */}
+        <div className="mb-4 flex items-center gap-2 overflow-x-auto border-b sm:gap-4" style={{ borderColor: COLORS.borderLight }}>
+          <div className="flex min-w-0 flex-1 gap-0.5 sm:gap-1">
+            {TABS.map((tab) => (
+              <a
+                key={tab}
+                href={`/transactions?tab=${tab}`}
+                className="min-w-0 flex-1 px-3 py-3 text-center text-xs font-medium transition-colors sm:flex-none sm:px-4 sm:py-2 sm:text-sm"
+                style={{
+                  borderBottom: activeTab === tab ? `2px solid ${COLORS.primary}` : "2px solid transparent",
+                  color: activeTab === tab ? COLORS.primary : "#888",
+                }}
+              >
+                {tab}
+              </a>
+            ))}
+          </div>
+          {activeTab === "Transactions" && (canGoPrevious || canGoNext) && (
+            <div className="flex shrink-0 gap-2 pb-1">
+              <button
+                type="button"
+                onClick={handleLoadPrevious}
+                disabled={loading || !canGoPrevious}
+                className="rounded px-3 py-1.5 text-xs font-medium sm:px-4 sm:py-2 sm:text-sm"
+                style={{
+                  background: canGoPrevious ? COLORS.primary : "#444",
+                  color: canGoPrevious ? "#000" : "#888",
+                  cursor: canGoPrevious && !loading ? "pointer" : "not-allowed",
+                }}
+              >
+                Previous
+              </button>
+              <button
+                type="button"
+                onClick={handleLoadMore}
+                disabled={loading || !canGoNext}
+                className="rounded px-3 py-1.5 text-xs font-medium sm:px-4 sm:py-2 sm:text-sm"
+                style={{
+                  background: canGoNext ? COLORS.primary : "#444",
+                  color: canGoNext ? "#000" : "#888",
+                  cursor: canGoNext && !loading ? "pointer" : "not-allowed",
+                }}
+              >
+                Next
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Content */}
@@ -394,14 +456,31 @@ export function TransactionsContent() {
                 </tbody>
               </table>
               </div>
-              {(hasMore || nextCursor) && (
-                <div className="flex justify-end border-t px-4 py-3" style={{ borderColor: COLORS.borderLight }}>
+              {(canGoPrevious || canGoNext) && (
+                <div className="flex justify-end gap-2 border-t px-4 py-3" style={{ borderColor: COLORS.borderLight }}>
+                  <button
+                    type="button"
+                    onClick={handleLoadPrevious}
+                    disabled={loading || !canGoPrevious}
+                    className="rounded px-4 py-2 text-sm font-medium"
+                    style={{
+                      background: canGoPrevious ? COLORS.primary : "#444",
+                      color: canGoPrevious ? "#000" : "#888",
+                      cursor: canGoPrevious && !loading ? "pointer" : "not-allowed",
+                    }}
+                  >
+                    {loading ? "Loading..." : "Previous"}
+                  </button>
                   <button
                     type="button"
                     onClick={handleLoadMore}
-                    disabled={loading || !nextCursor}
+                    disabled={loading || !canGoNext}
                     className="rounded px-4 py-2 text-sm font-medium"
-                    style={{ background: COLORS.primary, color: "#000" }}
+                    style={{
+                      background: canGoNext ? COLORS.primary : "#444",
+                      color: canGoNext ? "#000" : "#888",
+                      cursor: canGoNext && !loading ? "pointer" : "not-allowed",
+                    }}
                   >
                     {loading ? "Loading..." : "Next"}
                   </button>
