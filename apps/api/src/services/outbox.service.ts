@@ -23,19 +23,28 @@ export async function enqueueOutbox(
 }
 
 /**
- * Enqueue PAID/VOID transactions that are not already covered by a PENDING or SENT
- * transaction.cloud.sync outbox row. Use after outages or before cloud was configured.
+ * Enqueue PAID/VOID transactions that are not already covered by a transaction.cloud.sync
+ * outbox row. Resets FAILED items to PENDING so they can be retried.
+ * Use after outages or before cloud was configured.
  */
 export async function backfillTransactionSyncOutbox(prisma: PrismaClient): Promise<{
   scanned: number;
   enqueued: number;
   skippedAlreadyQueued: number;
+  recoveredFailed: number;
 }> {
   if (!prisma.localOutbox) {
     throw new Error(
       "Prisma client missing LocalOutbox model. Run: cd apps/api && pnpm exec prisma generate"
     );
   }
+
+  // Recover FAILED items: reset to PENDING so they get retried
+  const failedResult = await prisma.localOutbox.updateMany({
+    where: { topic: "transaction.cloud.sync", status: "FAILED" },
+    data: { status: "PENDING", attempts: 0 },
+  });
+  const recoveredFailed = failedResult.count;
 
   const outboxItems = await prisma.localOutbox.findMany({
     where: { topic: "transaction.cloud.sync" },
@@ -44,7 +53,6 @@ export async function backfillTransactionSyncOutbox(prisma: PrismaClient): Promi
 
   const alreadyQueued = new Set<string>();
   for (const item of outboxItems) {
-    if (item.status !== "SENT" && item.status !== "PENDING") continue;
     try {
       const payload = JSON.parse(item.payloadJson) as { transactionId?: unknown };
       if (typeof payload.transactionId === "string") {
@@ -76,6 +84,7 @@ export async function backfillTransactionSyncOutbox(prisma: PrismaClient): Promi
     scanned: transactions.length,
     enqueued,
     skippedAlreadyQueued: transactions.length - enqueued,
+    recoveredFailed,
   };
 }
 
@@ -149,28 +158,64 @@ export type UploadTransactionFn = (
   prisma: PrismaClient,
   tx: { id: string; storeId: string; transactionNo: number; status: string; source: string; serviceType: string; totalCents: number; subtotalCents: number; discountCents: number; createdAt: Date; createdBy: string | null; voidedAt: Date | null; voidReason: string | null },
   payments: { method: string; amountCents: number }[],
-  lineItems: { name: string; qty: number; lineTotal: number }[]
+  lineItems: { name: string; qty: number; lineTotal: number }[],
+  options?: { refundAmountCents?: number; refunds?: Array<{ id: string; reason: string; amountCents: number; createdAt: string }> }
 ) => Promise<{ ok: boolean }>;
 
+/** Backoff seconds: gentle from attempt 3 (30s, 60s, 120s, 240s, 480s, 960s, 3600 cap). Prevents API hammering. */
+function backoffSeconds(attempts: number): number {
+  if (attempts < 3) return 0;
+  return Math.min(3600, 30 * Math.pow(2, Math.min(attempts - 3, 6)));
+}
+
+export type SyncStatusLogger = {
+  warn: (msgOrMeta: string | object, msg?: string) => void;
+  error: (msgOrMeta: string | object, msg?: string) => void;
+};
+
 /**
- * Process PENDING outbox items for topic "transaction.cloud.sync".
- * Loads transaction by transactionId, calls uploadFn, marks SENT or FAILED.
+ * Process PENDING and retryable FAILED outbox items for topic "transaction.cloud.sync".
+ * Loads transaction with refunds, calls uploadFn, marks SENT on success.
+ * On failure: keeps PENDING, increments attempts, stores lastError + lastAttemptAt, applies backoff.
+ * Never permanently abandons. Logs warnings at attempts>5, errors at attempts>10.
  */
 export async function processTransactionSyncOutbox(
   prisma: PrismaClient,
   uploadFn: UploadTransactionFn,
-  maxItems = 10
+  maxItems = 20,
+  log?: SyncStatusLogger
 ): Promise<{ processed: number; succeeded: number; failed: number }> {
   if (!prisma.localOutbox) {
     throw new Error(
       "Prisma client missing LocalOutbox model. Run: cd apps/api && pnpm exec prisma generate"
     );
   }
-  const items = await prisma.localOutbox.findMany({
-    where: { topic: "transaction.cloud.sync", status: "PENDING" },
-    take: maxItems,
+
+  const now = new Date();
+  const allCandidates = await prisma.localOutbox.findMany({
+    where: {
+      topic: "transaction.cloud.sync",
+      status: { in: ["PENDING", "FAILED"] },
+    },
+    take: maxItems * 2,
     orderBy: { createdAt: "asc" },
+    select: {
+      id: true,
+      payloadJson: true,
+      attempts: true,
+      updatedAt: true,
+      lastAttemptAt: true,
+    },
   });
+
+  const items = allCandidates.filter((item) => {
+    const backoff = backoffSeconds(item.attempts);
+    if (backoff === 0) return true;
+    const lastAttempt = (item as { lastAttemptAt?: Date | null }).lastAttemptAt ?? item.updatedAt;
+    const retryAfter = new Date(lastAttempt.getTime() + backoff * 1000);
+    return now >= retryAfter;
+  }).slice(0, maxItems);
+
   let succeeded = 0;
   let failed = 0;
   for (const item of items) {
@@ -182,7 +227,11 @@ export async function processTransactionSyncOutbox(
       }
       const transaction = await prisma.transaction.findUnique({
         where: { id: transactionId },
-        include: { payments: true, lineItems: true },
+        include: {
+          payments: true,
+          lineItems: true,
+          refunds: { include: { refundItems: true } },
+        },
       });
       if (!transaction) {
         throw new Error(`Transaction not found: ${transactionId}`);
@@ -196,30 +245,100 @@ export async function processTransactionSyncOutbox(
         qty: l.qty,
         lineTotal: l.lineTotal,
       }));
-      const result = await uploadFn(prisma, transaction, paymentsList, lineItemsList);
+
+      let refundAmountCents = 0;
+      const refundsList: Array<{ id: string; reason: string; amountCents: number; createdAt: string }> = [];
+      for (const r of transaction.refunds) {
+        const amount = r.refundItems.reduce((s, ri) => s + ri.amountRefundedCents, 0);
+        refundAmountCents += amount;
+        refundsList.push({
+          id: r.id,
+          reason: r.reason,
+          amountCents: amount,
+          createdAt: r.createdAt.toISOString(),
+        });
+      }
+
+      const result = await uploadFn(prisma, transaction, paymentsList, lineItemsList, {
+        refundAmountCents,
+        refunds: refundsList,
+      });
       if (!result.ok) {
         throw new Error((result as { error?: string }).error ?? "Upload failed");
       }
+      const now = new Date();
       await prisma.localOutbox.update({
         where: { id: item.id },
-        data: { status: "SENT", attempts: item.attempts + 1 },
+        data: {
+          status: "SENT",
+          attempts: item.attempts + 1,
+          lastAttemptAt: now,
+        },
       });
       succeeded++;
     } catch (err) {
       const attempts = item.attempts + 1;
       const lastError = (err as Error)?.message ?? String(err);
-      // Keep PENDING for retry up to 10 attempts, then mark FAILED
-      const status = attempts >= 10 ? "FAILED" : "PENDING";
+      const now = new Date();
+      const payloadForLog = JSON.parse(item.payloadJson) as { transactionId?: string };
+      const transactionId = payloadForLog.transactionId ?? "unknown";
+
+      // Visibility: log at increasing severity (never stop retrying)
+      if (log) {
+        if (attempts > 10) {
+          log.error(
+            { transactionId, attempts, lastError, tag: "[TransactionSync]" },
+            `High retry (${attempts}x): transaction sync failing`
+          );
+        } else if (attempts > 5) {
+          log.warn(
+            { transactionId, attempts, lastError, tag: "[TransactionSync]" },
+            `Transaction sync retry ${attempts}: ${lastError}`
+          );
+        }
+      }
+
       await prisma.localOutbox.update({
         where: { id: item.id },
         data: {
-          status,
+          status: "PENDING",
           attempts,
           lastError,
+          lastAttemptAt: now,
         },
       });
-      if (status === "FAILED") failed++;
+      failed++;
     }
   }
   return { processed: items.length, succeeded, failed };
+}
+
+/**
+ * Get transaction sync outbox status for admin visibility.
+ * pendingCount: items with status PENDING or FAILED (awaiting retry).
+ * highRetryCount: items with attempts > 10 (visible as "needs attention" but still retrying).
+ */
+export async function getTransactionSyncOutboxStatus(prisma: PrismaClient): Promise<{
+  pendingCount: number;
+  highRetryCount: number;
+}> {
+  if (!prisma.localOutbox) {
+    return { pendingCount: 0, highRetryCount: 0 };
+  }
+  const [pendingCount, highRetryCount] = await Promise.all([
+    prisma.localOutbox.count({
+      where: {
+        topic: "transaction.cloud.sync",
+        status: { in: ["PENDING", "FAILED"] },
+      },
+    }),
+    prisma.localOutbox.count({
+      where: {
+        topic: "transaction.cloud.sync",
+        status: { in: ["PENDING", "FAILED"] },
+        attempts: { gt: 10 },
+      },
+    }),
+  ]);
+  return { pendingCount, highRetryCount };
 }

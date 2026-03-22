@@ -13,7 +13,7 @@ import { requireStaffHook } from "../plugins/staffGuard";
 import { verifyAdminPin } from "../services/adminPin.service";
 import { enqueueOutbox } from "../services/outbox.service";
 import { ensureItemForCloudId } from "../services/catalogCache.service";
-import { uploadTransactionToCloud } from "../services/transactionSync.service";
+import { syncTransactionToCloudOrEnqueue } from "../services/transactionSync.service";
 import { printReceiptToDevice, printStickersToDevice, formatTransactionLineLabel } from "../services/print.service";
 import {
   allocateVouchersForTransaction,
@@ -22,6 +22,7 @@ import {
 import { getCalendarDayRange } from "../services/dayRange.service";
 import { printZReading } from "../services/zReading.service";
 import { getTransactionSummary } from "../services/transactionSummary.service";
+import { getTransactionSyncOutboxStatus } from "../services/outbox.service";
 
 const STORE_ID = "store_1";
 const SNAPRESIBO_QR_ITEM_ID = "SNAPRESIBO_QR";
@@ -230,6 +231,11 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
 
   app.get("/pos/transactions", listTransactions);
   app.get("/pos/transactions/list", listTransactions);
+
+  /** Cloud sync outbox status for admin visibility (pending count, high-retry count). */
+  app.get("/pos/transactions/sync-status", async () => {
+    return getTransactionSyncOutboxStatus(app.prisma);
+  });
 
   // Full-range summary for selected day (decoupled from pagination). Uses strict calendar day range.
   app.get("/pos/transactions/summary", async (req, reply) => {
@@ -951,22 +957,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         }
       }
       // Sync to cloud (best effort, non-blocking)
-      const paymentsList = allPayments.map((p) => ({ method: p.method, amountCents: p.amountCents }));
-      const lineItemsList = transaction.lineItems.map((l) => ({ name: l.name, qty: l.qty, lineTotal: l.lineTotal }));
-      const uploadResult = await uploadTransactionToCloud(
-        app.prisma,
-        { ...transaction, status: "PAID", createdBy: staff?.name ?? transaction.createdBy ?? null },
-        paymentsList,
-        lineItemsList
-      );
-      if (!uploadResult.ok) {
-        console.log("[TransactionSync] Transaction queued for cloud sync (retry)", { transactionId: transaction.id });
-        await enqueueOutbox(app.prisma, {
-          storeId: transaction.storeId,
-          topic: "transaction.cloud.sync",
-          payload: { transactionId: transaction.id },
-        });
-      }
+      await syncTransactionToCloudOrEnqueue(app.prisma, transaction.id, app.log);
       // Inventory auto-deduction (best effort): do not block sale on failure
       const lineItems = transaction.lineItems
         .filter((l) => l.itemId)
@@ -1061,17 +1052,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     });
 
     // Sync void to cloud
-    const paymentsList = voided.payments.map((p) => ({ method: p.method, amountCents: p.amountCents }));
-    const lineItemsList = voided.lineItems.map((l) => ({ name: l.name, qty: l.qty, lineTotal: l.lineTotal }));
-    const uploadResult = await uploadTransactionToCloud(app.prisma, voided, paymentsList, lineItemsList);
-    if (!uploadResult.ok) {
-      console.log("[TransactionSync] Transaction queued for cloud sync (retry)", { transactionId: voided.id });
-      await enqueueOutbox(app.prisma, {
-        storeId: voided.storeId,
-        topic: "transaction.cloud.sync",
-        payload: { transactionId: voided.id },
-      });
-    }
+    await syncTransactionToCloudOrEnqueue(app.prisma, voided.id, app.log);
 
     await app.prisma.auditLog.create({
       data: {
@@ -1201,7 +1182,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     // Reload transaction with all refunds
     const updatedTransaction = await app.prisma.transaction.findUnique({
       where: { id },
-      include: { 
+      include: {
         lineItems: {
           include: {
             refundItems: true,
@@ -1219,6 +1200,9 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         },
       },
     });
+
+    // Sync refund to cloud (best effort, non-blocking)
+    await syncTransactionToCloudOrEnqueue(app.prisma, id, app.log);
 
     return updatedTransaction;
   });

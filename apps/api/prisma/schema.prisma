@@ -676,10 +676,11 @@ model LocalOutbox {
   storeId     String            @default("store_1")
   topic       String
   payloadJson String
-  status      LocalOutboxStatus @default(PENDING)
-  attempts    Int               @default(0)
-  lastError   String?
-  createdAt   DateTime          @default(now())
+  status        LocalOutboxStatus @default(PENDING)
+  attempts      Int               @default(0)
+  lastError     String?
+  lastAttemptAt DateTime?         // When the last attempt was made (success or failure)
+  createdAt     DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
   store       Store             @relation(fields: [storeId], references: [id])
 
@@ -1090,9 +1091,10 @@ model SyncState {
 }
 
 model CloudStoreSetting {
-  id           String   @id @default("1")
-  adminPinHash String?
-  updatedAt    DateTime @updatedAt
+  id                String   @id @default("1")
+  adminPinHash      String?
+  ownerPasswordHash String?  // Synced from cloud for offline owner tools verification
+  updatedAt         DateTime @updatedAt
 }
 
 enum PrepArea {

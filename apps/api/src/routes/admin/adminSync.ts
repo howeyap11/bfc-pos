@@ -4,8 +4,10 @@ import { syncCatalogFromCloud, requireAdminRole } from "../../services/syncCatal
 import {
   backfillTransactionSyncOutbox,
   processTransactionSyncOutbox,
+  getTransactionSyncOutboxStatus,
 } from "../../services/outbox.service.js";
 import { uploadTransactionToCloud } from "../../services/transactionSync.service.js";
+import { isOnline } from "../../services/connectivity.service.js";
 
 function getBranchFromRequest(req: FastifyRequest): string {
   const raw = req.headers["x-branch-id"];
@@ -50,6 +52,27 @@ export async function adminSyncRoutes(app: FastifyInstance) {
     }
   );
 
+  /** Get transaction sync outbox status (pending count, high-retry count) for admin visibility. */
+  app.get(
+    "/admin/sync/transactions/status",
+    {
+      preHandler: [
+        requireStaffHook,
+        async (req: FastifyRequest, reply: FastifyReply) => {
+          if (!requireAdminRole(req as { staff?: { role?: string } })) {
+            return reply.code(403).send({
+              error: "FORBIDDEN",
+              message: "Admin role required",
+            });
+          }
+        },
+      ],
+    },
+    async () => {
+      return getTransactionSyncOutboxStatus(app.prisma);
+    }
+  );
+
   // Manual trigger: process transaction sync outbox
   app.post(
     "/admin/sync/transactions",
@@ -70,7 +93,8 @@ export async function adminSyncRoutes(app: FastifyInstance) {
       const result = await processTransactionSyncOutbox(
         app.prisma,
         uploadTransactionToCloud,
-        50
+        50,
+        app.log
       );
       return result;
     }
@@ -92,16 +116,30 @@ export async function adminSyncRoutes(app: FastifyInstance) {
         },
       ],
     },
-    async () => {
+    async (req: FastifyRequest, reply: FastifyReply) => {
+      const online = await isOnline();
+      if (!online) {
+        reply.code(503);
+        return {
+          ok: false,
+          error: "OFFLINE",
+          message: "Cannot sync: device is offline",
+        };
+      }
       const result = await backfillTransactionSyncOutbox(app.prisma);
       const flush = await processTransactionSyncOutbox(
         app.prisma,
         uploadTransactionToCloud,
-        50
+        50,
+        app.log
       );
+      const msgParts = [];
+      if (result.recoveredFailed > 0) msgParts.push(`${result.recoveredFailed} FAILED reset to PENDING`);
+      msgParts.push(`Enqueued ${result.enqueued} transaction(s)`);
+      msgParts.push(`${result.skippedAlreadyQueued} already queued or synced`);
       return {
         ok: true,
-        message: `Enqueued ${result.enqueued} transaction(s) for cloud sync; ${result.skippedAlreadyQueued} already queued or synced.`,
+        message: msgParts.join("; "),
         ...result,
         flushProcessed: flush.processed,
         flushSucceeded: flush.succeeded,

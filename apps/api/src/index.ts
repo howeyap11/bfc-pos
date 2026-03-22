@@ -39,6 +39,7 @@ import { storeConfigRoutes } from "./routes/storeConfig";
 import { systemPrintersRoutes } from "./routes/systemPrinters";
 import { snapResiboRoutes } from "./routes/snapResibo";
 import { devRoutes } from "./routes/dev.js";
+import { ownerRoutesPlugin } from "./routes/owner.js";
 import { ensureItemForCloudId } from "./services/catalogCache.service";
 import { startSyncScheduler, runCatalogSync } from "./services/syncScheduler.js";
 import { startDeviceCommandPolling } from "./services/deviceCommandPolling.service.js";
@@ -79,6 +80,7 @@ await app.register(storeConfigRoutes);
 await app.register(systemPrintersRoutes);
 await app.register(snapResiboRoutes);
 await app.register(devRoutes);
+await app.register(ownerRoutesPlugin);
 
 // Public routes (MUST be before listen)
 app.get("/health", async () => ({ ok: true }));

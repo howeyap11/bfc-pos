@@ -220,7 +220,7 @@ type SyncResponse = {
   menuItemAddOnGroups?: { itemId: string; groupId: string }[];
   menuItemSubstituteGroups?: { itemId: string; groupId: string }[];
   menuItemSubstitutes?: { itemId: string; substituteId: string }[];
-  storeSettings?: { adminPinHash: string | null };
+  storeSettings?: { adminPinHash: string | null; ownerPasswordHash?: string | null };
   staff?: Array<{
     id: string;
     name: string;
@@ -1051,16 +1051,18 @@ export async function syncCatalogFromCloud(
         recipeLineSizesUpserted++;
       }
 
-      // Sync store settings (admin PIN for offline verification)
+      // Sync store settings (admin PIN + owner password for offline verification)
       if (data.storeSettings) {
         await tx.cloudStoreSetting.upsert({
           where: { id: "1" },
           create: {
             id: "1",
             adminPinHash: data.storeSettings.adminPinHash ?? null,
+            ownerPasswordHash: data.storeSettings.ownerPasswordHash ?? null,
           },
           update: {
             adminPinHash: data.storeSettings.adminPinHash ?? null,
+            ownerPasswordHash: data.storeSettings.ownerPasswordHash ?? null,
           },
         });
       }
