@@ -92,6 +92,32 @@ export async function adminRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  // Owner Password (Settings > Password & PIN Codes) – for POS owner/developer tools
+  app.get("/settings/owner-password", async () => {
+    const row = await app.prisma.storeSetting.upsert({
+      where: { id: "1" },
+      create: { id: "1", adminPinHash: null, ownerPasswordHash: null },
+      update: {},
+    });
+    return { configured: !!row.ownerPasswordHash };
+  });
+  app.put("/settings/owner-password", async (req: FastifyRequest, reply: FastifyReply) => {
+    const parsed = z.object({
+      password: z.string().min(6, "Password must be at least 6 characters").max(128),
+    }).safeParse(req.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "INVALID_PASSWORD", message: parsed.error.issues.map((issue) => issue.message).join("; ") };
+    }
+    const hash = await hashPassword(parsed.data.password);
+    await app.prisma.storeSetting.upsert({
+      where: { id: "1" },
+      create: { id: "1", adminPinHash: null, ownerPasswordHash: hash },
+      update: { ownerPasswordHash: hash },
+    });
+    return { ok: true };
+  });
+
   // Staff (POS cashiers/managers) - source of truth for names, PINs, email, roles; syncs to POS
   const STAFF_STORE_ID = "store_1";
   const STAFF_ROLES = ["HEAD_BARISTA", "HEAD_CHEF", "BARISTA", "LEAD_BARISTA", "MANAGER", "KITCHEN_STAFF", "ADMIN"] as const;

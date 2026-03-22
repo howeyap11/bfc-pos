@@ -29,6 +29,13 @@ const transactionImportSchema = z.object({
   voidedAt: z.string().nullable().optional(),
   voidReason: z.string().nullable().optional(),
   isTest: z.boolean().optional().default(false),
+  refundAmountCents: z.number().int().min(0).optional().default(0),
+  refunds: z.array(z.object({
+    id: z.string(),
+    reason: z.string(),
+    amountCents: z.number().int(),
+    createdAt: z.string(),
+  })).optional().default([]),
 });
 
 export async function syncRoutes(app: FastifyInstance) {
@@ -240,7 +247,10 @@ export async function syncRoutes(app: FastifyInstance) {
           isActive: s.isActive,
           sortOrder: s.sortOrder,
         })),
-        storeSettings: storeSetting ? { adminPinHash: storeSetting.adminPinHash ?? null } : undefined,
+        storeSettings: storeSetting ? {
+          adminPinHash: storeSetting.adminPinHash ?? null,
+          ownerPasswordHash: storeSetting.ownerPasswordHash ?? null,
+        } : undefined,
         staff: staffList.map((s) => ({
           id: s.id,
           name: s.name,
@@ -336,6 +346,8 @@ export async function syncRoutes(app: FastifyInstance) {
     const d = parsed.data;
     const paymentsJson = JSON.stringify(d.payments);
     const lineItemsSummaryJson = d.lineItems ? JSON.stringify(d.lineItems) : null;
+    const refundAmountCents = d.refundAmountCents ?? 0;
+    const refundsJson = d.refunds && d.refunds.length > 0 ? JSON.stringify(d.refunds) : null;
     const createdAt = new Date(d.createdAt);
     const voidedAt = d.voidedAt ? new Date(d.voidedAt) : null;
     try {
@@ -349,9 +361,11 @@ export async function syncRoutes(app: FastifyInstance) {
             status: d.status,
             voidedAt,
             voidReason: d.voidReason ?? null,
+            refundAmountCents,
+            refundsJson,
           },
         });
-        app.log.debug({ sourceTransactionId: d.sourceTransactionId }, "[Sync] Transaction updated (void/sync)");
+        app.log.debug({ sourceTransactionId: d.sourceTransactionId }, "[Sync] Transaction updated (void/refund/sync)");
         return { ok: true, imported: false, id: existing.id };
       }
       const created = await app.prisma.syncedTransaction.create({
@@ -373,6 +387,8 @@ export async function syncRoutes(app: FastifyInstance) {
           voidedAt,
           voidReason: d.voidReason ?? null,
           isTest: d.isTest ?? false,
+          refundAmountCents,
+          refundsJson,
         },
       });
       app.log.info({ id: created.id, transactionNo: d.transactionNo }, "[Sync] Transaction imported");
@@ -382,6 +398,19 @@ export async function syncRoutes(app: FastifyInstance) {
       reply.code(500);
       return { error: "IMPORT_FAILED", message: "Failed to import transaction" };
     }
+  });
+
+  // Owner password hash (for POS – requires X-Store-Sync-Key). POS caches for offline verification.
+  app.get("/owner-password-hash", async (req: FastifyRequest, reply: FastifyReply) => {
+    if (syncSecret) {
+      const key = (req.headers["x-store-sync-key"] as string) || "";
+      if (key !== syncSecret) {
+        reply.code(401);
+        return { error: "UNAUTHORIZED", message: "Invalid or missing X-Store-Sync-Key" };
+      }
+    }
+    const row = await app.prisma.storeSetting.findUnique({ where: { id: "1" } });
+    return { ownerPasswordHash: row?.ownerPasswordHash ?? null };
   });
 
   // Verify admin PIN (for POS - requires STORE_SYNC_SECRET)

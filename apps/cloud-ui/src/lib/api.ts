@@ -1005,6 +1005,15 @@ export const api = {
       body: JSON.stringify({ pin }),
     });
   },
+  getOwnerPasswordConfigured(): Promise<{ configured: boolean }> {
+    return apiFetch("/admin/settings/owner-password");
+  },
+  setOwnerPassword(password: string): Promise<{ ok: boolean }> {
+    return apiFetch("/admin/settings/owner-password", {
+      method: "PUT",
+      body: JSON.stringify({ password }),
+    });
+  },
 
   /** Store config (receipt header: business name & address). Use same API as POS (store-config). */
   getStoreConfig(): Promise<{

@@ -78,6 +78,7 @@ export async function getDashboardKpis(
       discountCents: true,
       itemsCount: true,
       source: true,
+      refundAmountCents: true,
     },
   });
 
@@ -85,16 +86,15 @@ export async function getDashboardKpis(
   let totalDiscountsCents = 0;
   let itemsCount = 0;
   let totalOnlineOrdersCount = 0;
+  let totalRefundsCents = 0;
 
   for (const t of txs) {
     totalNetSalesCents += t.totalCents;
     totalDiscountsCents += t.discountCents;
     itemsCount += t.itemsCount;
+    totalRefundsCents += t.refundAmountCents ?? 0;
     if (t.source && String(t.source).toUpperCase() !== "POS") totalOnlineOrdersCount += 1;
   }
-
-  // TODO: Refunds not in schema; add when POS supports refund amount sync.
-  const totalRefundsCents = 0;
   // TODO: COGS not in SyncedTransaction/line items; add when recipe/COGS sync exists.
   const costOfGoodsCents = 0;
   const profitCents = totalNetSalesCents - totalRefundsCents - costOfGoodsCents;

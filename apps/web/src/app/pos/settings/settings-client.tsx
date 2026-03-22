@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { COLORS } from "@/lib/theme";
 import { useOnScreenKeyboard, OnScreenKeyboard } from "@/lib/useOnScreenKeyboard";
+import OwnerToolsClient, { OWNER_UNLOCK_KEY } from "./owner-tools-client";
 
 const WEB_VERSION = process.env.NEXT_PUBLIC_POS_VERSION ?? "0.1.0";
 const SETTINGS_ADMIN_UNLOCK_KEY = "bfc_settings_admin_unlocked";
+const VERSION_TAP_THRESHOLD = 7;
 
 type PaymentMethod = "CASH" | "CARD" | "GCASH" | "FOODPANDA" | "GRABFOOD" | "BFCAPP";
 
@@ -74,13 +76,15 @@ export default function SettingsClient() {
   const [deviceKeyInput, setDeviceKeyInput] = useState("");
   const [deviceKeySaving, setDeviceKeySaving] = useState(false);
   const [deviceKeyMessage, setDeviceKeyMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
-  const [devMode, setDevMode] = useState(false);
-  const [devModeSaving, setDevModeSaving] = useState(false);
-  const [deleteTestModalOpen, setDeleteTestModalOpen] = useState(false);
-  const [deleteTestPin, setDeleteTestPin] = useState("");
-  const [deleteTestLoading, setDeleteTestLoading] = useState(false);
-  const [deleteTestError, setDeleteTestError] = useState<string | null>(null);
-  const [deleteTestSuccess, setDeleteTestSuccess] = useState<string | null>(null);
+  const [ownerUnlocked, setOwnerUnlocked] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return sessionStorage.getItem(OWNER_UNLOCK_KEY) === "1";
+  });
+  const [ownerPasswordModal, setOwnerPasswordModal] = useState(false);
+  const [ownerPasswordInput, setOwnerPasswordInput] = useState("");
+  const [ownerPasswordError, setOwnerPasswordError] = useState("");
+  const versionTapCount = useRef(0);
+  const versionTapTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [snapResiboEnabled, setSnapResiboEnabled] = useState(false);
   const [snapResiboPriceCents, setSnapResiboPriceCents] = useState<number | "">(0);
   const [snapResiboRewardMinimumCents, setSnapResiboRewardMinimumCents] = useState<number | "">(0);
@@ -262,7 +266,6 @@ export default function SettingsClient() {
       setEnabledMethods(data.enabledPaymentMethods || []);
       setSplitEnabled(data.splitPaymentEnabled ?? true);
       setStickerPrintCategoryIds(Array.isArray(data.stickerPrintCategoryIds) ? data.stickerPrintCategoryIds : []);
-      setDevMode(!!data.devMode);
       setSnapResiboEnabled(!!data.snapResiboEnabled);
       setSnapResiboPriceCents(data.snapResiboPriceCents ?? "");
       setSnapResiboRewardMinimumCents(data.snapResiboRewardMinimumCents ?? "");
@@ -413,33 +416,6 @@ export default function SettingsClient() {
     }
   }
 
-  async function handleAction(
-    action: "poll" | "update" | "restart" | "sync",
-    path: string,
-    method = "POST"
-  ) {
-    setError(null);
-    setSuccess(null);
-    setActionLoading(action);
-    try {
-      const headers = await getStaffHeaders();
-      const res = await fetch(path, {
-        method,
-        headers: { "content-type": "application/json", ...headers },
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.message || data.error || "Failed");
-      if (action === "update" || action === "restart") {
-        setOverlay(action === "update" ? "updating" : "restarting");
-      }
-      await loadStatus();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed");
-    } finally {
-      setActionLoading(null);
-    }
-  }
-
   /** Force catalog sync – no admin PIN required (staff session only). Used above PIN gate for emergency menu updates. */
   async function handleForceCatalogSync() {
     setError(null);
@@ -459,70 +435,6 @@ export default function SettingsClient() {
       await loadStatus();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed");
-    } finally {
-      setActionLoading(null);
-    }
-  }
-
-  async function handleCloudTransactionsBackfill() {
-    if (
-      !window.confirm(
-        "Enqueue PAID/VOID sales that are not yet queued for cloud sync? Uploads run in the background (usually within ~30s). Requires admin staff role."
-      )
-    )
-      return;
-    setError(null);
-    setSuccess(null);
-    setActionLoading("txBackfill");
-    try {
-      const headers = await getStaffHeaders();
-      const res = await fetch("/api/admin/sync/transactions/backfill", {
-        method: "POST",
-        headers: { "content-type": "application/json", ...headers },
-        body: "{}",
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.message || data.error || "Backfill failed");
-      const msg =
-        data.message ??
-        `Enqueued ${data.enqueued ?? 0} for cloud sync (${data.skippedAlreadyQueued ?? 0} already queued).`;
-      setSuccess(msg);
-      setTimeout(() => setSuccess(null), 8000);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Backfill failed");
-    } finally {
-      setActionLoading(null);
-    }
-  }
-
-  async function handleForceFullResync() {
-    if (
-      !window.confirm(
-        "This will reset the catalog sync version so the next sync re-downloads all menu data (full resync). Use this to recover missing drink sizes or catalog data. Continue?"
-      )
-    )
-      return;
-    setError(null);
-    setSuccess(null);
-    setActionLoading("resync");
-    try {
-      const headers = await getStaffHeaders();
-      const res = await fetch("/api/device/commands/reset-catalog-sync", {
-        method: "POST",
-        headers: { "content-type": "application/json", ...headers },
-        body: "{}",
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        const msg = data.message || data.error || "Full resync failed";
-        setError(msg);
-        return;
-      }
-      setSuccess(data.message ?? "Catalog reset and full sync completed.");
-      setTimeout(() => setSuccess(null), 5000);
-      await loadStatus();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Full resync failed");
     } finally {
       setActionLoading(null);
     }
@@ -640,26 +552,63 @@ export default function SettingsClient() {
     }
   }
 
-  async function handleDevModeToggle() {
-    setDevModeSaving(true);
-    setError(null);
-    try {
-      const headers = await getStaffHeaders();
-      const res = await fetch("/api/store-config", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", ...headers },
-        body: JSON.stringify({ devMode: !devMode }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to save");
-      setDevMode(!!data.devMode);
-      if (config) setConfig({ ...config, devMode: !!data.devMode });
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to update Dev Mode");
-    } finally {
-      setDevModeSaving(false);
+  function handleVersionTap() {
+    versionTapCount.current += 1;
+    if (versionTapTimeout.current) clearTimeout(versionTapTimeout.current);
+    versionTapTimeout.current = setTimeout(() => {
+      versionTapCount.current = 0;
+      versionTapTimeout.current = null;
+    }, 2000);
+    if (versionTapCount.current >= VERSION_TAP_THRESHOLD) {
+      versionTapCount.current = 0;
+      if (versionTapTimeout.current) {
+        clearTimeout(versionTapTimeout.current);
+        versionTapTimeout.current = null;
+      }
+      setOwnerPasswordModal(true);
+      setOwnerPasswordError("");
+      setOwnerPasswordInput("");
     }
   }
+
+  async function handleOwnerPasswordSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setOwnerPasswordError("");
+    try {
+      const res = await fetch("/api/owner/verify-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: ownerPasswordInput }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        sessionStorage.setItem(OWNER_UNLOCK_KEY, "1");
+        setOwnerUnlocked(true);
+        setOwnerPasswordModal(false);
+        setOwnerPasswordInput("");
+      } else {
+        setOwnerPasswordError(data.message || "Invalid owner password");
+        setOwnerPasswordInput("");
+      }
+    } catch (e: unknown) {
+      setOwnerPasswordError(e instanceof Error ? e.message : "Verification failed");
+      setOwnerPasswordInput("");
+    }
+  }
+
+  function handleOwnerLock() {
+    sessionStorage.removeItem(OWNER_UNLOCK_KEY);
+    setOwnerUnlocked(false);
+  }
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && sessionStorage.getItem("bfc_pending_owner_tools") === "1") {
+      sessionStorage.removeItem("bfc_pending_owner_tools");
+      setOwnerPasswordModal(true);
+      setOwnerPasswordError("");
+      setOwnerPasswordInput("");
+    }
+  }, []);
 
   // PIN Gate - same pattern as Transactions
   if (!isAuthenticated) {
@@ -849,6 +798,96 @@ export default function SettingsClient() {
             onDone={keyboard.handleDone}
           />
         )}
+        {ownerPasswordModal && (
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              zIndex: 60,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "rgba(0,0,0,0.7)",
+              padding: 24,
+            }}
+            onClick={() => setOwnerPasswordModal(false)}
+          >
+            <div
+              style={{
+                maxWidth: 360,
+                width: "100%",
+                background: COLORS.bgPanel,
+                borderRadius: 12,
+                padding: 24,
+                border: `1px solid ${COLORS.borderLight}`,
+                boxShadow: "0 20px 40px rgba(0,0,0,0.4)",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 style={{ margin: "0 0 12px 0", fontSize: 18, fontWeight: 600, color: COLORS.textPrimary }}>
+                Owner Tools
+              </h3>
+              <p style={{ margin: "0 0 16px 0", fontSize: 14, color: COLORS.textSecondary }}>
+                Enter owner password to access developer/system tools.
+              </p>
+              <form onSubmit={handleOwnerPasswordSubmit}>
+                <input
+                  type="password"
+                  value={ownerPasswordInput}
+                  onChange={(e) => setOwnerPasswordInput(e.target.value)}
+                  placeholder="Owner password"
+                  autoComplete="off"
+                  style={{
+                    width: "100%",
+                    padding: 12,
+                    fontSize: 16,
+                    border: `1px solid ${COLORS.borderLight}`,
+                    borderRadius: 6,
+                    marginBottom: 12,
+                    background: COLORS.bgDark,
+                    color: COLORS.textPrimary,
+                  }}
+                />
+                {ownerPasswordError && (
+                  <div style={{ color: COLORS.error, marginBottom: 12, fontSize: 14 }}>{ownerPasswordError}</div>
+                )}
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    type="submit"
+                    style={{
+                      flex: 1,
+                      padding: 12,
+                      fontSize: 15,
+                      fontWeight: 600,
+                      background: COLORS.primary,
+                      color: "#fff",
+                      border: "none",
+                      borderRadius: 6,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Unlock
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOwnerPasswordModal(false)}
+                    style={{
+                      padding: "12px 16px",
+                      fontSize: 15,
+                      background: COLORS.bgDark,
+                      color: COLORS.textSecondary,
+                      border: `1px solid ${COLORS.borderLight}`,
+                      borderRadius: 6,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -921,22 +960,6 @@ export default function SettingsClient() {
             }}
           >
             {error}
-          </div>
-        )}
-
-        {devMode && (
-          <div
-            style={{
-              padding: 12,
-              marginBottom: 16,
-              background: "rgba(234, 179, 8, 0.2)",
-              border: "1px solid #eab308",
-              borderRadius: 6,
-              color: "#fef08a",
-              fontWeight: 600,
-            }}
-          >
-            TEST MODE ACTIVE – Transactions will be marked as test and can be deleted later from Cloud Admin.
           </div>
         )}
 
@@ -1094,191 +1117,8 @@ export default function SettingsClient() {
           )}
         </div>
 
-        <div
-          style={{
-            background: COLORS.bgPanel,
-            borderRadius: 8,
-            padding: 24,
-            marginBottom: 24,
-            border: `1px solid ${COLORS.borderLight}`,
-          }}
-        >
-          <h2 style={{ margin: "0 0 8px 0", fontSize: 18, fontWeight: 600, color: COLORS.textPrimary }}>
-            Dev Mode
-          </h2>
-          <p style={{ color: COLORS.textSecondary, marginBottom: 16, fontSize: 14 }}>
-            When ON, all new transactions are marked as test. You can delete them later from Cloud Admin → Settings → Dev.
-          </p>
-          <label style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer" }}>
-            <input
-              type="checkbox"
-              checked={devMode}
-              onChange={handleDevModeToggle}
-              disabled={devModeSaving}
-              style={{ width: 20, height: 20, cursor: devModeSaving ? "not-allowed" : "pointer" }}
-            />
-            <span style={{ color: COLORS.textPrimary, fontWeight: 500 }}>
-              {devModeSaving ? "Saving…" : devMode ? "Dev Mode ON" : "Dev Mode OFF"}
-            </span>
-          </label>
-
-          <div style={{ marginTop: 24, paddingTop: 24, borderTop: `1px solid ${COLORS.borderLight}` }}>
-            <h3 style={{ margin: "0 0 8px 0", fontSize: 16, fontWeight: 600, color: COLORS.textPrimary }}>
-              Test transactions
-            </h3>
-            <p style={{ color: COLORS.textSecondary, marginBottom: 16, fontSize: 14 }}>
-              Delete all test transactions from the cloud (only those marked as test). Requires admin PIN.
-            </p>
-            <button
-              type="button"
-              onClick={() => {
-                setDeleteTestModalOpen(true);
-                setDeleteTestPin("");
-                setDeleteTestError(null);
-                setDeleteTestSuccess(null);
-              }}
-              style={{
-                padding: "8px 16px",
-                fontSize: 14,
-                fontWeight: 600,
-                background: "rgba(239, 68, 68, 0.2)",
-                color: "#fca5a5",
-                border: "1px solid rgba(239, 68, 68, 0.5)",
-                borderRadius: 6,
-                cursor: "pointer",
-              }}
-            >
-              Delete all test transactions
-            </button>
-          </div>
-        </div>
-
-        {deleteTestModalOpen && (
-          <div
-            style={{
-              position: "fixed",
-              inset: 0,
-              zIndex: 50,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              background: "rgba(0,0,0,0.7)",
-              padding: 24,
-            }}
-            onClick={() => !deleteTestLoading && setDeleteTestModalOpen(false)}
-          >
-            <div
-              style={{
-                maxWidth: 420,
-                width: "100%",
-                background: COLORS.bgPanel,
-                borderRadius: 12,
-                padding: 24,
-                border: `1px solid ${COLORS.borderLight}`,
-                boxShadow: "0 20px 40px rgba(0,0,0,0.4)",
-              }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <h3 style={{ margin: "0 0 12px 0", fontSize: 18, fontWeight: 600, color: COLORS.textPrimary }}>
-                Delete all test transactions
-              </h3>
-              <p style={{ margin: "0 0 16px 0", fontSize: 14, color: COLORS.textSecondary }}>
-                This will delete all transactions marked as test in the cloud. Production transactions are not affected.
-              </p>
-              {deleteTestError && (
-                <div style={{ marginBottom: 12, padding: 10, background: "#7f1d1d", color: "#fecaca", borderRadius: 6, fontSize: 14 }}>
-                  {deleteTestError}
-                </div>
-              )}
-              {deleteTestSuccess && (
-                <div style={{ marginBottom: 12, padding: 10, background: "rgba(34,197,94,0.2)", color: "#86efac", borderRadius: 6, fontSize: 14 }}>
-                  {deleteTestSuccess}
-                </div>
-              )}
-              <div style={{ marginBottom: 16 }}>
-                <label style={{ display: "block", marginBottom: 6, fontSize: 14, color: COLORS.textSecondary }}>
-                  Admin PIN
-                </label>
-                <input
-                  type="password"
-                  inputMode="numeric"
-                  value={deleteTestPin}
-                  onChange={(e) => setDeleteTestPin(e.target.value.replace(/\D/g, "").slice(0, 8))}
-                  placeholder="Enter admin PIN"
-                  style={{
-                    width: "100%",
-                    padding: 12,
-                    fontSize: 16,
-                    border: `1px solid ${COLORS.borderLight}`,
-                    borderRadius: 6,
-                    background: COLORS.bgDark,
-                    color: COLORS.textPrimary,
-                  }}
-                />
-              </div>
-              <div style={{ display: "flex", gap: 12 }}>
-                <button
-                  type="button"
-                  disabled={deleteTestLoading || !deleteTestPin.trim()}
-                  onClick={async () => {
-                    setDeleteTestError(null);
-                    setDeleteTestSuccess(null);
-                    setDeleteTestLoading(true);
-                    try {
-                      const res = await fetch("/api/dev/delete-test-transactions", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ pin: deleteTestPin }),
-                      });
-                      const data = await res.json();
-                      if (!res.ok) {
-                        setDeleteTestError(data?.message || data?.error || "Failed");
-                        return;
-                      }
-                      setDeleteTestSuccess(`Deleted ${data.deletedCount ?? 0} test transaction(s).`);
-                      setDeleteTestPin("");
-                      setTimeout(() => {
-                        setDeleteTestModalOpen(false);
-                        setDeleteTestSuccess(null);
-                      }, 2000);
-                    } catch (e) {
-                      setDeleteTestError(e instanceof Error ? e.message : "Request failed");
-                    } finally {
-                      setDeleteTestLoading(false);
-                    }
-                  }}
-                  style={{
-                    padding: "10px 20px",
-                    fontSize: 14,
-                    fontWeight: 600,
-                    background: deleteTestLoading || !deleteTestPin.trim() ? "#555" : "#dc2626",
-                    color: "#fff",
-                    border: "none",
-                    borderRadius: 6,
-                    cursor: deleteTestLoading || !deleteTestPin.trim() ? "not-allowed" : "pointer",
-                  }}
-                >
-                  {deleteTestLoading ? "Deleting…" : "Delete test transactions"}
-                </button>
-                <button
-                  type="button"
-                  disabled={deleteTestLoading}
-                  onClick={() => setDeleteTestModalOpen(false)}
-                  style={{
-                    padding: "10px 20px",
-                    fontSize: 14,
-                    background: "transparent",
-                    color: COLORS.textSecondary,
-                    border: `1px solid ${COLORS.borderLight}`,
-                    borderRadius: 6,
-                    cursor: deleteTestLoading ? "not-allowed" : "pointer",
-                  }}
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          </div>
+        {ownerUnlocked && (
+          <OwnerToolsClient onLock={handleOwnerLock} />
         )}
 
         <div
@@ -1478,7 +1318,13 @@ export default function SettingsClient() {
             <dl style={{ margin: 0, color: COLORS.textPrimary, fontSize: 14 }}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
                 <dt style={{ margin: 0, color: COLORS.textSecondary }}>POS frontend version</dt>
-                <dd style={{ margin: 0 }}>{WEB_VERSION}</dd>
+                <dd
+                  style={{ margin: 0, cursor: "pointer", userSelect: "none" }}
+                  onClick={handleVersionTap}
+                  title="Tap 7 times for owner tools"
+                >
+                  {WEB_VERSION}
+                </dd>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
                 <dt style={{ margin: 0, color: COLORS.textSecondary }}>API version</dt>
@@ -1747,62 +1593,98 @@ export default function SettingsClient() {
           </div>
         </div>
 
-        {/* Actions */}
+      </div>
+
+      {ownerPasswordModal && (
         <div
           style={{
-            background: COLORS.bgPanel,
-            borderRadius: 8,
-            padding: 20,
-            border: `1px solid ${COLORS.borderLight}`,
+            position: "fixed",
+            inset: 0,
+            zIndex: 60,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "rgba(0,0,0,0.7)",
+            padding: 24,
           }}
+          onClick={() => setOwnerPasswordModal(false)}
         >
-          <h2 style={{ margin: "0 0 16px 0", fontSize: 16, fontWeight: 600, color: COLORS.textPrimary }}>
-            System actions
-          </h2>
-          <p style={{ color: COLORS.textSecondary, marginBottom: 16, fontSize: 14 }}>
-            These actions require admin role and staff session. Use &quot;Backfill cloud transaction sync&quot; to queue
-            local sales that never reached the cloud (e.g. after connectivity issues); uploads continue automatically.
-          </p>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <button
-              onClick={() => handleAction("poll", "/api/device/poll-commands")}
-              disabled={busy || !!actionLoading}
-              style={btnStyle(!!actionLoading && actionLoading !== "poll")}
-            >
-              {actionLoading === "poll" ? "Checking…" : "Check for updates"}
-            </button>
-            <button
-              onClick={handleForceFullResync}
-              disabled={busy || !!actionLoading}
-              style={btnStyle(!!actionLoading && actionLoading !== "resync")}
-            >
-              {actionLoading === "resync" ? "Resyncing…" : "Force full catalog resync"}
-            </button>
-            <button
-              type="button"
-              onClick={handleCloudTransactionsBackfill}
-              disabled={busy || !!actionLoading}
-              style={btnStyle(!!actionLoading && actionLoading !== "txBackfill")}
-            >
-              {actionLoading === "txBackfill" ? "Queueing…" : "Backfill cloud transaction sync"}
-            </button>
-            <button
-              onClick={() => handleAction("update", "/api/device/commands/update")}
-              disabled={busy || !!actionLoading}
-              style={btnStyle(!!actionLoading && actionLoading !== "update")}
-            >
-              {actionLoading === "update" ? "Updating…" : "Apply update"}
-            </button>
-            <button
-              onClick={() => handleAction("restart", "/api/device/commands/restart")}
-              disabled={busy || !!actionLoading}
-              style={{ ...btnStyle(!!actionLoading && actionLoading !== "restart"), background: COLORS.error }}
-            >
-              {actionLoading === "restart" ? "Restarting…" : "Restart POS"}
-            </button>
+          <div
+            style={{
+              maxWidth: 360,
+              width: "100%",
+              background: COLORS.bgPanel,
+              borderRadius: 12,
+              padding: 24,
+              border: `1px solid ${COLORS.borderLight}`,
+              boxShadow: "0 20px 40px rgba(0,0,0,0.4)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ margin: "0 0 12px 0", fontSize: 18, fontWeight: 600, color: COLORS.textPrimary }}>
+              Owner Tools
+            </h3>
+            <p style={{ margin: "0 0 16px 0", fontSize: 14, color: COLORS.textSecondary }}>
+              Enter owner password to access developer/system tools.
+            </p>
+            <form onSubmit={handleOwnerPasswordSubmit}>
+              <input
+                type="password"
+                value={ownerPasswordInput}
+                onChange={(e) => setOwnerPasswordInput(e.target.value)}
+                placeholder="Owner password"
+                autoComplete="off"
+                style={{
+                  width: "100%",
+                  padding: 12,
+                  fontSize: 16,
+                  border: `1px solid ${COLORS.borderLight}`,
+                  borderRadius: 6,
+                  marginBottom: 12,
+                  background: COLORS.bgDark,
+                  color: COLORS.textPrimary,
+                }}
+              />
+              {ownerPasswordError && (
+                <div style={{ color: COLORS.error, marginBottom: 12, fontSize: 14 }}>{ownerPasswordError}</div>
+              )}
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  type="submit"
+                  style={{
+                    flex: 1,
+                    padding: 12,
+                    fontSize: 15,
+                    fontWeight: 600,
+                    background: COLORS.primary,
+                    color: "#fff",
+                    border: "none",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                  }}
+                >
+                  Unlock
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOwnerPasswordModal(false)}
+                  style={{
+                    padding: "12px 16px",
+                    fontSize: 15,
+                    background: COLORS.bgDark,
+                    color: COLORS.textSecondary,
+                    border: `1px solid ${COLORS.borderLight}`,
+                    borderRadius: 6,
+                    cursor: "pointer",
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
           </div>
         </div>
-      </div>
+      )}
 
       {overlay && (
         <div

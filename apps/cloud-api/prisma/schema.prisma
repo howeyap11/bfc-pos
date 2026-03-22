@@ -529,9 +529,10 @@ model TransactionTypeSetting {
 
 // Single-row store settings (id=1)
 model StoreSetting {
-  id         String   @id @default("1")
-  adminPinHash String?
-  updatedAt  DateTime @updatedAt
+  id                 String   @id @default("1")
+  adminPinHash       String?
+  ownerPasswordHash  String?  // Owner/developer tools password (bcrypt-style hash)
+  updatedAt          DateTime @updatedAt
 }
 
 // Settings > Business Details: name and address (single row, id=1)
@@ -578,6 +579,8 @@ model SyncedTransaction {
   voidedAt             DateTime?
   voidReason           String?
   isTest               Boolean   @default(false) // Demo/test only; safe to delete via dev tool
+  refundAmountCents    Int       @default(0) // Sum of all refunds for reconciliation
+  refundsJson          String?   // JSON array of { id, reason, amountCents, createdAt } for audit
 
   @@index([storeId])
   @@index([storeId, createdAt])

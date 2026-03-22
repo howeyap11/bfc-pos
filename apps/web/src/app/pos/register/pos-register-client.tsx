@@ -5646,7 +5646,7 @@ function TransactionSuccessPanel({
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
           <span style={{ color: "#aaa", fontSize: 13 }}>Transaction #</span>
           <strong style={{ color: "#fff", fontSize: 13 }}>
-            {isQueuedOffline ? "Pending sync" : transaction.transactionNo}
+            {isQueuedOffline ? "—" : transaction.transactionNo}
           </strong>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>

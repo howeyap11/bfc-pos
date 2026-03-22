@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import "./pos-shell.css";
 import { useRouter, usePathname } from "next/navigation";
 import { COLORS } from "@/lib/theme";
@@ -8,11 +8,46 @@ import PosErrorBoundary from "./pos-error-boundary";
 import HealthGate from "./health-gate";
 import SyncWorker from "./sync-worker";
 
+const WEB_VERSION = process.env.NEXT_PUBLIC_POS_VERSION ?? "0.1.0";
+const VERSION_TAP_THRESHOLD = 7;
+
 export default function PosLayout({ children }: { children: React.ReactNode }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [activeStaff, setActiveStaff] = useState<{ id: string; name: string; role: string } | null>(null);
   const router = useRouter();
   const pathname = usePathname();
+  const versionTapCount = useRef(0);
+  const versionTapTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleVersionTap = useCallback(() => {
+    versionTapCount.current += 1;
+    if (versionTapTimeout.current) clearTimeout(versionTapTimeout.current);
+    versionTapTimeout.current = setTimeout(() => {
+      versionTapCount.current = 0;
+      versionTapTimeout.current = null;
+    }, 2000);
+    if (versionTapCount.current >= VERSION_TAP_THRESHOLD) {
+      versionTapCount.current = 0;
+      if (versionTapTimeout.current) {
+        clearTimeout(versionTapTimeout.current);
+        versionTapTimeout.current = null;
+      }
+      sessionStorage.setItem("bfc_pending_owner_tools", "1");
+      router.push("/pos/settings");
+    }
+  }, [router]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && (e.key === "O" || e.key === "o")) {
+        e.preventDefault();
+        sessionStorage.setItem("bfc_pending_owner_tools", "1");
+        router.push("/pos/settings");
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [router]);
 
   useEffect(() => {
     // Check for active staff on mount and when pathname changes
@@ -129,13 +164,26 @@ export default function PosLayout({ children }: { children: React.ReactNode }) {
           </button>
         </div>
 
-        {/* Active Staff Display */}
-        {activeStaff && (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}>
-            <span style={{ opacity: 0.9 }}>👤 {activeStaff.name}</span>
-            <span style={{ opacity: 0.7, fontSize: 12 }}>({activeStaff.role})</span>
-          </div>
-        )}
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          {activeStaff && (
+            <span style={{ fontSize: 14, opacity: 0.9 }}>
+              👤 {activeStaff.name}
+              <span style={{ opacity: 0.7, fontSize: 12, marginLeft: 4 }}>({activeStaff.role})</span>
+            </span>
+          )}
+          <span
+            onClick={handleVersionTap}
+            style={{
+              fontSize: 11,
+              opacity: 0.5,
+              cursor: "pointer",
+              userSelect: "none",
+            }}
+            title="Tap 7 times for owner tools"
+          >
+            v{WEB_VERSION}
+          </span>
+        </div>
       </div>
 
       {/* Main Content — minHeight:0 so nested POS flex + scroll regions can shrink (mini PC / short viewports) */}

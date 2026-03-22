@@ -4,12 +4,6 @@ import React, { useEffect, useMemo, useState } from "react";
 import { COLORS } from "@/lib/theme";
 import { useOnScreenKeyboard, OnScreenKeyboard } from "@/lib/useOnScreenKeyboard";
 import { lineItemDisplayParts, getLineItemMainLabel } from "@/lib/printHelpers";
-import {
-  getSyncQueueItems,
-  processSyncQueue,
-  notifySyncQueueUpdated,
-  addSyncQueueUpdatedListener,
-} from "@/lib/syncQueue";
 
 type Transaction = {
   id: string;
@@ -34,6 +28,7 @@ type Transaction = {
     id: string;
     name: string;
     qty: number;
+    unitPrice?: number;
     lineTotal: number;
     optionsJson?: string | null;
     note?: string | null;
@@ -97,8 +92,6 @@ export default function TransactionsClient() {
   const [refundBusy, setRefundBusy] = useState(false);
   const [refundError, setRefundError] = useState("");
 
-  const [pendingSyncCount, setPendingSyncCount] = useState(0);
-  const [syncRetrying, setSyncRetrying] = useState(false);
   const [selectedDateKey, setSelectedDateKey] = useState<string | null>(null);
   const [summary, setSummary] = useState<{
     dateLabel: string;
@@ -116,6 +109,8 @@ export default function TransactionsClient() {
   const [ejournalCashierFilter, setEjournalCashierFilter] = useState<string>("ALL");
   const [zReadingDate, setZReadingDate] = useState<string>("");
   const [zReadingBusy, setZReadingBusy] = useState(false);
+  const [selectedTransaction, setSelectedTransaction] = useState<Transaction | null>(null);
+  const [reprintBusy, setReprintBusy] = useState<"receipt" | "sticker" | null>(null);
 
   useEffect(() => {
     // Load active staff from localStorage
@@ -131,26 +126,6 @@ export default function TransactionsClient() {
       console.error("[Transactions] Failed to load active staff", e);
     }
   }, []);
-
-  useEffect(() => {
-    const updateCount = () => {
-      const queue = getSyncQueueItems();
-      setPendingSyncCount(queue.length);
-    };
-    updateCount();
-    const unsubscribe = addSyncQueueUpdatedListener(updateCount);
-    return unsubscribe;
-  }, []);
-
-  async function handleRetrySync() {
-    setSyncRetrying(true);
-    try {
-      await processSyncQueue();
-      notifySyncQueueUpdated();
-    } finally {
-      setSyncRetrying(false);
-    }
-  }
 
   async function handlePinSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -583,6 +558,50 @@ export default function TransactionsClient() {
     );
   }
 
+  async function handleReprintReceipt() {
+    if (!selectedTransaction || !activeStaff?.staffKey) return;
+    setReprintBusy("receipt");
+    try {
+      const res = await fetch(`/api/pos/transactions/${selectedTransaction.id}/print-receipt`, {
+        method: "POST",
+        headers: { "x-staff-key": activeStaff.staffKey },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.message || data?.error || "Print failed");
+      if (data.snapResiboError) {
+        alert(
+          data.snapResiboError === "NO_AVAILABLE_VOUCHERS"
+            ? "Receipt printed. SnapResibo: no vouchers available."
+            : "Receipt printed. SnapResibo voucher could not be allocated."
+        );
+      } else {
+        alert("Receipt sent to printer.");
+      }
+    } catch (e: any) {
+      alert("Reprint failed: " + (e?.message ?? String(e)));
+    } finally {
+      setReprintBusy(null);
+    }
+  }
+
+  async function handleReprintStickers() {
+    if (!selectedTransaction || !activeStaff?.staffKey) return;
+    setReprintBusy("sticker");
+    try {
+      const res = await fetch(`/api/pos/transactions/${selectedTransaction.id}/print-stickers`, {
+        method: "POST",
+        headers: { "x-staff-key": activeStaff.staffKey },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.message || data?.error || "Print failed");
+      alert("Stickers sent to printer.");
+    } catch (e: any) {
+      alert("Reprint failed: " + (e?.message ?? String(e)));
+    } finally {
+      setReprintBusy(null);
+    }
+  }
+
   async function handlePrintZReading() {
     if (!activeStaff?.staffKey) {
       alert("No active staff session. Please login from the Register page first.");
@@ -775,41 +794,6 @@ export default function TransactionsClient() {
           <h1 style={{ margin: 0, fontSize: "clamp(20px, 5vw, 28px)", fontWeight: "bold" }}>
             Transactions
           </h1>
-          {pendingSyncCount > 0 && (
-            <span
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "6px 12px",
-                fontSize: 12,
-                background: "rgba(234, 179, 8, 0.2)",
-                color: "#facc15",
-                borderRadius: 6,
-                border: "1px solid rgba(234, 179, 8, 0.5)",
-              }}
-            >
-              Offline sync queue: {pendingSyncCount} pending
-              <button
-                type="button"
-                onClick={handleRetrySync}
-                disabled={syncRetrying}
-                style={{
-                  padding: "4px 8px",
-                  fontSize: 11,
-                  fontWeight: 600,
-                  background: "rgba(234, 179, 8, 0.4)",
-                  color: "#0a0a0a",
-                  border: "1px solid rgba(234, 179, 8, 0.8)",
-                  borderRadius: 4,
-                  cursor: syncRetrying ? "not-allowed" : "pointer",
-                  opacity: syncRetrying ? 0.7 : 1,
-                }}
-              >
-                {syncRetrying ? "Syncing…" : "Retry sync"}
-              </button>
-            </span>
-          )}
         </div>
 
         {error && (
@@ -944,12 +928,16 @@ export default function TransactionsClient() {
                       const paymentMethods = [...new Set(tx.payments.map(p => p.method))];
                       const isSplit = paymentMethods.length > 1;
 
+                      const isSelected = selectedTransaction?.id === tx.id;
                       return (
                         <tr 
                           key={tx.id} 
+                          onClick={() => setSelectedTransaction((prev) => (prev?.id === tx.id ? null : tx))}
                           style={{ 
                             borderBottom: "1px solid #3a3a3a",
                             opacity: isVoided ? 0.5 : 1,
+                            background: isSelected ? "rgba(34, 197, 94, 0.12)" : undefined,
+                            cursor: "pointer",
                           }}
                         >
                           {/* Date / ID / Payment */}
@@ -1122,7 +1110,7 @@ export default function TransactionsClient() {
                             
                             {!isVoided && (
                               <button
-                                onClick={() => openRefundModal(tx)}
+                                onClick={(e) => { e.stopPropagation(); openRefundModal(tx); }}
                                 style={{
                                   padding: "8px 16px",
                                   fontSize: 13,
@@ -1228,6 +1216,271 @@ export default function TransactionsClient() {
             minHeight: 0,
           }}
         >
+          {selectedTransaction ? (
+            /* Transaction detail view */
+            <React.Fragment>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: 12,
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>
+                    Transaction #{selectedTransaction.transactionNo}
+                  </div>
+                  <div style={{ fontSize: 13, color: "#9ca3af" }}>
+                    {formatDate(selectedTransaction.createdAt)} {formatTime(selectedTransaction.createdAt)}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedTransaction(null)}
+                  style={{
+                    padding: "8px 14px",
+                    fontSize: 13,
+                    fontWeight: 600,
+                    borderRadius: 6,
+                    border: "1px solid #4b5563",
+                    background: "#1f2937",
+                    color: "#e5e7eb",
+                    cursor: "pointer",
+                  }}
+                >
+                  ← Back to day summary
+                </button>
+              </div>
+
+              {/* Transaction summary (top-right replacement) */}
+              <div
+                style={{
+                  padding: 12,
+                  borderRadius: 8,
+                  background: "#020617",
+                  border: "1px solid #1f2937",
+                  marginBottom: 12,
+                }}
+              >
+                <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>Totals</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "#9ca3af" }}>Subtotal</span>
+                    <span>{formatPesos(selectedTransaction.subtotalCents ?? selectedTransaction.totalCents)}</span>
+                  </div>
+                  {(selectedTransaction.discountCents ?? 0) > 0 && (
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ color: "#9ca3af" }}>Discount</span>
+                      <span style={{ color: "#fbbf24" }}>-{formatPesos(selectedTransaction.discountCents ?? 0)}</span>
+                    </div>
+                  )}
+                  {(selectedTransaction.serviceCents ?? 0) > 0 && (
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ color: "#9ca3af" }}>Service</span>
+                      <span>{formatPesos(selectedTransaction.serviceCents ?? 0)}</span>
+                    </div>
+                  )}
+                  <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 8, borderTop: "1px solid #1f2937", fontWeight: 700, fontSize: 15 }}>
+                    <span>Total</span>
+                    <span style={{ color: "#4ade80" }}>{formatPesos(selectedTransaction.totalCents)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+                    <span style={{ color: "#9ca3af" }}>Payment</span>
+                    <span style={{ display: "flex", gap: 4, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      {[...new Set(selectedTransaction.payments.map((p) => p.method))].map((m) => (
+                        <span
+                          key={m}
+                          style={{
+                            padding: "2px 8px",
+                            borderRadius: 4,
+                            fontSize: 11,
+                            fontWeight: 600,
+                            background: getPaymentMethodBadgeColor(m),
+                            color: "#fff",
+                          }}
+                        >
+                          {m}
+                        </span>
+                      ))}
+                    </span>
+                  </div>
+                  {(() => {
+                    const totalPaid = selectedTransaction.payments.reduce((s, p) => s + p.amountCents, 0);
+                    const hasCash = selectedTransaction.payments.some((p) => String(p.method).toUpperCase() === "CASH");
+                    const changeCents = hasCash && totalPaid > selectedTransaction.totalCents ? totalPaid - selectedTransaction.totalCents : 0;
+                    return changeCents > 0 ? (
+                      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+                        <span style={{ color: "#9ca3af" }}>Change</span>
+                        <span style={{ color: "#4ade80", fontWeight: 600 }}>{formatPesos(changeCents)}</span>
+                      </div>
+                    ) : null;
+                  })()}
+                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, paddingTop: 6, borderTop: "1px dashed #374151" }}>
+                    <span style={{ color: "#9ca3af" }}>Status</span>
+                    <span
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: 4,
+                        fontSize: 11,
+                        fontWeight: 600,
+                        background: selectedTransaction.status === "PAID" ? "#166534" : selectedTransaction.status === "VOID" ? "#7f1d1d" : "#374151",
+                        color: selectedTransaction.status === "PAID" ? "#86efac" : selectedTransaction.status === "VOID" ? "#fca5a5" : "#9ca3af",
+                      }}
+                    >
+                      {selectedTransaction.status}
+                    </span>
+                  </div>
+                  {selectedTransaction.createdBy && (
+                    <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+                      <span style={{ color: "#9ca3af" }}>Cashier</span>
+                      <span>{selectedTransaction.createdBy}</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Reprint actions */}
+                <div style={{ display: "flex", gap: 8, marginTop: 12, paddingTop: 12, borderTop: "1px solid #1f2937" }}>
+                  <button
+                    type="button"
+                    onClick={handleReprintReceipt}
+                    disabled={!!reprintBusy}
+                    style={{
+                      flex: 1,
+                      padding: "10px 14px",
+                      fontSize: 13,
+                      fontWeight: 600,
+                      borderRadius: 6,
+                      border: "1px solid #4b5563",
+                      background: reprintBusy ? "#1f2937" : COLORS.primary,
+                      color: "#fff",
+                      cursor: reprintBusy ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    {reprintBusy === "receipt" ? "Printing…" : "Reprint Receipt"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleReprintStickers}
+                    disabled={!!reprintBusy}
+                    style={{
+                      flex: 1,
+                      padding: "10px 14px",
+                      fontSize: 13,
+                      fontWeight: 600,
+                      borderRadius: 6,
+                      border: "1px solid #4b5563",
+                      background: reprintBusy ? "#1f2937" : "#0891b2",
+                      color: "#fff",
+                      cursor: reprintBusy ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    {reprintBusy === "sticker" ? "Printing…" : "Reprint Stickers"}
+                  </button>
+                </div>
+              </div>
+
+              {/* Transaction line items (bottom-right replacement) */}
+              <div
+                style={{
+                  padding: 12,
+                  borderRadius: 8,
+                  background: "#020617",
+                  border: "1px solid #1f2937",
+                  flex: 1,
+                  minHeight: 0,
+                  display: "flex",
+                  flexDirection: "column",
+                }}
+              >
+                <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>Line Items</div>
+                <div
+                  style={{
+                    flex: 1,
+                    minHeight: 0,
+                    overflowY: "auto",
+                    paddingRight: 4,
+                  }}
+                >
+                  {selectedTransaction.lineItems.map((line) => {
+                    const refunded = isLineRefunded(line);
+                    const { primary, secondary } = lineItemDisplayParts(line);
+                    const mods = [primary, ...secondary].filter(Boolean);
+                    const unitPrice = line.unitPrice ?? (line.qty > 0 ? Math.round(line.lineTotal / line.qty) : 0);
+                    return (
+                      <div
+                        key={line.id}
+                        style={{
+                          padding: "10px 8px",
+                          borderBottom: "1px solid #111827",
+                          display: "flex",
+                          alignItems: "flex-start",
+                          gap: 12,
+                        }}
+                      >
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div
+                            style={{
+                              fontSize: 13,
+                              fontWeight: 600,
+                              color: refunded ? "#666" : "#e5e7eb",
+                              textDecoration: refunded ? "line-through" : "none",
+                            }}
+                          >
+                            {getLineItemMainLabel(line)}
+                          </div>
+                          {mods.length > 0 && (
+                            <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>
+                              {mods.map((m, i) => (
+                                <div key={i}>+ {m}</div>
+                              ))}
+                            </div>
+                          )}
+                          {line.note && (
+                            <div style={{ fontSize: 11, color: "#fbbf24", fontStyle: "italic", marginTop: 2 }}>
+                              {line.note}
+                            </div>
+                          )}
+                          {refunded && (
+                            <span
+                              style={{
+                                display: "inline-block",
+                                marginTop: 4,
+                                padding: "2px 6px",
+                                borderRadius: 3,
+                                fontSize: 9,
+                                fontWeight: 600,
+                                background: "#7f1d1d",
+                                color: "#fca5a5",
+                              }}
+                            >
+                              REFUNDED
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ textAlign: "right", minWidth: 90, flexShrink: 0 }}>
+                          <div style={{ fontSize: 11, color: "#9ca3af" }}>
+                            {line.qty} × {formatPesos(unitPrice)}
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 13,
+                              fontWeight: 600,
+                              color: refunded ? "#555" : "#4ade80",
+                            }}
+                          >
+                            {formatPesos(line.lineTotal)}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </React.Fragment>
+          ) : (
+            /* Default day summary view */
+            <React.Fragment>
           <div
             style={{
               display: "flex",
@@ -1625,6 +1878,8 @@ export default function TransactionsClient() {
               )}
             </div>
           </div>
+            </React.Fragment>
+          )}
         </div>
         </div>
       </div>

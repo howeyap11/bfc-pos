@@ -13,9 +13,17 @@ export default function PasswordPinsPage() {
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState("");
   const [error, setError] = useState("");
+  const [ownerConfigured, setOwnerConfigured] = useState(false);
+  const [ownerLoading, setOwnerLoading] = useState(true);
+  const [ownerPassword, setOwnerPassword] = useState("");
+  const [ownerConfirm, setOwnerConfirm] = useState("");
+  const [ownerSaving, setOwnerSaving] = useState(false);
+  const [ownerSuccess, setOwnerSuccess] = useState("");
+  const [ownerError, setOwnerError] = useState("");
 
   useEffect(() => {
     api.getAdminPinConfigured().then((r) => { setConfigured(r.configured); setLoading(false); }).catch(() => setLoading(false));
+    api.getOwnerPasswordConfigured().then((r) => { setOwnerConfigured(r.configured); setOwnerLoading(false); }).catch(() => setOwnerLoading(false));
   }, []);
 
   async function handleSaveAdminPin(e: React.FormEvent) {
@@ -117,6 +125,89 @@ export default function PasswordPinsPage() {
               style={{ background: COLORS.primary }}
             >
               {saving ? "Saving…" : configured ? "Update Admin PIN" : "Set Admin PIN"}
+            </button>
+          </form>
+        )}
+      </div>
+
+      <div
+        className="mb-6 rounded-lg border p-6"
+        style={{ background: COLORS.bgPanel, borderColor: COLORS.borderLight }}
+      >
+        <h2 className="mb-2 text-sm font-semibold text-white">Owner Password</h2>
+        <p className="mb-4 text-sm text-white/60">
+          For hidden owner/developer tools in POS (sync status, dev mode, backfill, etc.). Min 6 characters. Syncs to POS automatically.
+        </p>
+        {ownerLoading ? (
+          <p className="text-sm text-white/50">Loading…</p>
+        ) : (
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              setOwnerError("");
+              setOwnerSuccess("");
+              if (ownerPassword.length < 6) {
+                setOwnerError("Password must be at least 6 characters");
+                return;
+              }
+              if (ownerPassword !== ownerConfirm) {
+                setOwnerError("Passwords do not match");
+                return;
+              }
+              setOwnerSaving(true);
+              try {
+                await api.setOwnerPassword(ownerPassword);
+                setOwnerSuccess("Owner password saved. POS terminals will sync within 5–10 minutes.");
+                setOwnerConfigured(true);
+                setOwnerPassword("");
+                setOwnerConfirm("");
+                setTimeout(() => setOwnerSuccess(""), 5000);
+              } catch (err: unknown) {
+                const body = (err as { body?: { message?: string } })?.body;
+                setOwnerError(body?.message ?? (err instanceof Error ? err.message : "Failed to save"));
+              } finally {
+                setOwnerSaving(false);
+              }
+            }}
+            className="space-y-4"
+          >
+            <div>
+              <label className="mb-1 block text-sm text-white/80">Owner Password</label>
+              <input
+                type="password"
+                value={ownerPassword}
+                onChange={(e) => setOwnerPassword(e.target.value)}
+                placeholder="••••••"
+                className={inputStyle}
+                style={inputBg}
+                autoComplete="new-password"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm text-white/80">Confirm Owner Password</label>
+              <input
+                type="password"
+                value={ownerConfirm}
+                onChange={(e) => setOwnerConfirm(e.target.value)}
+                placeholder="••••••"
+                className={inputStyle}
+                style={inputBg}
+                autoComplete="new-password"
+              />
+            </div>
+            {ownerError && (
+              <div className="rounded border border-red-500/50 bg-red-500/10 p-3 text-sm text-red-400">{ownerError}</div>
+            )}
+            {ownerSuccess && (
+              <div className="rounded border border-green-500/50 bg-green-500/10 p-3 text-sm text-green-400">{ownerSuccess}</div>
+            )}
+            <button
+              type="submit"
+              disabled={ownerSaving || ownerPassword.length < 6 || ownerPassword !== ownerConfirm}
+              className="rounded px-4 py-2 text-sm font-medium text-black disabled:opacity-50"
+              style={{ background: COLORS.primary }}
+            >
+              {ownerSaving ? "Saving…" : ownerConfigured ? "Update Owner Password" : "Set Owner Password"}
             </button>
           </form>
         )}
