@@ -1696,6 +1696,8 @@ export default function PosRegisterClient() {
     items: CartItem[];
     createdAt: string;
     staffName?: string;
+    changeCents?: number;
+    payments?: Array<{ method: string; amountCents: number }>;
   } | null>(null);
   const [selectedPaymentMode, setSelectedPaymentMode] = useState<PaymentMode>("CASH");
   
@@ -3046,7 +3048,12 @@ export default function PosRegisterClient() {
       if (updatedTransaction.status === "PAID") {
         // Capture cart snapshot before clearing
         const cartSnapshot = [...cart];
-        
+        const totalCents = updatedTransaction.totalCents;
+        const payments = (updatedTransaction.payments ?? []) as Array<{ method: string; amountCents: number }>;
+        const totalPaid = payments.reduce((s: number, p) => s + p.amountCents, 0);
+        const hasCash = payments.some((p) => String(p.method).toUpperCase() === "CASH");
+        const changeCents = hasCash && totalPaid > totalCents ? totalPaid - totalCents : 0;
+
         // Set completed transaction data
         setLastCompletedTransaction({
           id: updatedTransaction.id,
@@ -3056,6 +3063,8 @@ export default function PosRegisterClient() {
           items: cartSnapshot,
           createdAt: new Date().toISOString(),
           staffName: activeStaff?.name,
+          changeCents,
+          payments,
         });
         
         // Clear working state
@@ -3243,7 +3252,12 @@ export default function PosRegisterClient() {
       if (updatedTransaction.status === "PAID") {
         // Capture cart snapshot before clearing
         const cartSnapshot = [...cart];
-        
+        const totalCents = updatedTransaction.totalCents;
+        const payments = (updatedTransaction.payments ?? []) as Array<{ method: string; amountCents: number }>;
+        const totalPaid = payments.reduce((s: number, p) => s + p.amountCents, 0);
+        const hasCash = payments.some((p) => String(p.method).toUpperCase() === "CASH");
+        const changeCents = hasCash && totalPaid > totalCents ? totalPaid - totalCents : 0;
+
         // Set completed transaction data
         setLastCompletedTransaction({
           id: updatedTransaction.id,
@@ -3253,6 +3267,8 @@ export default function PosRegisterClient() {
           items: cartSnapshot,
           createdAt: new Date().toISOString(),
           staffName: activeStaff?.name,
+          changeCents,
+          payments,
         });
         
         // Clear working state
@@ -3372,15 +3388,22 @@ export default function PosRegisterClient() {
       const transactionId = txData.id;
       const totalCents = txData.totalCents;
 
-      console.log("[PAY] Recording payment...", { 
-        transactionId, 
-        totalCents, 
+      // For CASH: send tendered amount when customer gives excess (so we can compute change on success screen)
+      const amountReceivedCents = Math.round((parseFloat(amountReceivedPesos) || 0) * 100);
+      const cashAmountCents =
+        method === "CASH" && amountReceivedCents >= totalCents ? amountReceivedCents : totalCents;
+
+      console.log("[PAY] Recording payment...", {
+        transactionId,
+        totalCents,
         method,
+        amountReceivedCents,
+        cashAmountCents,
       });
 
       const paymentBody = {
         method,
-        amountCents: totalCents,
+        amountCents: cashAmountCents,
       };
 
       console.log("[PAY] PAYMENT BODY", paymentBody);
@@ -3409,6 +3432,9 @@ export default function PosRegisterClient() {
 
       console.log("[PAY] SUCCESS — switching state");
 
+      // Compute change for CASH: tendered - total (only when excess tendered)
+      const changeCents = method === "CASH" && cashAmountCents > totalCents ? cashAmountCents - totalCents : 0;
+
       // Set completed transaction data
       setLastCompletedTransaction({
         id: txData.id,
@@ -3418,6 +3444,8 @@ export default function PosRegisterClient() {
         items: cartSnapshot,
         createdAt: new Date().toISOString(),
         staffName: activeStaff?.name,
+        changeCents,
+        payments: [{ method, amountCents: cashAmountCents }],
       });
 
       // Clear working state
@@ -5521,6 +5549,8 @@ function TransactionSuccessPanel({
     items: CartItem[];
     createdAt: string;
     staffName?: string;
+    changeCents?: number;
+    payments?: Array<{ method: string; amountCents: number }>;
   };
   onNewTransaction: () => void;
   formatPesos: (cents: number) => string;
@@ -5548,6 +5578,12 @@ function TransactionSuccessPanel({
     item?.itemName?.toLowerCase().includes("matcha")
   );
   const isQueuedOffline = transaction.transactionNo <= 0;
+
+  const hasCash = transaction.method === "CASH" || (transaction.payments ?? []).some((p) => String(p.method).toUpperCase() === "CASH");
+  const changeCents = transaction.changeCents ?? (hasCash && (transaction.payments ?? []).length > 0
+    ? Math.max(0, (transaction.payments ?? []).reduce((s, p) => s + p.amountCents, 0) - transaction.totalCents)
+    : 0);
+  const showChange = hasCash && changeCents > 0;
 
   // Client-side print from local data (for queued/offline transactions)
   function handlePrintFromLocal(type: "receipt" | "sticker") {
@@ -5587,6 +5623,22 @@ function TransactionSuccessPanel({
           </svg>
         </div>
         <h2 style={{ color: "#22c55e", margin: 0, fontSize: 20 }}>Transaction Successful</h2>
+        {showChange && (
+          <div
+            style={{
+              marginTop: 12,
+              padding: "10px 20px",
+              background: "rgba(74, 222, 128, 0.15)",
+              border: "1px solid rgba(74, 222, 128, 0.5)",
+              borderRadius: 8,
+              fontSize: 18,
+              fontWeight: "bold",
+              color: "#4ade80",
+            }}
+          >
+            Change: {formatPesos(changeCents)}
+          </div>
+        )}
       </div>
 
       {/* Transaction Details */}
@@ -5601,6 +5653,12 @@ function TransactionSuccessPanel({
           <span style={{ color: "#aaa", fontSize: 13 }}>Total</span>
           <strong style={{ color: COLORS.primary, fontSize: 18 }}>{formatPesos(transaction.totalCents)}</strong>
         </div>
+        {showChange && (
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+            <span style={{ color: "#aaa", fontSize: 13 }}>Change</span>
+            <strong style={{ color: "#4ade80", fontSize: 16 }}>{formatPesos(changeCents)}</strong>
+          </div>
+        )}
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
           <span style={{ color: "#aaa", fontSize: 13 }}>Payment Method</span>
           <span

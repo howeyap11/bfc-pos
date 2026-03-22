@@ -265,6 +265,11 @@ export default function TransactionSuccessClient() {
   const primaryPayment = transaction.payments[0];
   const paymentMethod = primaryPayment?.method || "CASH";
 
+  // Compute change for cash/split+cash: totalPaid - totalCents when CASH involved and excess tendered
+  const totalPaid = (transaction.payments ?? []).reduce((s, p) => s + p.amountCents, 0);
+  const hasCash = (transaction.payments ?? []).some((p) => String(p.method).toUpperCase() === "CASH");
+  const changeCents = hasCash && totalPaid > transaction.totalCents ? totalPaid - transaction.totalCents : 0;
+
   return (
     <div
       style={{
@@ -354,11 +359,29 @@ export default function TransactionSuccessClient() {
             borderRadius: 20,
             fontSize: 14,
             fontWeight: "600",
-            marginBottom: 16,
+            marginBottom: changeCents > 0 ? 8 : 16,
           }}
         >
           {getPaymentMethodLabel(paymentMethod)}
         </div>
+
+        {/* Change - prominent when cash/split+cash with excess */}
+        {changeCents > 0 && (
+          <div
+            style={{
+              padding: "10px 24px",
+              background: "rgba(74, 222, 128, 0.15)",
+              border: "1px solid rgba(74, 222, 128, 0.5)",
+              borderRadius: 8,
+              fontSize: 18,
+              fontWeight: "bold",
+              color: "#4ade80",
+              marginBottom: 16,
+            }}
+          >
+            Change: {formatPesos(changeCents)}
+          </div>
+        )}
 
         {/* Date/Time + Staff Name */}
         <div
@@ -671,6 +694,24 @@ export default function TransactionSuccessClient() {
             <span>Total</span>
             <span>{formatPesos(transaction.totalCents)}</span>
           </div>
+
+          {/* Change Row - only for cash/split+cash when excess tendered */}
+          {changeCents > 0 && (
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                paddingTop: 12,
+                fontSize: 16,
+                fontWeight: "600",
+                color: "#4ade80",
+              }}
+            >
+              <span>Change</span>
+              <span>{formatPesos(changeCents)}</span>
+            </div>
+          )}
         </div>
       </div>
 

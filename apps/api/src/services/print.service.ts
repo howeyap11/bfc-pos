@@ -700,7 +700,7 @@ const TSPL_DOTS_PER_MM = 8;
 const TSPL_MAIN_Y = 22;
 
 // whole block anchor
-const TSPL_BLOCK_BASE_X = 570;
+const TSPL_BLOCK_BASE_X = 590;
 
 /** Vertical step (dots) per top row. */
 const TSPL_TOP_ROW_STEP = 38;
