@@ -104,6 +104,16 @@ export async function getTransactionSummary(
   let refundAmountCents = 0;
   let startReceipt: number | null = null;
   let endReceipt: number | null = null;
+  let cashTransactionCount = 0;
+  const sampleTxBreakdown: Array<{
+    id: string;
+    transactionNo: number;
+    totalCents: number;
+    refundedCents: number;
+    netSalesCents: number;
+    cashPortionCents: number;
+    totalAllocatedPaymentsCents: number;
+  }> = [];
 
   const normalizePaymentMethod = (m: string) => {
     const s = String(m ?? "").trim().toUpperCase();
@@ -117,6 +127,49 @@ export async function getTransactionSummary(
     if (t === "pwd") return "PWD";
     if (t === "snr" || t === "senior" || t === "senior citizen" || t === "sc") return "SNR";
     return "REGULAR";
+  };
+
+  const allocateNetPaymentsByMethod = (args: {
+    netSalesCents: number;
+    payments: Array<{ method: string; amountCents: number; status: string }>;
+  }): Record<string, number> => {
+    const paid = args.payments.filter((p) => p.status === "PAID" && p.amountCents > 0);
+    if (paid.length === 0 || args.netSalesCents <= 0) return {};
+
+    const totalCollected = paid.reduce((s, p) => s + p.amountCents, 0);
+    if (totalCollected <= 0) return {};
+
+    // Floor first, then distribute remainder by largest fractional part.
+    // This guarantees sum(allocated) === netSalesCents and prevents rounding overflow.
+    const methodTotals: Record<string, number> = {};
+    const rows = paid.map((p, idx) => {
+      const rawNumerator = p.amountCents * args.netSalesCents;
+      const floorValue = Math.floor(rawNumerator / totalCollected);
+      const remainder = rawNumerator % totalCollected;
+      return { idx, method: normalizePaymentMethod(p.method), floorValue, remainder };
+    });
+
+    let allocatedSum = rows.reduce((s, r) => s + r.floorValue, 0);
+    let remaining = Math.max(0, args.netSalesCents - allocatedSum);
+
+    rows.sort((a, b) => (b.remainder - a.remainder) || (a.idx - b.idx));
+    for (let i = 0; i < rows.length && remaining > 0; i++) {
+      rows[i].floorValue += 1;
+      remaining -= 1;
+    }
+
+    for (const row of rows) {
+      methodTotals[row.method] = (methodTotals[row.method] ?? 0) + row.floorValue;
+    }
+    allocatedSum = Object.values(methodTotals).reduce((s, v) => s + v, 0);
+    if (allocatedSum !== args.netSalesCents) {
+      // Safety backstop: adjust first method to maintain invariant.
+      const firstMethod = rows[0]?.method;
+      if (firstMethod) {
+        methodTotals[firstMethod] = (methodTotals[firstMethod] ?? 0) + (args.netSalesCents - allocatedSum);
+      }
+    }
+    return methodTotals;
   };
 
   for (const tx of paidTxs) {
@@ -140,17 +193,29 @@ export async function getTransactionSummary(
 
     regularDiscountCents += Math.max(0, tx.discountCents ?? 0);
 
-    const totalCollected = tx.payments
-      .filter((p) => p.status === "PAID")
-      .reduce((s, p) => s + p.amountCents, 0);
-    for (const p of tx.payments) {
-      if (p.status !== "PAID") continue;
-      const method = normalizePaymentMethod(p.method);
-      const netPaymentCents =
-        totalCollected > 0 && refundedCents > 0
-          ? Math.round((p.amountCents * netSales) / totalCollected)
-          : p.amountCents;
-      paymentTotalsCents[method] = (paymentTotalsCents[method] ?? 0) + netPaymentCents;
+    const allocatedByMethod = allocateNetPaymentsByMethod({
+      netSalesCents: netSales,
+      payments: tx.payments.map((p) => ({
+        method: p.method,
+        amountCents: p.amountCents,
+        status: p.status,
+      })),
+    });
+    const txCashPortion = allocatedByMethod.CASH ?? 0;
+    if (txCashPortion > 0) cashTransactionCount += 1;
+    for (const [method, amount] of Object.entries(allocatedByMethod)) {
+      paymentTotalsCents[method] = (paymentTotalsCents[method] ?? 0) + amount;
+    }
+    if (sampleTxBreakdown.length < 10) {
+      sampleTxBreakdown.push({
+        id: tx.id,
+        transactionNo: tx.transactionNo,
+        totalCents: tx.totalCents,
+        refundedCents,
+        netSalesCents: netSales,
+        cashPortionCents: txCashPortion,
+        totalAllocatedPaymentsCents: Object.values(allocatedByMethod).reduce((s, v) => s + v, 0),
+      });
     }
 
     for (const li of tx.lineItems) {
@@ -224,12 +289,28 @@ export async function getTransactionSummary(
     from: from.toISOString(),
     to: to.toISOString(),
     totalTransactionsLoaded: txs.length,
+    validPaidTransactionsCount: paidTxs.length,
     refundRecordsTotal: refundCount,
     refundAmountCents,
     grossSalesCents,
+    cashSalesCents: paymentTotalsCents.CASH ?? 0,
+    cashTransactionCount,
     transactionCount,
     voidedCount,
+    sampleTxBreakdown,
   });
+
+  const cashSalesCents = paymentTotalsCents.CASH ?? 0;
+  if (cashSalesCents > grossSalesCents) {
+    console.error("[TransactionSummary] INVALID_TOTALS cash exceeds gross", {
+      selectedDate,
+      grossSalesCents,
+      cashSalesCents,
+      refundAmountCents,
+      transactionIds: paidTxs.map((t) => t.id),
+      sampleTxBreakdown,
+    });
+  }
 
   return {
     selectedDate,
