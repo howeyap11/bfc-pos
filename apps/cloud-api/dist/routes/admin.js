@@ -1,5 +1,6 @@
 import { buffer } from "node:stream/consumers";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
+import { requireCloudAdmin } from "../lib/cloudAdminRole.js";
 import { z } from "zod";
 import { uploadImage } from "../services/r2.service.js";
 import { bumpCatalogVersion } from "../lib/catalogVersion.js";
@@ -47,7 +48,9 @@ async function adminAuthHook(req, reply) {
 export async function adminRoutes(app) {
     app.addHook("preHandler", adminAuthHook);
     // Admin PIN (Settings > Password & PIN Codes)
-    app.get("/settings/admin-pin", async () => {
+    app.get("/settings/admin-pin", async (req, reply) => {
+        if (!requireCloudAdmin(req, reply))
+            return;
         const row = await app.prisma.storeSetting.upsert({
             where: { id: "1" },
             create: { id: "1", adminPinHash: null },
@@ -56,6 +59,8 @@ export async function adminRoutes(app) {
         return { configured: !!row.adminPinHash };
     });
     app.put("/settings/admin-pin", async (req, reply) => {
+        if (!requireCloudAdmin(req, reply))
+            return;
         const parsed = z.object({ pin: z.string().length(4, "PIN must be 4 digits").regex(/^\d{4}$/, "PIN must be 4 digits").refine((v) => v[0] !== "0", "PIN cannot start with 0") }).safeParse(req.body);
         if (!parsed.success) {
             reply.code(400);
@@ -68,6 +73,222 @@ export async function adminRoutes(app) {
             update: { adminPinHash: hash },
         });
         return { ok: true };
+    });
+    // Owner Password (Settings > Password & PIN Codes) – for POS owner/developer tools
+    app.get("/settings/owner-password", async (req, reply) => {
+        if (!requireCloudAdmin(req, reply))
+            return;
+        const row = await app.prisma.storeSetting.upsert({
+            where: { id: "1" },
+            create: { id: "1", adminPinHash: null, ownerPasswordHash: null },
+            update: {},
+        });
+        return { configured: !!row.ownerPasswordHash };
+    });
+    app.put("/settings/owner-password", async (req, reply) => {
+        if (!requireCloudAdmin(req, reply))
+            return;
+        const parsed = z.object({
+            password: z.string().min(6, "Password must be at least 6 characters").max(128),
+        }).safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_PASSWORD", message: parsed.error.issues.map((issue) => issue.message).join("; ") };
+        }
+        const hash = await hashPassword(parsed.data.password);
+        await app.prisma.storeSetting.upsert({
+            where: { id: "1" },
+            create: { id: "1", adminPinHash: null, ownerPasswordHash: hash },
+            update: { ownerPasswordHash: hash },
+        });
+        return { ok: true };
+    });
+    // Settings > Receipts: BIR / PTU fields (ReceiptDetails). Owner/trade name is BusinessDetails.businessName (GET merged only).
+    const RECEIPT_DETAILS_ID = "1";
+    const receiptDetailsPutSchema = z.object({
+        receiptMessage: z.string().max(4000).nullable().optional(),
+        birEnabled: z.boolean().optional(),
+        taxType: z.string().max(120).optional(),
+        permitNo: z.string().max(120).nullable().optional(),
+        issueDate: z.string().max(32).nullable().optional(),
+        nonVatTin: z.string().max(64).nullable().optional(),
+        vatTin: z.string().max(64).nullable().optional(),
+        birMin: z.string().max(64).nullable().optional(),
+        birSerialNo: z.string().max(64).nullable().optional(),
+    });
+    app.get("/settings/receipt-details", async (req, reply) => {
+        if (!requireCloudAdmin(req, reply))
+            return;
+        const [receipt, business] = await Promise.all([
+            app.prisma.receiptDetails.upsert({
+                where: { id: RECEIPT_DETAILS_ID },
+                create: { id: RECEIPT_DETAILS_ID },
+                update: {},
+            }),
+            app.prisma.businessDetails.findUnique({ where: { id: "1" } }),
+        ]);
+        return {
+            ownerTradeName: business?.businessName ?? null,
+            taxType: receipt.taxType,
+            receiptMessage: receipt.receiptMessage,
+            birEnabled: receipt.birEnabled,
+            permitNo: receipt.permitNo,
+            issueDate: receipt.issueDate,
+            nonVatTin: receipt.nonVatTin,
+            vatTin: receipt.vatTin,
+            birMin: receipt.birMin,
+            birSerialNo: receipt.birSerialNo,
+            birRegulatoryLocked: receipt.birEnabled,
+        };
+    });
+    app.put("/settings/receipt-details", async (req, reply) => {
+        if (!requireCloudAdmin(req, reply))
+            return;
+        const parsed = receiptDetailsPutSchema.safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "VALIDATION_ERROR", message: parsed.error.issues.map((i) => i.message).join("; ") };
+        }
+        const existing = await app.prisma.receiptDetails.findUnique({ where: { id: RECEIPT_DETAILS_ID } });
+        if (!existing) {
+            reply.code(404);
+            return { error: "NOT_FOUND", message: "Receipt details not initialized" };
+        }
+        const body = parsed.data;
+        const locked = existing.birEnabled === true;
+        const turningOffBir = body.birEnabled === false;
+        if (locked && !turningOffBir) {
+            const regChanged = (body.taxType !== undefined && body.taxType !== existing.taxType) ||
+                (body.permitNo !== undefined && body.permitNo !== existing.permitNo) ||
+                (body.issueDate !== undefined && body.issueDate !== existing.issueDate) ||
+                (body.nonVatTin !== undefined && body.nonVatTin !== existing.nonVatTin) ||
+                (body.vatTin !== undefined && body.vatTin !== existing.vatTin) ||
+                (body.birMin !== undefined && body.birMin !== existing.birMin) ||
+                (body.birSerialNo !== undefined && body.birSerialNo !== existing.birSerialNo);
+            if (regChanged) {
+                reply.code(400);
+                return {
+                    error: "BIR_LOCKED",
+                    message: "Turn off BIR Enabled to change permit, tax type, TINs, MIN, or S/N.",
+                };
+            }
+        }
+        const data = {};
+        if (body.receiptMessage !== undefined)
+            data.receiptMessage = body.receiptMessage;
+        if (body.birEnabled !== undefined)
+            data.birEnabled = body.birEnabled;
+        if (!locked || turningOffBir) {
+            if (body.taxType !== undefined)
+                data.taxType = body.taxType;
+            if (body.permitNo !== undefined)
+                data.permitNo = body.permitNo;
+            if (body.issueDate !== undefined)
+                data.issueDate = body.issueDate;
+            if (body.nonVatTin !== undefined)
+                data.nonVatTin = body.nonVatTin;
+            if (body.vatTin !== undefined)
+                data.vatTin = body.vatTin;
+            if (body.birMin !== undefined)
+                data.birMin = body.birMin;
+            if (body.birSerialNo !== undefined)
+                data.birSerialNo = body.birSerialNo;
+        }
+        const receipt = await app.prisma.receiptDetails.update({
+            where: { id: RECEIPT_DETAILS_ID },
+            data,
+        });
+        const business = await app.prisma.businessDetails.findUnique({ where: { id: "1" } });
+        return {
+            ownerTradeName: business?.businessName ?? null,
+            taxType: receipt.taxType,
+            receiptMessage: receipt.receiptMessage,
+            birEnabled: receipt.birEnabled,
+            permitNo: receipt.permitNo,
+            issueDate: receipt.issueDate,
+            nonVatTin: receipt.nonVatTin,
+            vatTin: receipt.vatTin,
+            birMin: receipt.birMin,
+            birSerialNo: receipt.birSerialNo,
+            birRegulatoryLocked: receipt.birEnabled,
+        };
+    });
+    // Settings > Sales & Inventory: report email recipient, daily send time (local), inventory email, service charge %
+    const STORE_SETTING_ID = "1";
+    const timeHhMmSchema = z
+        .string()
+        .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use HH:mm in 24-hour time (e.g. 00:30)");
+    const salesInventoryPutSchema = z.object({
+        reportRecipientEmail: z.string().max(320).optional(),
+        dailySalesEmailTimeLocal: timeHhMmSchema.optional(),
+        inventoryEmailEnabled: z.boolean().optional(),
+        inventoryReportType: z.string().min(1).max(120).optional(),
+        fixedServiceChargePercent: z.number().int().min(0).max(100).optional(),
+    });
+    // Daily sales / inventory mailers (when implemented) should load recipient + time from this row only — no duplicate keys.
+    app.get("/settings/sales-inventory", async (req, reply) => {
+        if (!requireCloudAdmin(req, reply))
+            return;
+        const row = await app.prisma.storeSetting.upsert({
+            where: { id: STORE_SETTING_ID },
+            create: { id: STORE_SETTING_ID },
+            update: {},
+        });
+        return {
+            reportRecipientEmail: row.reportRecipientEmail,
+            dailySalesEmailTimeLocal: row.dailySalesEmailTimeLocal,
+            inventoryEmailEnabled: row.inventoryEmailEnabled,
+            inventoryReportType: row.inventoryReportType,
+            fixedServiceChargePercent: row.fixedServiceChargePercent,
+            /** POS may still allow toggling per transaction; this value is the fixed % when policy is locked. */
+            fixedServiceChargeLocked: true,
+        };
+    });
+    app.put("/settings/sales-inventory", async (req, reply) => {
+        if (!requireCloudAdmin(req, reply))
+            return;
+        const parsed = salesInventoryPutSchema.safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "VALIDATION_ERROR", message: parsed.error.issues.map((i) => i.message).join("; ") };
+        }
+        const body = parsed.data;
+        const data = {};
+        if (body.reportRecipientEmail !== undefined) {
+            const t = body.reportRecipientEmail.trim();
+            if (t.length > 0) {
+                const ok = z.string().email().safeParse(t).success;
+                if (!ok) {
+                    reply.code(400);
+                    return { error: "INVALID_EMAIL", message: "Enter a valid email address" };
+                }
+                data.reportRecipientEmail = t;
+            }
+            else {
+                data.reportRecipientEmail = null;
+            }
+        }
+        if (body.dailySalesEmailTimeLocal !== undefined)
+            data.dailySalesEmailTimeLocal = body.dailySalesEmailTimeLocal;
+        if (body.inventoryEmailEnabled !== undefined)
+            data.inventoryEmailEnabled = body.inventoryEmailEnabled;
+        if (body.inventoryReportType !== undefined)
+            data.inventoryReportType = body.inventoryReportType.trim();
+        if (body.fixedServiceChargePercent !== undefined)
+            data.fixedServiceChargePercent = body.fixedServiceChargePercent;
+        const row = await app.prisma.storeSetting.upsert({
+            where: { id: STORE_SETTING_ID },
+            create: { id: STORE_SETTING_ID, ...data },
+            update: data,
+        });
+        return {
+            reportRecipientEmail: row.reportRecipientEmail,
+            dailySalesEmailTimeLocal: row.dailySalesEmailTimeLocal,
+            inventoryEmailEnabled: row.inventoryEmailEnabled,
+            inventoryReportType: row.inventoryReportType,
+            fixedServiceChargePercent: row.fixedServiceChargePercent,
+            fixedServiceChargeLocked: true,
+        };
     });
     // Staff (POS cashiers/managers) - source of truth for names, PINs, email, roles; syncs to POS
     const STAFF_STORE_ID = "store_1";
@@ -631,6 +852,8 @@ export async function adminRoutes(app) {
     });
     // One-time cleanup: remove legacy "Sizes" OptionGroup and its options (safe no-op if absent)
     app.post("/cleanup-legacy-sizes", async (req, reply) => {
+        if (!requireCloudAdmin(req, reply))
+            return;
         const group = await app.prisma.menuOptionGroup.findFirst({
             where: { name: "Sizes" },
             include: { options: true },
@@ -1406,6 +1629,32 @@ export async function adminRoutes(app) {
         });
         return { ok: true };
     });
+    // Dev/non-production only: set on-hand quantity via ledger correction (ADMIN only).
+    app.post("/inventory/dev-manual-set", async (req, reply) => {
+        if (process.env.NODE_ENV === "production") {
+            reply.code(403);
+            return { error: "FORBIDDEN", message: "Manual inventory override is disabled in production." };
+        }
+        if (!requireCloudAdmin(req, reply))
+            return;
+        const parsed = z
+            .object({
+            ingredientId: z.string().min(1),
+            locationId: z.string().min(1),
+            quantityBase: z.number().finite(),
+        })
+            .safeParse(req.body);
+        if (!parsed.success) {
+            reply.code(400);
+            return { error: "INVALID_BODY", details: parsed.error.flatten() };
+        }
+        return app.inventoryService.postDevManualSetQuantity({
+            ingredientId: parsed.data.ingredientId,
+            locationId: parsed.data.locationId,
+            targetQtyBase: parsed.data.quantityBase,
+            sourceId: randomUUID(),
+        });
+    });
     // PUT /admin/items/:id/recipe - replace recipe lines
     const recipeLineSchema = z.object({
         ingredientId: z.string(),
@@ -1648,6 +1897,8 @@ export async function adminRoutes(app) {
         return app.prisma.category.update({ where: { id }, data });
     });
     app.delete("/categories/:id", async (req, reply) => {
+        if (!requireCloudAdmin(req, reply))
+            return;
         const { id } = req.params;
         const subCount = await app.prisma.subCategory.count({ where: { categoryId: id, deletedAt: null } });
         if (subCount > 0) {
@@ -1716,6 +1967,8 @@ export async function adminRoutes(app) {
         return app.prisma.subCategory.update({ where: { id }, data: parsed.data });
     });
     app.delete("/subcategories/:id", async (req, reply) => {
+        if (!requireCloudAdmin(req, reply))
+            return;
         const { id } = req.params;
         const moveToId = req.body?.moveItemsToSubCategoryId;
         const itemCount = await app.prisma.menuItem.count({ where: { subCategoryId: id, deletedAt: null } });
@@ -3120,5 +3373,67 @@ export async function adminRoutes(app) {
         const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize || "10", 10) || 10));
         const { rows, total } = await getItemsSold(app.prisma, storeId, range, { sortBy, order, page, pageSize });
         return { rows, total, page, pageSize };
+    });
+    app.get("/staff-ops/attendance", async () => {
+        const items = await app.prisma.syncedStaffAttendance.findMany({
+            orderBy: { happenedAt: "desc" },
+            take: 500,
+        });
+        return { items };
+    });
+    app.get("/staff-ops/waste-reports", async () => {
+        const items = await app.prisma.syncedWasteReport.findMany({
+            orderBy: { happenedAt: "desc" },
+            take: 500,
+        });
+        return { items };
+    });
+    app.get("/staff-ops/inventory-counts", async () => {
+        const items = await app.prisma.syncedInventoryCountSession.findMany({
+            orderBy: { countedAt: "desc" },
+            take: 300,
+        });
+        return { items };
+    });
+    app.get("/staff-ops/sop-submissions", async () => {
+        const items = await app.prisma.syncedSopChecklistSubmission.findMany({
+            orderBy: { submittedAt: "desc" },
+            take: 300,
+        });
+        return { items };
+    });
+    app.get("/staff-ops/shifts", async () => {
+        const items = await app.prisma.cloudStaffShiftAssignment.findMany({
+            orderBy: { shiftDate: "desc" },
+            take: 300,
+        });
+        return { items };
+    });
+    app.post("/staff-ops/shifts", async (req, reply) => {
+        if (!requireCloudAdmin(req, reply))
+            return;
+        const b = req.body;
+        const row = await app.prisma.cloudStaffShiftAssignment.create({
+            data: {
+                storeId: b.storeId ?? "store_1",
+                staffCloudId: b.staffCloudId,
+                staffName: b.staffName,
+                role: b.role ?? "STAFF",
+                shiftDate: new Date(b.shiftDate),
+                startTimeText: b.startTimeText ?? "09:00",
+                endTimeText: b.endTimeText ?? "18:00",
+                shiftType: b.shiftType ?? "OPENING",
+                status: b.status ?? "ASSIGNED",
+                assignedBy: b.assignedBy ?? null,
+            },
+        });
+        return row;
+    });
+    app.get("/staff-ops/incentives", async () => {
+        const items = await app.prisma.cloudStaffIncentiveLedger.findMany({
+            orderBy: { happenedAt: "desc" },
+            take: 500,
+        });
+        return { items };
     });
 }

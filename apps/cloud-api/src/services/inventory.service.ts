@@ -136,6 +136,43 @@ export class InventoryService {
   }
 
   /**
+   * Idempotent positive ledger rows (e.g. REVERSAL returning stock). Same sourceType+sourceId
+   * as sale deductions: first existing row short-circuits the whole batch.
+   */
+  async postIdempotentPositiveMovements(params: {
+    locationId: string;
+    sourceType: string;
+    sourceId: string;
+    movementType: StockMovementType;
+    lines: Array<{ ingredientId: string; quantityBaseUnit: number }>;
+    actorStaffId?: string | null;
+  }) {
+    const { locationId, sourceType, sourceId, movementType, lines, actorStaffId } = params;
+    if (lines.length === 0) return;
+
+    const existing = await this.prisma.stockMovement.findFirst({
+      where: { sourceType, sourceId },
+    });
+    if (existing) return;
+
+    await this.prisma.$transaction(
+      lines.map((line) =>
+        this.prisma.stockMovement.create({
+          data: {
+            ingredientId: line.ingredientId,
+            locationId,
+            movementType,
+            quantityDeltaBaseUnit: Math.abs(line.quantityBaseUnit),
+            sourceType,
+            sourceId,
+            actorStaffId: actorStaffId ?? null,
+          },
+        })
+      )
+    );
+  }
+
+  /**
    * Post transfer: TRANSFER_OUT at fromLocation, TRANSFER_IN at toLocation.
    */
   async postTransfer(params: {
@@ -183,6 +220,39 @@ export class InventoryService {
         }),
       ])
     );
+  }
+
+  /**
+   * Dev-only stock correction: one MANUAL_ADJUSTMENT movement so ledger matches target qty.
+   * Does not touch sales/refund sources; append-only ledger.
+   */
+  async postDevManualSetQuantity(params: {
+    ingredientId: string;
+    locationId: string;
+    targetQtyBase: number;
+    sourceId: string;
+    notes?: string | null;
+  }) {
+    const current = await this.getStock({
+      ingredientId: params.ingredientId,
+      locationId: params.locationId,
+    });
+    const delta = params.targetQtyBase - current;
+    if (delta === 0) {
+      return { skipped: true as const, current };
+    }
+    const row = await this.postMovement({
+      ingredientId: params.ingredientId,
+      locationId: params.locationId,
+      movementType: "MANUAL_ADJUSTMENT",
+      quantityDeltaBaseUnit: delta,
+      sourceType: "DEV_MANUAL_SET",
+      sourceId: params.sourceId,
+      notes:
+        params.notes ??
+        `Dev manual set (correction): ledger was ${current}, target ${params.targetQtyBase}`,
+    });
+    return { skipped: false as const, current, movement: row };
   }
 
   /**

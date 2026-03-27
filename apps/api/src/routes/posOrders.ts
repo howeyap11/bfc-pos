@@ -91,6 +91,8 @@ export const posOrdersRoutes: FastifyPluginAsync = async (app) => {
       source: string;
       createdAt: string;
       createdBy: string | null;
+      prepStartedAt: string | null;
+      prepReadyAt: string | null;
       table: { id: string; label: string; zone: { code: string; name: string } | null } | null;
       lineItems: Array<{
         id: string;
@@ -98,6 +100,7 @@ export const posOrdersRoutes: FastifyPluginAsync = async (app) => {
         unitPrice: number;
         lineNote: string | null;
         specialInstructions: string | null;
+        customerName: string | null;
         name: string;
         optionsJson: string | null;
         categoryName: string | null;
@@ -140,6 +143,8 @@ export const posOrdersRoutes: FastifyPluginAsync = async (app) => {
         source: tx.source,
         createdAt: tx.createdAt.toISOString(),
         createdBy: tx.createdBy,
+        prepStartedAt: tx.prepStartedAt?.toISOString() ?? null,
+        prepReadyAt: tx.prepReadyAt?.toISOString() ?? null,
         table: tx.table
           ? {
               id: tx.table.id,
@@ -153,6 +158,7 @@ export const posOrdersRoutes: FastifyPluginAsync = async (app) => {
           unitPrice: li.unitPrice,
           lineNote: li.note,
           specialInstructions: li.specialInstructions,
+          customerName: li.customerName,
           name: li.name,
           optionsJson: li.optionsJson,
           categoryName: li.categoryName,
@@ -195,5 +201,28 @@ export const posOrdersRoutes: FastifyPluginAsync = async (app) => {
       data: { prepCompletedAt: new Date() },
     });
     return { ok: true };
+  });
+
+  /** KDS: advance PAID transaction one step — new → preparing → ready → completed (same local row). */
+  app.patch("/pos/transactions/:id/kds-bump", { preHandler: app.requireStaff }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const transaction = await app.prisma.transaction.findFirst({
+      where: { id, storeId: STORE_ID, status: "PAID", prepCompletedAt: null },
+    });
+    if (!transaction) {
+      reply.code(404);
+      return { error: "Transaction not found or already bumped off" };
+    }
+    const now = new Date();
+    if (!transaction.prepStartedAt) {
+      await app.prisma.transaction.update({ where: { id }, data: { prepStartedAt: now } });
+      return { ok: true, stage: "IN_PREP" };
+    }
+    if (!transaction.prepReadyAt) {
+      await app.prisma.transaction.update({ where: { id }, data: { prepReadyAt: now } });
+      return { ok: true, stage: "READY" };
+    }
+    await app.prisma.transaction.update({ where: { id }, data: { prepCompletedAt: now } });
+    return { ok: true, stage: "COMPLETED" };
   });
 };

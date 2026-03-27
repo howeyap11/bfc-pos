@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { optimizeImage } from "./image.service.js";
 
 const R2_VARS = [
@@ -83,4 +83,18 @@ export async function uploadImage(
   );
 
   return `${publicUrl.replace(/\/$/, "")}/${key}`;
+}
+
+export async function deleteImageByUrl(imageUrl: string): Promise<void> {
+  const { s3, bucket, publicUrl } = getConfig();
+  const normalized = publicUrl.replace(/\/$/, "");
+  if (!imageUrl.startsWith(normalized + "/")) return;
+  const key = imageUrl.slice(normalized.length + 1);
+  if (!key) return;
+  await s3.send(
+    new DeleteObjectCommand({
+      Bucket: bucket,
+      Key: key,
+    })
+  );
 }

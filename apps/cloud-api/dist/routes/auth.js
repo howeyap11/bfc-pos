@@ -14,6 +14,7 @@ export async function authRoutes(app) {
         const { email, password } = parsed.data;
         const admin = await app.prisma.adminUser.findUnique({
             where: { email },
+            select: { id: true, email: true, passwordHash: true, role: true },
         });
         if (!admin) {
             reply.code(401);
@@ -24,7 +25,27 @@ export async function authRoutes(app) {
             reply.code(401);
             return { error: "INVALID_CREDENTIALS" };
         }
-        const token = app.jwt.sign({ sub: admin.id, email: admin.email }, { expiresIn: "7d" });
-        return { token };
+        const token = app.jwt.sign({ sub: admin.id, email: admin.email, role: admin.role }, { expiresIn: "7d" });
+        return { token, role: admin.role };
+    });
+    app.get("/me", async (req, reply) => {
+        try {
+            await req.jwtVerify();
+        }
+        catch {
+            reply.code(401);
+            return { error: "UNAUTHORIZED" };
+        }
+        const payload = req.user;
+        const id = payload.sub;
+        const row = await app.prisma.adminUser.findUnique({
+            where: { id },
+            select: { email: true, role: true },
+        });
+        if (!row) {
+            reply.code(401);
+            return { error: "UNAUTHORIZED" };
+        }
+        return { email: row.email, role: row.role };
     });
 }

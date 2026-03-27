@@ -32,9 +32,9 @@ function IconUser({ className }: { className?: string }) {
 function getPageTitle(pathname: string): string {
   if (pathname === "/dashboard") return "Dashboard";
   if (pathname === "/transactions") return "Transactions";
-  if (pathname === "/reports") return "Reports";
   if (pathname === "/items" || pathname.startsWith("/items/")) return "Items";
   if (pathname === "/inventory" || pathname.startsWith("/inventory/")) return "Inventory";
+  if (pathname === "/staff-ops" || pathname.startsWith("/staff-ops/")) return "Staff Ops";
   if (pathname === "/ingredients" || pathname.startsWith("/ingredients/")) return "Ingredients";
   if (pathname === "/menu" || pathname.startsWith("/menu/")) return "Menu";
   if (pathname.startsWith("/menu-settings")) return "Menu Settings";

@@ -577,6 +577,7 @@ function getStickerLineLabel(line: { name: string; optionsJson?: string | null; 
 
 export type TransactionForPrint = {
   transactionNo: number;
+  /** Transaction total in centavos (matches DB Transaction.totalCents). */
   totalCents: number;
   createdAt: string;
   createdBy?: string | null;
@@ -603,13 +604,13 @@ export type TransactionForPrint = {
   payments: Array<{ method: string; amountCents: number }>;
 };
 
-/** Optional receipt header from Settings/Business Details. */
+/** Optional receipt header from Settings/Business Details (StoreConfig.businessName / address). */
 export type ReceiptHeaderOptions = {
   businessName?: string | null;
   address?: string | null;
 };
 
-/** SnapResibo voucher to print on receipt (QR + label). */
+/** SnapResibo voucher footer after totals: "SNAPRESIBO" + QR (voucherId in payload); no plain voucher id line. */
 export type SnapResiboVoucherForPrint = {
   voucherId: string;
   pricePhp: number; // 0 for free reward
@@ -624,11 +625,18 @@ export function buildReceiptEscPos(
   const lines: string[] = [];
 
   if (header?.businessName?.trim()) {
-    lines.push(header.businessName.trim());
+    for (const line of wrapReceiptText(header.businessName, RECEIPT_LINE_WIDTH)) {
+      lines.push(line);
+    }
   }
   if (header?.address?.trim()) {
-    const addressLines = header.address.trim().split(",").map((s) => s.trim()).filter(Boolean);
-    for (const line of addressLines) lines.push(line);
+    const raw = header.address.trim();
+    const segments = raw.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
+    for (const seg of segments) {
+      for (const line of wrapReceiptText(seg, RECEIPT_LINE_WIDTH)) {
+        lines.push(line);
+      }
+    }
   }
   if (lines.length > 0) lines.push("");
 
@@ -681,13 +689,12 @@ export function buildReceiptEscPos(
       const voucherId = v.voucherId;
       snapParts.push(Buffer.from("SNAPRESIBO" + LF, "utf8"));
       snapParts.push(escPosQrBytes(voucherId, 6, 48));
-      snapParts.push(Buffer.from(LF + voucherId + LF + LF, "utf8"));
+      snapParts.push(Buffer.from(LF + LF, "utf8"));
     }
     buf = Buffer.concat([buf, ...snapParts]);
   }
 
-  buf = Buffer.concat([buf, Buffer.from(FULL_CUT, "utf8")]);
-  return buf;
+  return Buffer.concat([buf, Buffer.from(FULL_CUT, "utf8")]);
 }
 
 /** Default dimensions (mm) when not in config. Portrait: width x height. */

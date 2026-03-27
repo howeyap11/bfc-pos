@@ -6,14 +6,16 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { z } from "zod";
 import { verifyPassword } from "../lib/password.js";
+import { requireCloudAdmin } from "../lib/cloudAdminRole.js";
 
-async function adminAuthHook(req: FastifyRequest, reply: FastifyReply) {
+async function devAuthHook(req: FastifyRequest, reply: FastifyReply) {
   try {
     await req.jwtVerify();
   } catch {
     reply.code(401);
     return reply.send({ error: "UNAUTHORIZED" });
   }
+  if (!requireCloudAdmin(req, reply)) return;
 }
 
 function isProduction(): boolean {
@@ -26,7 +28,7 @@ export function canUseDangerousDevTools(): boolean {
 }
 
 export async function devRoutes(app: FastifyInstance) {
-  app.addHook("preHandler", adminAuthHook);
+  app.addHook("preHandler", devAuthHook);
 
   const getAdminFromReq = async (req: FastifyRequest) => {
     const payload = await req.jwtVerify<{ sub: string; email: string }>();

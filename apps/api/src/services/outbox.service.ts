@@ -1,4 +1,9 @@
 import type { PrismaClient } from "@prisma/client";
+import {
+  buildCloudSyncListsFromTransaction,
+  type LineItemRecord,
+  type RefundRecord,
+} from "./transactionSync.service";
 
 export async function enqueueOutbox(
   prisma: PrismaClient,
@@ -158,8 +163,8 @@ export type UploadTransactionFn = (
   prisma: PrismaClient,
   tx: { id: string; storeId: string; transactionNo: number; status: string; source: string; serviceType: string; totalCents: number; subtotalCents: number; discountCents: number; createdAt: Date; createdBy: string | null; voidedAt: Date | null; voidReason: string | null },
   payments: { method: string; amountCents: number }[],
-  lineItems: { name: string; qty: number; lineTotal: number }[],
-  options?: { refundAmountCents?: number; refunds?: Array<{ id: string; reason: string; amountCents: number; createdAt: string }> }
+  lineItems: LineItemRecord[],
+  options?: { refundAmountCents?: number; refunds?: RefundRecord[] }
 ) => Promise<{ ok: boolean }>;
 
 /** Backoff seconds: gentle from attempt 3 (30s, 60s, 120s, 240s, 480s, 960s, 3600 cap). Prevents API hammering. */
@@ -229,35 +234,15 @@ export async function processTransactionSyncOutbox(
         where: { id: transactionId },
         include: {
           payments: true,
-          lineItems: true,
+          lineItems: { include: { item: { select: { cloudId: true } } } },
           refunds: { include: { refundItems: true } },
         },
       });
       if (!transaction) {
         throw new Error(`Transaction not found: ${transactionId}`);
       }
-      const paymentsList = transaction.payments.map((p) => ({
-        method: p.method,
-        amountCents: p.amountCents,
-      }));
-      const lineItemsList = transaction.lineItems.map((l) => ({
-        name: l.name,
-        qty: l.qty,
-        lineTotal: l.lineTotal,
-      }));
-
-      let refundAmountCents = 0;
-      const refundsList: Array<{ id: string; reason: string; amountCents: number; createdAt: string }> = [];
-      for (const r of transaction.refunds) {
-        const amount = r.refundItems.reduce((s, ri) => s + ri.amountRefundedCents, 0);
-        refundAmountCents += amount;
-        refundsList.push({
-          id: r.id,
-          reason: r.reason,
-          amountCents: amount,
-          createdAt: r.createdAt.toISOString(),
-        });
-      }
+      const { paymentsList, lineItemsList, refundAmountCents, refundsList } =
+        buildCloudSyncListsFromTransaction(transaction);
 
       const result = await uploadFn(prisma, transaction, paymentsList, lineItemsList, {
         refundAmountCents,

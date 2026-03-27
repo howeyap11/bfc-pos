@@ -11,6 +11,7 @@ import {
   normalizeSubCategories,
 } from "@/lib/api";
 import { COLORS } from "@/lib/theme";
+import { isCloudAdminRole } from "@/lib/cloudAdminRole";
 import { SortableList, DragHandle } from "@/components/SortableList";
 import { horizontalListSortingStrategy, rectSortingStrategy } from "@dnd-kit/sortable";
 
@@ -41,6 +42,7 @@ const TILE_COLORS = [
 function MenuPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const canDeleteCategoryOrSubcategory = isCloudAdminRole();
   const [categories, setCategories] = useState<Category[]>([]);
   const [items, setItems] = useState<MenuItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -660,14 +662,16 @@ function MenuPageContent() {
                 >
                   Save
                 </button>
-                <button
-                  type="button"
-                  onClick={handleDeleteCategory}
-                  disabled={saving}
-                  className="rounded border border-red-600 bg-red-600 px-3 py-1.5 text-sm text-white hover:bg-red-700 disabled:opacity-50"
-                >
-                  Delete Category
-                </button>
+                {canDeleteCategoryOrSubcategory && (
+                  <button
+                    type="button"
+                    onClick={handleDeleteCategory}
+                    disabled={saving}
+                    className="rounded border border-red-600 bg-red-600 px-3 py-1.5 text-sm text-white hover:bg-red-700 disabled:opacity-50"
+                  >
+                    Delete Category
+                  </button>
+                )}
               </div>
             </form>
           </div>
@@ -766,14 +770,16 @@ function MenuPageContent() {
                   className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
                 />
               </div>
-              <div className="flex justify-between gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleDeleteSubCategory(selectedSubcategory, currentCategory.id)}
-                  className="rounded border border-red-200 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50"
-                >
-                  Delete
-                </button>
+              <div className={`flex gap-2 ${canDeleteCategoryOrSubcategory ? "justify-between" : "justify-end"}`}>
+                {canDeleteCategoryOrSubcategory && (
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteSubCategory(selectedSubcategory, currentCategory.id)}
+                    className="rounded border border-red-200 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50"
+                  >
+                    Delete
+                  </button>
+                )}
                 <div className="flex gap-2">
                   <button
                     type="button"

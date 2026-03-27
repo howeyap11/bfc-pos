@@ -9,6 +9,8 @@
     "dev": "tsx watch src/index.ts",
     "build": "prisma generate && tsc -p tsconfig.json",
     "test:businessDay": "tsx src/lib/businessDay.test.ts",
+    "test:dashboard": "tsx src/services/dashboard.service.test.ts",
+    "test:sync-inventory": "tsx src/services/syncTransactionInventory.service.test.ts",
     "start": "node scripts/cloud-start.js",
     "create-admin": "tsx scripts/create-admin.ts",
     "db:migrate": "prisma migrate dev",

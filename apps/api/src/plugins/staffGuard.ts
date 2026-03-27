@@ -65,6 +65,7 @@ function createRequireStaffHook(app: FastifyInstance) {
       // Attach full staff info to request
       (req as any).staff = {
         id: staff.id,
+        cloudId: staff.cloudId ?? null,
         name: staff.name,
         role: staff.role,
         storeId: staff.storeId,

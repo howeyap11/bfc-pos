@@ -4,10 +4,11 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   try {
     const { id } = await params;
     const body = await req.text();
+    const staffKey = req.headers.get("x-staff-key") ?? "";
 
     const upstream = await fetch(`${getBackendUrl()}/orders/${id}/status`, {
       method: "PATCH",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "x-staff-key": staffKey },
       body,
     });
 

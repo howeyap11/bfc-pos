@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { COLORS } from "@/lib/theme";
+import { getCloudAdminRoleFromToken } from "@/lib/cloudAdminRole";
 
 export default function PasswordPinsPage() {
   const [configured, setConfigured] = useState(false);
@@ -20,10 +21,26 @@ export default function PasswordPinsPage() {
   const [ownerSaving, setOwnerSaving] = useState(false);
   const [ownerSuccess, setOwnerSuccess] = useState("");
   const [ownerError, setOwnerError] = useState("");
+  const [accounts, setAccounts] = useState<Array<{ id: string; email: string; role: "ADMIN" | "MANAGER"; createdAt: string; updatedAt: string }>>([]);
+  const [accountsLoading, setAccountsLoading] = useState(true);
+  const [accountEmail, setAccountEmail] = useState("");
+  const [accountPassword, setAccountPassword] = useState("");
+  const [accountRole, setAccountRole] = useState<"ADMIN" | "MANAGER">("MANAGER");
+  const [accountBusy, setAccountBusy] = useState(false);
+  const [accountError, setAccountError] = useState("");
+  const [accountSuccess, setAccountSuccess] = useState("");
+  const isAdmin = getCloudAdminRoleFromToken() === "ADMIN";
 
   useEffect(() => {
     api.getAdminPinConfigured().then((r) => { setConfigured(r.configured); setLoading(false); }).catch(() => setLoading(false));
     api.getOwnerPasswordConfigured().then((r) => { setOwnerConfigured(r.configured); setOwnerLoading(false); }).catch(() => setOwnerLoading(false));
+    if (isAdmin) {
+      api.getAdminAccounts()
+        .then((r) => setAccounts(r.accounts ?? []))
+        .finally(() => setAccountsLoading(false));
+    } else {
+      setAccountsLoading(false);
+    }
   }, []);
 
   async function handleSaveAdminPin(e: React.FormEvent) {
@@ -229,6 +246,119 @@ export default function PasswordPinsPage() {
           Manage staff
         </Link>
       </div>
+
+      {isAdmin && (
+        <div
+          className="mt-6 rounded-lg border p-6"
+          style={{ background: COLORS.bgPanel, borderColor: COLORS.borderLight }}
+        >
+          <h2 className="mb-2 text-sm font-semibold text-white">Cloud Admin Accounts</h2>
+          <p className="mb-4 text-sm text-white/60">
+            Create and remove Cloud Admin login accounts (ADMIN or MANAGER).
+          </p>
+          {accountError && (
+            <div className="mb-3 rounded border border-red-500/50 bg-red-500/10 p-3 text-sm text-red-400">{accountError}</div>
+          )}
+          {accountSuccess && (
+            <div className="mb-3 rounded border border-green-500/50 bg-green-500/10 p-3 text-sm text-green-400">{accountSuccess}</div>
+          )}
+          <form
+            className="mb-4 grid gap-2 md:grid-cols-4"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              setAccountError("");
+              setAccountSuccess("");
+              setAccountBusy(true);
+              try {
+                await api.createAdminAccount({ email: accountEmail.trim(), password: accountPassword, role: accountRole });
+                const refreshed = await api.getAdminAccounts();
+                setAccounts(refreshed.accounts ?? []);
+                setAccountSuccess("Account created.");
+                setAccountEmail("");
+                setAccountPassword("");
+                setAccountRole("MANAGER");
+              } catch (err: unknown) {
+                const body = (err as { body?: { message?: string } })?.body;
+                setAccountError(body?.message ?? (err instanceof Error ? err.message : "Failed to create account"));
+              } finally {
+                setAccountBusy(false);
+              }
+            }}
+          >
+            <input
+              type="email"
+              placeholder="email@example.com"
+              className={inputStyle}
+              style={inputBg}
+              value={accountEmail}
+              onChange={(e) => setAccountEmail(e.target.value)}
+              required
+            />
+            <input
+              type="password"
+              placeholder="Password (min 6)"
+              className={inputStyle}
+              style={inputBg}
+              value={accountPassword}
+              onChange={(e) => setAccountPassword(e.target.value)}
+              minLength={6}
+              required
+            />
+            <select
+              className={inputStyle}
+              style={inputBg}
+              value={accountRole}
+              onChange={(e) => setAccountRole(e.target.value as "ADMIN" | "MANAGER")}
+            >
+              <option value="MANAGER">MANAGER</option>
+              <option value="ADMIN">ADMIN</option>
+            </select>
+            <button
+              type="submit"
+              disabled={accountBusy || !accountEmail || accountPassword.length < 6}
+              className="rounded px-4 py-2 text-sm font-medium text-black disabled:opacity-50"
+              style={{ background: COLORS.primary }}
+            >
+              {accountBusy ? "Creating..." : "Create Account"}
+            </button>
+          </form>
+          {accountsLoading ? (
+            <p className="text-sm text-white/50">Loading accounts…</p>
+          ) : (
+            <div className="space-y-2">
+              {accounts.map((acc) => (
+                <div key={acc.id} className="flex items-center justify-between rounded border border-white/10 px-3 py-2">
+                  <div>
+                    <div className="text-sm text-white">{acc.email}</div>
+                    <div className="text-xs text-white/60">{acc.role}</div>
+                  </div>
+                  <button
+                    type="button"
+                    className="rounded border border-red-500/50 px-3 py-1 text-xs text-red-300 hover:bg-red-500/10"
+                    onClick={async () => {
+                      if (!confirm(`Delete account ${acc.email}?`)) return;
+                      setAccountError("");
+                      setAccountSuccess("");
+                      try {
+                        await api.deleteAdminAccount(acc.id);
+                        const refreshed = await api.getAdminAccounts();
+                        setAccounts(refreshed.accounts ?? []);
+                        setAccountSuccess("Account deleted.");
+                      } catch (err: unknown) {
+                        const body = (err as { body?: { message?: string } })?.body;
+                        setAccountError(body?.message ?? (err instanceof Error ? err.message : "Failed to delete account"));
+                      }
+                    }}
+                  >
+                    Delete
+                  </button>
+                </div>
+              ))}
+              {accounts.length === 0 && <p className="text-sm text-white/50">No accounts found.</p>}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -1,12 +1,24 @@
 /**
  * Dashboard aggregation service for Cloud Admin.
  * Uses PAID transactions only for sales metrics. No sync contract changes.
+ *
+ * Net sales: each synced row keeps original totalCents; refundAmountCents is reconciled
+ * separately on sync (see POS transactionSync). Net = max(0, totalCents - refundAmountCents)
+ * per transaction, matching apps/api transactionSummary aggregation.
  */
 
 import type { PrismaClient } from "@prisma/client";
 import { localBusinessDateRangeToUtc, getBusinessTzOffsetHours } from "../lib/businessDay.js";
 
 const DEFAULT_STORE_ID = "store_1";
+
+/** Net earned per synced PAID row after refunds (totalCents is not reduced on refund in sync payload). */
+export function netSalesCentsForSyncedTransaction(
+  totalCents: number,
+  refundAmountCents: number | null | undefined
+): number {
+  return Math.max(0, totalCents - (refundAmountCents ?? 0));
+}
 
 export type DateRange = { start: Date; end: Date };
 
@@ -89,7 +101,7 @@ export async function getDashboardKpis(
   let totalRefundsCents = 0;
 
   for (const t of txs) {
-    totalNetSalesCents += t.totalCents;
+    totalNetSalesCents += netSalesCentsForSyncedTransaction(t.totalCents, t.refundAmountCents);
     totalDiscountsCents += t.discountCents;
     itemsCount += t.itemsCount;
     totalRefundsCents += t.refundAmountCents ?? 0;
@@ -97,7 +109,7 @@ export async function getDashboardKpis(
   }
   // TODO: COGS not in SyncedTransaction/line items; add when recipe/COGS sync exists.
   const costOfGoodsCents = 0;
-  const profitCents = totalNetSalesCents - totalRefundsCents - costOfGoodsCents;
+  const profitCents = totalNetSalesCents - costOfGoodsCents;
 
   return {
     totalNetSalesCents,
@@ -150,7 +162,7 @@ export async function getSalesByDate(
 ): Promise<SalesByDateBucket[]> {
   const txs = await prisma.syncedTransaction.findMany({
     where: { storeId, status: "PAID", createdAt: { gte: range.start, lt: range.end } },
-    select: { createdAt: true, totalCents: true },
+    select: { createdAt: true, totalCents: true, refundAmountCents: true },
   });
 
   const offsetHours = getBusinessTzOffsetHours();
@@ -167,7 +179,8 @@ export async function getSalesByDate(
       const local = new Date(d.getTime() + offsetHours * 60 * 60 * 1000);
       key = `${local.getUTCFullYear()}-${String(local.getUTCMonth() + 1).padStart(2, "0")}`;
     }
-    buckets.set(key, (buckets.get(key) ?? 0) + t.totalCents);
+    const net = netSalesCentsForSyncedTransaction(t.totalCents, t.refundAmountCents);
+    buckets.set(key, (buckets.get(key) ?? 0) + net);
   }
 
   if (granularity === "daily" && options?.startDate && options?.endDate) {
@@ -332,13 +345,14 @@ export async function getSalesByCashier(
 ): Promise<SalesByCashierRow[]> {
   const txs = await prisma.syncedTransaction.findMany({
     where: { storeId, status: "PAID", createdAt: { gte: range.start, lt: range.end } },
-    select: { cashierName: true, totalCents: true },
+    select: { cashierName: true, totalCents: true, refundAmountCents: true },
   });
 
   const byCashier: Record<string, number> = {};
   for (const t of txs) {
     const name = (t.cashierName || "Unassigned").trim();
-    byCashier[name] = (byCashier[name] ?? 0) + t.totalCents;
+    const net = netSalesCentsForSyncedTransaction(t.totalCents, t.refundAmountCents);
+    byCashier[name] = (byCashier[name] ?? 0) + net;
   }
 
   return Object.entries(byCashier)

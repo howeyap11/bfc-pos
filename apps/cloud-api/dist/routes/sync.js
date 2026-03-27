@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { verifyPassword } from "../lib/password.js";
+import { applyInventoryFromSyncedTransactionRow } from "../services/syncTransactionInventory.service.js";
+import { uploadImage } from "../services/r2.service.js";
 const syncSecret = process.env.STORE_SYNC_SECRET ?? "";
 const transactionImportSchema = z.object({
     storeId: z.string().min(1),
@@ -21,11 +23,100 @@ const transactionImportSchema = z.object({
         name: z.string(),
         qty: z.number().int(),
         lineTotal: z.number().int(),
+        sourceLineItemId: z.string().optional(),
+        menuItemId: z.string().nullable().optional(),
+        optionsJson: z.string().nullable().optional(),
     })).optional(),
     createdAt: z.string(), // ISO date
     voidedAt: z.string().nullable().optional(),
     voidReason: z.string().nullable().optional(),
     isTest: z.boolean().optional().default(false),
+    refundAmountCents: z.number().int().min(0).optional().default(0),
+    refunds: z.array(z.object({
+        id: z.string(),
+        reason: z.string(),
+        amountCents: z.number().int(),
+        createdAt: z.string(),
+        items: z.array(z.object({
+            sourceLineItemId: z.string(),
+            qtyRefunded: z.number().int(),
+            amountRefundedCents: z.number().int(),
+        })).optional(),
+    })).optional().default([]),
+});
+const attendanceIngestSchema = z.object({
+    storeId: z.string().min(1),
+    sourceEventId: z.string().min(1),
+    staffCloudId: z.string().nullable().optional(),
+    staffName: z.string().min(1),
+    staffRole: z.string().min(1),
+    eventType: z.enum(["TIME_IN", "TIME_OUT"]),
+    happenedAt: z.string(),
+    selfieUploadedUrl: z.string().nullable().optional(),
+});
+const wasteIngestSchema = z.object({
+    storeId: z.string().min(1),
+    sourceReportId: z.string().min(1),
+    staffCloudId: z.string().nullable().optional(),
+    staffName: z.string().min(1),
+    itemType: z.string().min(1),
+    inventoryItemCloudId: z.string().nullable().optional(),
+    inventoryItemName: z.string().min(1),
+    quantity: z.string().min(1),
+    unit: z.string().nullable().optional(),
+    reason: z.string().min(1),
+    notes: z.string().nullable().optional(),
+    imageUploadedUrl: z.string().nullable().optional(),
+    happenedAt: z.string(),
+});
+const inventoryCountIngestSchema = z.object({
+    storeId: z.string().min(1),
+    sourceSessionId: z.string().min(1),
+    submittedByStaffCloudId: z.string().nullable().optional(),
+    submittedByStaffName: z.string().min(1),
+    source: z.string().default("STAFF_UI"),
+    notes: z.string().nullable().optional(),
+    countedAt: z.string(),
+    lines: z.array(z.record(z.string(), z.any())).min(1),
+});
+const sopSubmissionIngestSchema = z.object({
+    storeId: z.string().min(1),
+    sourceSubmissionId: z.string().min(1),
+    templateCloudId: z.string().nullable().optional(),
+    templateName: z.string().min(1),
+    templateVersion: z.number().int().min(1),
+    shiftType: z.string().min(1),
+    submittedByStaffCloudId: z.string().nullable().optional(),
+    submittedByStaffName: z.string().min(1),
+    assignedShiftId: z.string().nullable().optional(),
+    checklistResultJson: z.string(),
+    notes: z.string().nullable().optional(),
+    submittedAt: z.string(),
+});
+const staffOpsAttendanceSchema = z.object({
+    sourceLocalId: z.string().min(1),
+    storeId: z.string().min(1),
+    staffCloudId: z.string().nullable().optional(),
+    staffName: z.string().min(1),
+    staffRole: z.string().min(1),
+    eventType: z.enum(["TIME_IN", "TIME_OUT"]),
+    happenedAt: z.string(),
+    imageBase64: z.string().optional(),
+});
+const staffOpsWasteSchema = z.object({
+    sourceLocalId: z.string().min(1),
+    storeId: z.string().min(1),
+    staffCloudId: z.string().nullable().optional(),
+    staffName: z.string().min(1),
+    itemType: z.string(),
+    inventoryItemCloudId: z.string().nullable().optional(),
+    inventoryItemName: z.string().min(1),
+    quantity: z.string(),
+    unit: z.string().nullable().optional(),
+    reason: z.string(),
+    notes: z.string().nullable().optional(),
+    happenedAt: z.string(),
+    imageBase64: z.string().optional(),
 });
 export async function syncRoutes(app) {
     app.get("/catalog", async (req, reply) => {
@@ -203,7 +294,10 @@ export async function syncRoutes(app) {
                 isActive: s.isActive,
                 sortOrder: s.sortOrder,
             })),
-            storeSettings: storeSetting ? { adminPinHash: storeSetting.adminPinHash ?? null } : undefined,
+            storeSettings: storeSetting ? {
+                adminPinHash: storeSetting.adminPinHash ?? null,
+                ownerPasswordHash: storeSetting.ownerPasswordHash ?? null,
+            } : undefined,
             staff: staffList.map((s) => ({
                 id: s.id,
                 name: s.name,
@@ -297,6 +391,8 @@ export async function syncRoutes(app) {
         const d = parsed.data;
         const paymentsJson = JSON.stringify(d.payments);
         const lineItemsSummaryJson = d.lineItems ? JSON.stringify(d.lineItems) : null;
+        const refundAmountCents = d.refundAmountCents ?? 0;
+        const refundsJson = d.refunds && d.refunds.length > 0 ? JSON.stringify(d.refunds) : null;
         const createdAt = new Date(d.createdAt);
         const voidedAt = d.voidedAt ? new Date(d.voidedAt) : null;
         try {
@@ -304,15 +400,36 @@ export async function syncRoutes(app) {
                 where: { sourceTransactionId: d.sourceTransactionId },
             });
             if (existing) {
+                const lineItemsPatch = d.lineItems && d.lineItems.length > 0
+                    ? { lineItemsSummaryJson: JSON.stringify(d.lineItems) }
+                    : {};
                 await app.prisma.syncedTransaction.update({
                     where: { id: existing.id },
                     data: {
                         status: d.status,
                         voidedAt,
                         voidReason: d.voidReason ?? null,
+                        refundAmountCents,
+                        refundsJson,
+                        ...lineItemsPatch,
                     },
                 });
-                app.log.debug({ sourceTransactionId: d.sourceTransactionId }, "[Sync] Transaction updated (void/sync)");
+                app.log.debug({ sourceTransactionId: d.sourceTransactionId }, "[Sync] Transaction updated (void/refund/sync)");
+                const rowAfter = await app.prisma.syncedTransaction.findUnique({
+                    where: { id: existing.id },
+                });
+                if (rowAfter) {
+                    await applyInventoryFromSyncedTransactionRow({
+                        prisma: app.prisma,
+                        inventory: app.inventoryService,
+                        sourceTransactionId: rowAfter.sourceTransactionId,
+                        status: rowAfter.status,
+                        isTest: rowAfter.isTest,
+                        lineItemsSummaryJson: rowAfter.lineItemsSummaryJson,
+                        refundsJson: rowAfter.refundsJson,
+                        log: app.log,
+                    });
+                }
                 return { ok: true, imported: false, id: existing.id };
             }
             const created = await app.prisma.syncedTransaction.create({
@@ -334,9 +451,26 @@ export async function syncRoutes(app) {
                     voidedAt,
                     voidReason: d.voidReason ?? null,
                     isTest: d.isTest ?? false,
+                    refundAmountCents,
+                    refundsJson,
                 },
             });
             app.log.info({ id: created.id, transactionNo: d.transactionNo }, "[Sync] Transaction imported");
+            const rowAfter = await app.prisma.syncedTransaction.findUnique({
+                where: { id: created.id },
+            });
+            if (rowAfter) {
+                await applyInventoryFromSyncedTransactionRow({
+                    prisma: app.prisma,
+                    inventory: app.inventoryService,
+                    sourceTransactionId: rowAfter.sourceTransactionId,
+                    status: rowAfter.status,
+                    isTest: rowAfter.isTest,
+                    lineItemsSummaryJson: rowAfter.lineItemsSummaryJson,
+                    refundsJson: rowAfter.refundsJson,
+                    log: app.log,
+                });
+            }
             return { ok: true, imported: true, id: created.id };
         }
         catch (err) {
@@ -344,6 +478,378 @@ export async function syncRoutes(app) {
             reply.code(500);
             return { error: "IMPORT_FAILED", message: "Failed to import transaction" };
         }
+    });
+    app.post("/staff/attendance-events", async (req, reply) => {
+        if (syncSecret) {
+            const key = req.headers["x-store-sync-key"] || "";
+            if (key !== syncSecret)
+                return reply.code(401).send({ error: "UNAUTHORIZED" });
+        }
+        const parsed = attendanceIngestSchema.safeParse(req.body);
+        if (!parsed.success)
+            return reply.code(400).send({ error: "INVALID_BODY", details: parsed.error.flatten() });
+        const d = parsed.data;
+        const row = await app.prisma.syncedStaffAttendance.upsert({
+            where: { storeId_sourceLocalId: { storeId: d.storeId, sourceLocalId: d.sourceEventId } },
+            update: {
+                staffCloudId: d.staffCloudId ?? null,
+                staffName: d.staffName,
+                staffRole: d.staffRole,
+                eventType: d.eventType,
+                happenedAt: new Date(d.happenedAt),
+                selfieUrl: d.selfieUploadedUrl ?? null,
+                selfieExpiresAt: d.selfieUploadedUrl ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) : null,
+            },
+            create: {
+                sourceLocalId: d.sourceEventId,
+                storeId: d.storeId,
+                staffCloudId: d.staffCloudId ?? null,
+                staffName: d.staffName,
+                staffRole: d.staffRole,
+                eventType: d.eventType,
+                happenedAt: new Date(d.happenedAt),
+                selfieUrl: d.selfieUploadedUrl ?? null,
+                selfieExpiresAt: d.selfieUploadedUrl ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) : null,
+            },
+        });
+        return { ok: true, id: row.id };
+    });
+    app.post("/staff/waste-reports", async (req, reply) => {
+        if (syncSecret) {
+            const key = req.headers["x-store-sync-key"] || "";
+            if (key !== syncSecret)
+                return reply.code(401).send({ error: "UNAUTHORIZED" });
+        }
+        const parsed = wasteIngestSchema.safeParse(req.body);
+        if (!parsed.success)
+            return reply.code(400).send({ error: "INVALID_BODY", details: parsed.error.flatten() });
+        const d = parsed.data;
+        const row = await app.prisma.syncedWasteReport.upsert({
+            where: { storeId_sourceLocalId: { storeId: d.storeId, sourceLocalId: d.sourceReportId } },
+            update: {
+                staffCloudId: d.staffCloudId ?? null,
+                staffName: d.staffName,
+                itemType: d.itemType,
+                inventoryItemCloudId: d.inventoryItemCloudId ?? null,
+                inventoryItemName: d.inventoryItemName,
+                quantity: d.quantity,
+                unit: d.unit ?? null,
+                reason: d.reason,
+                notes: d.notes ?? null,
+                imageUrl: d.imageUploadedUrl ?? null,
+                happenedAt: new Date(d.happenedAt),
+            },
+            create: {
+                sourceLocalId: d.sourceReportId,
+                storeId: d.storeId,
+                staffCloudId: d.staffCloudId ?? null,
+                staffName: d.staffName,
+                itemType: d.itemType,
+                inventoryItemCloudId: d.inventoryItemCloudId ?? null,
+                inventoryItemName: d.inventoryItemName,
+                quantity: d.quantity,
+                unit: d.unit ?? null,
+                reason: d.reason,
+                notes: d.notes ?? null,
+                imageUrl: d.imageUploadedUrl ?? null,
+                happenedAt: new Date(d.happenedAt),
+            },
+        });
+        return { ok: true, id: row.id };
+    });
+    app.post("/staff/inventory-count-sessions", async (req, reply) => {
+        if (syncSecret) {
+            const key = req.headers["x-store-sync-key"] || "";
+            if (key !== syncSecret)
+                return reply.code(401).send({ error: "UNAUTHORIZED" });
+        }
+        const parsed = inventoryCountIngestSchema.safeParse(req.body);
+        if (!parsed.success)
+            return reply.code(400).send({ error: "INVALID_BODY", details: parsed.error.flatten() });
+        const d = parsed.data;
+        let row = await app.prisma.syncedInventoryCountSession.findUnique({
+            where: { storeId_sourceLocalId: { storeId: d.storeId, sourceLocalId: d.sourceSessionId } },
+        });
+        if (!row) {
+            row = await app.prisma.syncedInventoryCountSession.create({
+                data: {
+                    sourceLocalId: d.sourceSessionId,
+                    storeId: d.storeId,
+                    submittedByStaffCloudId: d.submittedByStaffCloudId ?? null,
+                    submittedByStaffName: d.submittedByStaffName,
+                    source: d.source,
+                    notes: d.notes ?? null,
+                    countedAt: new Date(d.countedAt),
+                },
+            });
+        }
+        else {
+            row = await app.prisma.syncedInventoryCountSession.update({
+                where: { id: row.id },
+                data: {
+                    submittedByStaffCloudId: d.submittedByStaffCloudId ?? null,
+                    submittedByStaffName: d.submittedByStaffName,
+                    source: d.source,
+                    notes: d.notes ?? null,
+                    countedAt: new Date(d.countedAt),
+                },
+            });
+        }
+        await app.prisma.syncedInventoryCountLine.deleteMany({ where: { sessionId: row.id } });
+        await app.prisma.syncedInventoryCountLine.createMany({
+            data: d.lines.map((line) => ({
+                sessionId: row.id,
+                inventoryItemCloudId: String(line.inventoryItemCloudId ?? ""),
+                inventoryItemName: String(line.inventoryItemName ?? "Unknown"),
+                expectedQuantity: line.expectedQuantity != null ? String(line.expectedQuantity) : null,
+                actualQuantity: String(line.actualQuantity ?? "0"),
+                varianceQuantity: line.varianceQuantity != null ? String(line.varianceQuantity) : null,
+                unit: line.unit != null ? String(line.unit) : null,
+                notes: line.notes != null ? String(line.notes) : null,
+            })),
+        });
+        return { ok: true, id: row.id };
+    });
+    app.post("/staff/sop-submissions", async (req, reply) => {
+        if (syncSecret) {
+            const key = req.headers["x-store-sync-key"] || "";
+            if (key !== syncSecret)
+                return reply.code(401).send({ error: "UNAUTHORIZED" });
+        }
+        const parsed = sopSubmissionIngestSchema.safeParse(req.body);
+        if (!parsed.success)
+            return reply.code(400).send({ error: "INVALID_BODY", details: parsed.error.flatten() });
+        const d = parsed.data;
+        const row = await app.prisma.syncedSopChecklistSubmission.upsert({
+            where: { storeId_sourceLocalId: { storeId: d.storeId, sourceLocalId: d.sourceSubmissionId } },
+            update: {
+                templateCloudId: d.templateCloudId ?? null,
+                templateName: d.templateName,
+                templateVersion: d.templateVersion,
+                shiftType: d.shiftType,
+                submittedByStaffCloudId: d.submittedByStaffCloudId ?? null,
+                submittedByStaffName: d.submittedByStaffName,
+                assignedShiftId: d.assignedShiftId ?? null,
+                checklistResultJson: d.checklistResultJson,
+                notes: d.notes ?? null,
+                submittedAt: new Date(d.submittedAt),
+            },
+            create: {
+                sourceLocalId: d.sourceSubmissionId,
+                storeId: d.storeId,
+                templateCloudId: d.templateCloudId ?? null,
+                templateName: d.templateName,
+                templateVersion: d.templateVersion,
+                shiftType: d.shiftType,
+                submittedByStaffCloudId: d.submittedByStaffCloudId ?? null,
+                submittedByStaffName: d.submittedByStaffName,
+                assignedShiftId: d.assignedShiftId ?? null,
+                checklistResultJson: d.checklistResultJson,
+                notes: d.notes ?? null,
+                submittedAt: new Date(d.submittedAt),
+            },
+        });
+        return { ok: true, id: row.id };
+    });
+    // Compatibility with local staffOpsSync.service topic paths
+    app.post("/staff-ops/attendance", async (req, reply) => {
+        if (syncSecret) {
+            const key = req.headers["x-store-sync-key"] || "";
+            if (key !== syncSecret)
+                return reply.code(401).send({ error: "UNAUTHORIZED" });
+        }
+        const parsed = staffOpsAttendanceSchema.safeParse(req.body);
+        if (!parsed.success)
+            return reply.code(400).send({ error: "INVALID_BODY", details: parsed.error.flatten() });
+        const d = parsed.data;
+        let selfieUploadedUrl = null;
+        if (d.imageBase64) {
+            try {
+                const imageBuffer = Buffer.from(d.imageBase64, "base64");
+                selfieUploadedUrl = await uploadImage(imageBuffer, `${d.sourceLocalId}.jpg`, "image/jpeg");
+            }
+            catch { }
+        }
+        await app.prisma.syncedStaffAttendance.upsert({
+            where: { storeId_sourceLocalId: { storeId: d.storeId, sourceLocalId: d.sourceLocalId } },
+            update: {
+                staffCloudId: d.staffCloudId ?? null,
+                staffName: d.staffName,
+                staffRole: d.staffRole,
+                eventType: d.eventType,
+                happenedAt: new Date(d.happenedAt),
+                selfieUrl: selfieUploadedUrl,
+                selfieExpiresAt: selfieUploadedUrl ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) : null,
+            },
+            create: {
+                sourceLocalId: d.sourceLocalId,
+                storeId: d.storeId,
+                staffCloudId: d.staffCloudId ?? null,
+                staffName: d.staffName,
+                staffRole: d.staffRole,
+                eventType: d.eventType,
+                happenedAt: new Date(d.happenedAt),
+                selfieUrl: selfieUploadedUrl,
+                selfieExpiresAt: selfieUploadedUrl ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) : null,
+            },
+        });
+        return { ok: true };
+    });
+    app.post("/staff-ops/waste-reports", async (req, reply) => {
+        if (syncSecret) {
+            const key = req.headers["x-store-sync-key"] || "";
+            if (key !== syncSecret)
+                return reply.code(401).send({ error: "UNAUTHORIZED" });
+        }
+        const parsed = staffOpsWasteSchema.safeParse(req.body);
+        if (!parsed.success)
+            return reply.code(400).send({ error: "INVALID_BODY", details: parsed.error.flatten() });
+        const d = parsed.data;
+        let imageUploadedUrl = null;
+        if (d.imageBase64) {
+            try {
+                imageUploadedUrl = await uploadImage(Buffer.from(d.imageBase64, "base64"), `${d.sourceLocalId}.jpg`, "image/jpeg");
+            }
+            catch { }
+        }
+        await app.prisma.syncedWasteReport.upsert({
+            where: { storeId_sourceLocalId: { storeId: d.storeId, sourceLocalId: d.sourceLocalId } },
+            update: {
+                staffCloudId: d.staffCloudId ?? null,
+                staffName: d.staffName,
+                itemType: d.itemType,
+                inventoryItemCloudId: d.inventoryItemCloudId ?? null,
+                inventoryItemName: d.inventoryItemName,
+                quantity: d.quantity,
+                unit: d.unit ?? null,
+                reason: d.reason,
+                notes: d.notes ?? null,
+                imageUrl: imageUploadedUrl,
+                happenedAt: new Date(d.happenedAt),
+            },
+            create: {
+                sourceLocalId: d.sourceLocalId,
+                storeId: d.storeId,
+                staffCloudId: d.staffCloudId ?? null,
+                staffName: d.staffName,
+                itemType: d.itemType,
+                inventoryItemCloudId: d.inventoryItemCloudId ?? null,
+                inventoryItemName: d.inventoryItemName,
+                quantity: d.quantity,
+                unit: d.unit ?? null,
+                reason: d.reason,
+                notes: d.notes ?? null,
+                imageUrl: imageUploadedUrl,
+                happenedAt: new Date(d.happenedAt),
+            },
+        });
+        return { ok: true };
+    });
+    app.post("/staff-ops/inventory-count-sessions", async (req, reply) => {
+        if (syncSecret) {
+            const key = req.headers["x-store-sync-key"] || "";
+            if (key !== syncSecret)
+                return reply.code(401).send({ error: "UNAUTHORIZED" });
+        }
+        const parsed = inventoryCountIngestSchema.safeParse({
+            ...req.body,
+            sourceSessionId: req.body?.sourceLocalId,
+        });
+        if (!parsed.success)
+            return reply.code(400).send({ error: "INVALID_BODY", details: parsed.error.flatten() });
+        const d = parsed.data;
+        let countRow = await app.prisma.syncedInventoryCountSession.findUnique({
+            where: { storeId_sourceLocalId: { storeId: d.storeId, sourceLocalId: d.sourceSessionId } },
+        });
+        if (!countRow) {
+            countRow = await app.prisma.syncedInventoryCountSession.create({
+                data: { sourceLocalId: d.sourceSessionId, storeId: d.storeId, submittedByStaffCloudId: d.submittedByStaffCloudId ?? null, submittedByStaffName: d.submittedByStaffName, source: d.source, notes: d.notes ?? null, countedAt: new Date(d.countedAt) },
+            });
+        }
+        else {
+            countRow = await app.prisma.syncedInventoryCountSession.update({
+                where: { id: countRow.id },
+                data: { submittedByStaffCloudId: d.submittedByStaffCloudId ?? null, submittedByStaffName: d.submittedByStaffName, source: d.source, notes: d.notes ?? null, countedAt: new Date(d.countedAt) },
+            });
+        }
+        await app.prisma.syncedInventoryCountLine.deleteMany({ where: { sessionId: countRow.id } });
+        await app.prisma.syncedInventoryCountLine.createMany({
+            data: d.lines.map((line) => ({ sessionId: countRow.id, inventoryItemCloudId: String(line.inventoryItemCloudId ?? ""), inventoryItemName: String(line.inventoryItemName ?? "Unknown"), expectedQuantity: line.expectedQuantity != null ? String(line.expectedQuantity) : null, actualQuantity: String(line.actualQuantity ?? "0"), varianceQuantity: line.varianceQuantity != null ? String(line.varianceQuantity) : null, unit: line.unit != null ? String(line.unit) : null, notes: line.notes != null ? String(line.notes) : null })),
+        });
+        return { ok: true };
+    });
+    app.post("/staff-ops/sop-submissions", async (req, reply) => {
+        if (syncSecret) {
+            const key = req.headers["x-store-sync-key"] || "";
+            if (key !== syncSecret)
+                return reply.code(401).send({ error: "UNAUTHORIZED" });
+        }
+        const body = req.body;
+        const parsed = sopSubmissionIngestSchema.safeParse({
+            ...body,
+            sourceSubmissionId: body.sourceLocalId,
+        });
+        if (!parsed.success)
+            return reply.code(400).send({ error: "INVALID_BODY", details: parsed.error.flatten() });
+        const d = parsed.data;
+        await app.prisma.syncedSopChecklistSubmission.upsert({
+            where: { storeId_sourceLocalId: { storeId: d.storeId, sourceLocalId: d.sourceSubmissionId } },
+            update: { templateCloudId: d.templateCloudId ?? null, templateName: d.templateName, templateVersion: d.templateVersion, shiftType: d.shiftType, submittedByStaffCloudId: d.submittedByStaffCloudId ?? null, submittedByStaffName: d.submittedByStaffName, assignedShiftId: d.assignedShiftId ?? null, checklistResultJson: d.checklistResultJson, notes: d.notes ?? null, submittedAt: new Date(d.submittedAt) },
+            create: { sourceLocalId: d.sourceSubmissionId, storeId: d.storeId, templateCloudId: d.templateCloudId ?? null, templateName: d.templateName, templateVersion: d.templateVersion, shiftType: d.shiftType, submittedByStaffCloudId: d.submittedByStaffCloudId ?? null, submittedByStaffName: d.submittedByStaffName, assignedShiftId: d.assignedShiftId ?? null, checklistResultJson: d.checklistResultJson, notes: d.notes ?? null, submittedAt: new Date(d.submittedAt) },
+        });
+        return { ok: true };
+    });
+    app.get("/staff/shifts", async (req, reply) => {
+        if (syncSecret) {
+            const key = req.headers["x-store-sync-key"] || "";
+            if (key !== syncSecret)
+                return reply.code(401).send({ error: "UNAUTHORIZED" });
+        }
+        const storeId = String(req.query?.storeId ?? "store_1");
+        const rows = await app.prisma.cloudStaffShiftAssignment.findMany({ where: { storeId }, orderBy: { shiftDate: "asc" }, take: 300 });
+        return { items: rows };
+    });
+    app.get("/staff/incentives", async (req, reply) => {
+        if (syncSecret) {
+            const key = req.headers["x-store-sync-key"] || "";
+            if (key !== syncSecret)
+                return reply.code(401).send({ error: "UNAUTHORIZED" });
+        }
+        const storeId = String(req.query?.storeId ?? "store_1");
+        const rows = await app.prisma.cloudStaffIncentiveLedger.findMany({ where: { storeId }, orderBy: { happenedAt: "desc" }, take: 500 });
+        return { items: rows };
+    });
+    app.post("/staff/attendance-selfies/cleanup", async (req, reply) => {
+        if (syncSecret) {
+            const key = req.headers["x-store-sync-key"] || "";
+            if (key !== syncSecret)
+                return reply.code(401).send({ error: "UNAUTHORIZED" });
+        }
+        const now = new Date();
+        const result = await app.prisma.syncedStaffAttendance.updateMany({
+            where: {
+                selfieUrl: { not: null },
+                selfiePurgedAt: null,
+                selfieExpiresAt: { lte: now },
+            },
+            data: {
+                selfieUrl: null,
+                selfiePurgedAt: now,
+            },
+        });
+        return { ok: true, cleaned: result.count };
+    });
+    // Owner password hash (for POS – requires X-Store-Sync-Key). POS caches for offline verification.
+    app.get("/owner-password-hash", async (req, reply) => {
+        if (syncSecret) {
+            const key = req.headers["x-store-sync-key"] || "";
+            if (key !== syncSecret) {
+                reply.code(401);
+                return { error: "UNAUTHORIZED", message: "Invalid or missing X-Store-Sync-Key" };
+            }
+        }
+        const row = await app.prisma.storeSetting.findUnique({ where: { id: "1" } });
+        return { ownerPasswordHash: row?.ownerPasswordHash ?? null };
     });
     // Verify admin PIN (for POS - requires STORE_SYNC_SECRET)
     app.post("/verify-admin-pin", async (req, reply) => {

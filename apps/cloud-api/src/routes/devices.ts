@@ -1,20 +1,22 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
+import { requireCloudAdmin } from "../lib/cloudAdminRole.js";
 
 const DEVICE_COMMAND_TYPES = ["UPDATE_POS", "RESTART_POS", "FORCE_SYNC"] as const;
 
-async function adminAuthHook(req: FastifyRequest, reply: FastifyReply) {
+async function deviceAuthHook(req: FastifyRequest, reply: FastifyReply) {
   try {
     await req.jwtVerify();
   } catch {
     reply.code(401);
     return reply.send({ error: "UNAUTHORIZED" });
   }
+  if (!requireCloudAdmin(req, reply)) return;
 }
 
 export async function deviceRoutes(app: FastifyInstance) {
-  app.addHook("preHandler", adminAuthHook);
+  app.addHook("preHandler", deviceAuthHook);
   // GET /admin/devices - list all devices
   app.get("/devices", async () => {
     const devices = await app.prisma.device.findMany({

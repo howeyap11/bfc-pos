@@ -2,9 +2,13 @@ import { requireStaffHook } from "../plugins/staffGuard";
 import { verifyAdminPin } from "../services/adminPin.service";
 import { enqueueOutbox } from "../services/outbox.service";
 import { ensureItemForCloudId } from "../services/catalogCache.service";
-import { uploadTransactionToCloud } from "../services/transactionSync.service";
+import { syncTransactionToCloudOrEnqueue } from "../services/transactionSync.service";
 import { printReceiptToDevice, printStickersToDevice, formatTransactionLineLabel } from "../services/print.service";
 import { allocateVouchersForTransaction, getSnapResiboVoucherForTransaction, } from "../services/snapResiboVoucher.service";
+import { getCalendarDayRange } from "../services/dayRange.service";
+import { printZReading } from "../services/zReading.service";
+import { getTransactionSummary } from "../services/transactionSummary.service";
+import { getTransactionSyncOutboxStatus } from "../services/outbox.service";
 const STORE_ID = "store_1";
 const SNAPRESIBO_QR_ITEM_ID = "SNAPRESIBO_QR";
 export const CREATE_TX_STEPS = {
@@ -92,16 +96,32 @@ function calculateMilkUpcharge(milkChoice, defaultMilk) {
 }
 export async function posTransactionsRoutes(app) {
     app.addHook("preHandler", requireStaffHook);
-    // List recent transactions with pagination
+    // List recent transactions with pagination. Optional selectedDate (YYYY-MM-DD) filters by calendar day.
     const listTransactions = async (req) => {
         const query = req.query;
         const limit = Math.min(parseInt(query.limit || "30") || 30, 100);
         const cursor = query.cursor ? parseInt(query.cursor) : null;
+        const selectedDate = typeof query.selectedDate === "string" ? query.selectedDate.trim() : null;
+        const dateRange = selectedDate && /^\d{4}-\d{2}-\d{2}$/.test(selectedDate)
+            ? getCalendarDayRange(selectedDate)
+            : null;
+        if (dateRange) {
+            app.log.info({
+                event: "transactions_list_date_filter",
+                selectedDate,
+                from: dateRange.from.toISOString(),
+                to: dateRange.to.toISOString(),
+            }, "[Transactions] list with calendar-day filter");
+        }
+        const whereClause = { storeId: STORE_ID };
+        if (dateRange) {
+            whereClause.createdAt = { gte: dateRange.from, lt: dateRange.toExclusive };
+        }
+        if (cursor != null) {
+            whereClause.transactionNo = { lt: cursor };
+        }
         const transactions = await app.prisma.transaction.findMany({
-            where: {
-                storeId: STORE_ID,
-                ...(cursor ? { transactionNo: { lt: cursor } } : {}),
-            },
+            where: whereClause,
             orderBy: { transactionNo: "desc" },
             take: limit + 1, // Fetch one extra to determine if there's a next page
             include: {
@@ -132,6 +152,15 @@ export async function posTransactionsRoutes(app) {
         const hasMore = transactions.length > limit;
         const rawItems = hasMore ? transactions.slice(0, limit) : transactions;
         const nextCursor = hasMore ? rawItems[rawItems.length - 1].transactionNo : null;
+        if (dateRange) {
+            app.log.info({
+                event: "transactions_list_loaded",
+                selectedDate,
+                fullDayCount: transactions.length,
+                currentPageRowCount: rawItems.length,
+                hasMore,
+            });
+        }
         const items = rawItems.map((tx) => ({
             ...tx,
             lineItems: tx.lineItems.map((li) => ({
@@ -154,6 +183,38 @@ export async function posTransactionsRoutes(app) {
     };
     app.get("/pos/transactions", listTransactions);
     app.get("/pos/transactions/list", listTransactions);
+    /** Cloud sync outbox status for admin visibility (pending count, high-retry count). */
+    app.get("/pos/transactions/sync-status", async () => {
+        return getTransactionSyncOutboxStatus(app.prisma);
+    });
+    // Full-range summary for selected day (decoupled from pagination). Uses strict calendar day range.
+    app.get("/pos/transactions/summary", async (req, reply) => {
+        const query = req.query;
+        const selectedDate = typeof query.selectedDate === "string" ? query.selectedDate.trim() : null;
+        if (!selectedDate || !/^\d{4}-\d{2}-\d{2}$/.test(selectedDate)) {
+            reply.code(400);
+            return { error: "INVALID_DATE", message: "selectedDate (YYYY-MM-DD) is required" };
+        }
+        try {
+            const range = getCalendarDayRange(selectedDate);
+            const summary = await getTransactionSummary(app.prisma, selectedDate);
+            app.log.info({
+                event: "transactions_summary",
+                selectedDate,
+                from: range.from.toISOString(),
+                to: range.to.toISOString(),
+                transactionCount: summary.transactionCount,
+                grossSalesCents: summary.grossSalesCents,
+            }, "[Transactions] summary loaded for selected date");
+            return summary;
+        }
+        catch (err) {
+            const message = err instanceof Error ? err.message : String(err ?? "Summary failed");
+            app.log.error({ err, selectedDate }, "[Transactions] summary failed");
+            reply.code(500);
+            return { error: "SUMMARY_FAILED", message };
+        }
+    });
     // Create transaction + line items (no payment yet)
     app.post("/pos/transactions", async (req, reply) => {
         const deviceId = req.headers["x-device-id"] || undefined;
@@ -541,6 +602,9 @@ export async function posTransactionsRoutes(app) {
                 if (it.baseType && it.sizeLabel) {
                     optionsData.push({ type: "size", baseType: it.baseType, sizeLabel: it.sizeLabel });
                 }
+                if (it.selectedSubstituteCloudId) {
+                    optionsData.push({ type: "substitute", cloudId: it.selectedSubstituteCloudId });
+                }
                 if (it.milkChoice && (it.selectedSubstituteCloudId != null || (effectiveDefaultMilk != null && it.milkChoice !== effectiveDefaultMilk))) {
                     optionsData.push({
                         type: "milk",
@@ -752,17 +816,7 @@ export async function posTransactionsRoutes(app) {
                 }
             }
             // Sync to cloud (best effort, non-blocking)
-            const paymentsList = allPayments.map((p) => ({ method: p.method, amountCents: p.amountCents }));
-            const lineItemsList = transaction.lineItems.map((l) => ({ name: l.name, qty: l.qty, lineTotal: l.lineTotal }));
-            const uploadResult = await uploadTransactionToCloud(app.prisma, { ...transaction, status: "PAID", createdBy: staff?.name ?? transaction.createdBy ?? null }, paymentsList, lineItemsList);
-            if (!uploadResult.ok) {
-                console.log("[TransactionSync] Transaction queued for cloud sync (retry)", { transactionId: transaction.id });
-                await enqueueOutbox(app.prisma, {
-                    storeId: transaction.storeId,
-                    topic: "transaction.cloud.sync",
-                    payload: { transactionId: transaction.id },
-                });
-            }
+            await syncTransactionToCloudOrEnqueue(app.prisma, transaction.id, app.log);
             // Inventory auto-deduction (best effort): do not block sale on failure
             const lineItems = transaction.lineItems
                 .filter((l) => l.itemId)
@@ -847,17 +901,7 @@ export async function posTransactionsRoutes(app) {
             include: { payments: true, lineItems: true },
         });
         // Sync void to cloud
-        const paymentsList = voided.payments.map((p) => ({ method: p.method, amountCents: p.amountCents }));
-        const lineItemsList = voided.lineItems.map((l) => ({ name: l.name, qty: l.qty, lineTotal: l.lineTotal }));
-        const uploadResult = await uploadTransactionToCloud(app.prisma, voided, paymentsList, lineItemsList);
-        if (!uploadResult.ok) {
-            console.log("[TransactionSync] Transaction queued for cloud sync (retry)", { transactionId: voided.id });
-            await enqueueOutbox(app.prisma, {
-                storeId: voided.storeId,
-                topic: "transaction.cloud.sync",
-                payload: { transactionId: voided.id },
-            });
-        }
+        await syncTransactionToCloudOrEnqueue(app.prisma, voided.id, app.log);
         await app.prisma.auditLog.create({
             data: {
                 storeId: STORE_ID,
@@ -986,6 +1030,8 @@ export async function posTransactionsRoutes(app) {
                 },
             },
         });
+        // Sync refund to cloud (best effort, non-blocking)
+        await syncTransactionToCloudOrEnqueue(app.prisma, id, app.log);
         return updatedTransaction;
     });
     // Receipt view (enrich lineItems with categoryCloudId for sticker decision on client; include business name/address for receipt header; include linked SnapResibo voucher when enabled so UI can display same voucher without allocating)
@@ -1246,6 +1292,51 @@ export async function posTransactionsRoutes(app) {
             app.log.error({ err, transactionId: id }, "Print stickers failed");
             reply.code(500);
             return { error: "PRINT_FAILED", message: err?.message ?? "Sticker print failed" };
+        }
+    });
+    app.post("/pos/transactions/z-reading/print", async (req, reply) => {
+        const body = (req.body ?? {});
+        const selectedDate = String(body.selectedDate ?? "").trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(selectedDate)) {
+            reply.code(400);
+            return { error: "INVALID_DATE", message: "selectedDate must be YYYY-MM-DD" };
+        }
+        const printerConfig = await app.prisma.storeConfig.findUnique({
+            where: { storeId: STORE_ID },
+            select: { enabledPaymentMethods: true },
+        });
+        const range = getCalendarDayRange(selectedDate);
+        app.log.info({
+            event: "z_reading_print_request",
+            selectedDate,
+            from: range.from.toISOString(),
+            to: range.to.toISOString(),
+            enabledPaymentMethods: printerConfig?.enabledPaymentMethods ?? null,
+        }, "[Z_READING] print request");
+        try {
+            const report = await printZReading(app.prisma, selectedDate);
+            app.log.info({
+                event: "z_reading_print_success",
+                selectedDate,
+                printerName: report.printerName,
+                from: report.from.toISOString(),
+                to: report.to.toISOString(),
+                transactionCount: report.totals.transactionCount,
+                totals: report.totals,
+            }, "[Z_READING] printed");
+            return {
+                ok: true,
+                selectedDate,
+                from: report.from.toISOString(),
+                to: report.to.toISOString(),
+                transactionCount: report.totals.transactionCount,
+            };
+        }
+        catch (err) {
+            const message = err instanceof Error ? err.message : String(err ?? "Z-reading print failed");
+            app.log.error({ err, selectedDate, event: "z_reading_print_failure" }, "[Z_READING] print failed — check [BFC_PRINTER] logs for printer name loaded from settings and print result");
+            reply.code(500);
+            return { error: "PRINT_FAILED", message };
         }
     });
 }

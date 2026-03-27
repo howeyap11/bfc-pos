@@ -444,6 +444,14 @@ export type CloudStaffRow = {
   updatedAt: string;
 };
 
+export type CloudAdminAccount = {
+  id: string;
+  email: string;
+  role: "ADMIN" | "MANAGER";
+  createdAt: string;
+  updatedAt: string;
+};
+
 export const STAFF_ROLES = [
   "HEAD_BARISTA",
   "HEAD_CHEF",
@@ -921,6 +929,17 @@ export const api = {
   getInventoryLocations(): Promise<InventoryLocation[]> {
     return apiFetch("/admin/inventory/locations");
   },
+  /** Non-production + ADMIN only (backend enforced). Stock correction via ledger; does not touch sales. */
+  devManualSetInventoryStock(body: {
+    ingredientId: string;
+    locationId: string;
+    quantityBase: number;
+  }): Promise<{ skipped?: boolean; current?: number; movement?: unknown }> {
+    return apiFetch("/admin/inventory/dev-manual-set", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
   getIngredients(): Promise<Ingredient[]> {
     return apiFetch("/admin/ingredients");
   },
@@ -1012,6 +1031,92 @@ export const api = {
     return apiFetch("/admin/settings/owner-password", {
       method: "PUT",
       body: JSON.stringify({ password }),
+    });
+  },
+  getAdminAccounts(): Promise<{ accounts: CloudAdminAccount[] }> {
+    return apiFetch("/admin/settings/admin-accounts");
+  },
+  createAdminAccount(body: { email: string; password: string; role: "ADMIN" | "MANAGER" }): Promise<CloudAdminAccount> {
+    return apiFetch("/admin/settings/admin-accounts", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
+  deleteAdminAccount(id: string): Promise<{ ok: boolean }> {
+    return apiFetch(`/admin/settings/admin-accounts/${id}`, { method: "DELETE" });
+  },
+
+  getReceiptDetails(): Promise<{
+    ownerTradeName: string | null;
+    taxType: string;
+    receiptMessage: string | null;
+    birEnabled: boolean;
+    permitNo: string | null;
+    issueDate: string | null;
+    nonVatTin: string | null;
+    vatTin: string | null;
+    birMin: string | null;
+    birSerialNo: string | null;
+    birRegulatoryLocked: boolean;
+  }> {
+    return apiFetch("/admin/settings/receipt-details");
+  },
+  putReceiptDetails(body: {
+    receiptMessage?: string | null;
+    birEnabled?: boolean;
+    taxType?: string;
+    permitNo?: string | null;
+    issueDate?: string | null;
+    nonVatTin?: string | null;
+    vatTin?: string | null;
+    birMin?: string | null;
+    birSerialNo?: string | null;
+  }): Promise<{
+    ownerTradeName: string | null;
+    taxType: string;
+    receiptMessage: string | null;
+    birEnabled: boolean;
+    permitNo: string | null;
+    issueDate: string | null;
+    nonVatTin: string | null;
+    vatTin: string | null;
+    birMin: string | null;
+    birSerialNo: string | null;
+    birRegulatoryLocked: boolean;
+  }> {
+    return apiFetch("/admin/settings/receipt-details", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    });
+  },
+
+  getSalesInventorySettings(): Promise<{
+    reportRecipientEmail: string | null;
+    dailySalesEmailTimeLocal: string;
+    inventoryEmailEnabled: boolean;
+    inventoryReportType: string;
+    fixedServiceChargePercent: number;
+    fixedServiceChargeLocked: boolean;
+  }> {
+    return apiFetch("/admin/settings/sales-inventory");
+  },
+  putSalesInventorySettings(body: {
+    reportRecipientEmail?: string;
+    dailySalesEmailTimeLocal?: string;
+    inventoryEmailEnabled?: boolean;
+    inventoryReportType?: string;
+    fixedServiceChargePercent?: number;
+  }): Promise<{
+    reportRecipientEmail: string | null;
+    dailySalesEmailTimeLocal: string;
+    inventoryEmailEnabled: boolean;
+    inventoryReportType: string;
+    fixedServiceChargePercent: number;
+    fixedServiceChargeLocked: boolean;
+  }> {
+    return apiFetch("/admin/settings/sales-inventory", {
+      method: "PUT",
+      body: JSON.stringify(body),
     });
   },
 

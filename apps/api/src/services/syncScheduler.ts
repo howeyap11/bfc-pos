@@ -5,6 +5,8 @@ import { uploadTransactionToCloud } from "./transactionSync.service";
 import { cleanupStaleMenuImages } from "./menuImageCache.service";
 import { isOnline } from "./connectivity.service";
 import { syncOwnerPasswordHash } from "./ownerPassword.service";
+import { processStaffOpsOutbox } from "./staffOpsSync.service";
+import { syncStaffOpsReferenceData } from "./staffOpsPull.service";
 
 let catalogInFlight = false;
 let transactionFlushInFlight = false;
@@ -53,6 +55,9 @@ export async function runCatalogSync(app: FastifyInstance): Promise<void> {
       lastCatalogSyncOk = true;
       lastCatalogSyncError = null;
       app.log.info({ result: outcome.result }, "Catalog sync completed");
+      await syncStaffOpsReferenceData(app.prisma).catch((err) => {
+        app.log.warn({ err }, "Staff ops reference sync failed");
+      });
       try {
         const activeItems = await app.prisma.cloudMenuItem.findMany({
           where: { storeId: "store_1", isActive: true, deletedAt: null },
@@ -121,6 +126,11 @@ export async function runTransactionSyncFlush(app: FastifyInstance): Promise<boo
       const { pendingCount } = await getTransactionSyncOutboxStatus(app.prisma);
       if (pendingCount === 0) break;
     }
+    const staffOps = await processStaffOpsOutbox(app.prisma, 20);
+    if (staffOps.processed > 0) {
+      app.log.info({ staffOps }, "Staff ops outbox processed");
+    }
+    await processStaffOpsOutbox(app.prisma, 20);
 
     if (isReconnect && totalProcessed > 0) {
       app.log.info({ totalProcessed }, "Reconnect sync burst complete");

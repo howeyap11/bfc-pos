@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { COLORS } from "@/lib/theme";
+import { getCloudAdminRoleFromToken } from "@/lib/cloudAdminRole";
 
 const SECTIONS = [
   {
@@ -17,8 +18,6 @@ const SECTIONS = [
     items: [
       { href: "/settings/receipts", label: "Receipts" },
       { href: "/settings/sales-inventory", label: "Sales & Inventory" },
-      { href: "/settings/online-store", label: "Online Store" },
-      { href: "/settings/customer-display", label: "Customer Display Screen" },
     ],
   },
   {
@@ -40,14 +39,22 @@ const SECTIONS = [
   },
 ];
 
+const MANAGER_SECTIONS = [
+  {
+    group: "Security",
+    items: [{ href: "/settings/staff", label: "Staff (POS Login)" }],
+  },
+];
+
 export function SettingsNav() {
   const pathname = usePathname();
+  const sections = getCloudAdminRoleFromToken() === "MANAGER" ? MANAGER_SECTIONS : SECTIONS;
   return (
     <nav
       className="w-56 shrink-0 space-y-6 pr-6"
       style={{ borderRight: `1px solid ${COLORS.borderLight}` }}
     >
-      {SECTIONS.map(({ group, items }) => (
+      {sections.map(({ group, items }) => (
         <div key={group}>
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-white/50">
             {group}

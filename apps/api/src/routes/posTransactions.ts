@@ -720,6 +720,10 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       if (it.baseType && it.sizeLabel) {
         optionsData.push({ type: "size", baseType: it.baseType, sizeLabel: it.sizeLabel });
       }
+
+      if (it.selectedSubstituteCloudId) {
+        optionsData.push({ type: "substitute", cloudId: it.selectedSubstituteCloudId });
+      }
       
       if (it.milkChoice && (it.selectedSubstituteCloudId != null || (effectiveDefaultMilk != null && it.milkChoice !== effectiveDefaultMilk))) {
         optionsData.push({

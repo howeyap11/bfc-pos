@@ -25,6 +25,7 @@ import inventoryServicePlugin from "./plugins/inventoryService";
 import { staffGuardPlugin } from "./plugins/staffGuard";
 import { staffRoutesPlugin } from "./routes/staff";
 import { staffQueueRoutes } from "./routes/staffQueue";
+import { staffOpsRoutes } from "./routes/staffOps";
 import { posOrdersRoutes } from "./routes/posOrders";
 import { orderStatusRoutes } from "./routes/orderStatus";
 import { functionRoomRoutes } from "./routes/functionRoom";
@@ -66,6 +67,7 @@ await app.register(staffGuardPlugin);
 await app.register(staffRoutesPlugin);
 // Staff routes (protected by x-staff-key inside the route files)
 await app.register(staffQueueRoutes);
+await app.register(staffOpsRoutes);
 await app.register(posOrdersRoutes);
 await app.register(orderStatusRoutes);
 await app.register(functionRoomRoutes);
@@ -79,6 +81,7 @@ await app.register(deviceCommandsRoutes);
 await app.register(storeConfigRoutes);
 await app.register(systemPrintersRoutes);
 await app.register(snapResiboRoutes);
+await app.register(staffOpsRoutes);
 await app.register(devRoutes);
 await app.register(ownerRoutesPlugin);
 

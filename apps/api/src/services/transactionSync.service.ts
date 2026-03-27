@@ -21,9 +21,99 @@ type TxRecord = {
 
 type PaymentRecord = { method: string; amountCents: number };
 
-type LineItemRecord = { name: string; qty: number; lineTotal: number };
+export type LineItemRecord = {
+  name: string;
+  qty: number;
+  lineTotal: number;
+  sourceLineItemId?: string;
+  menuItemId?: string | null;
+  optionsJson?: string | null;
+};
 
-type RefundRecord = { id: string; reason: string; amountCents: number; createdAt: string };
+export type RefundRecord = {
+  id: string;
+  reason: string;
+  amountCents: number;
+  createdAt: string;
+  items?: Array<{
+    sourceLineItemId: string;
+    qtyRefunded: number;
+    amountRefundedCents: number;
+  }>;
+};
+
+/** Shared shape: payment + line + refund includes for cloud sync (immediate + outbox). */
+export type TransactionForCloudSync = {
+  id: string;
+  storeId: string;
+  transactionNo: number;
+  status: string;
+  source: string;
+  serviceType: string;
+  totalCents: number;
+  subtotalCents: number;
+  discountCents: number;
+  createdAt: Date;
+  createdBy: string | null;
+  voidedAt: Date | null;
+  voidReason: string | null;
+  payments: Array<{ method: string; amountCents: number }>;
+  lineItems: Array<{
+    id: string;
+    name: string;
+    qty: number;
+    lineTotal: number;
+    optionsJson: string | null;
+    item: { cloudId: string | null } | null;
+  }>;
+  refunds: Array<{
+    id: string;
+    reason: string;
+    createdAt: Date;
+    refundItems: Array<{
+      transactionLineItemId: string;
+      qtyRefunded: number;
+      amountRefundedCents: number;
+    }>;
+  }>;
+};
+
+export function buildCloudSyncListsFromTransaction(transaction: TransactionForCloudSync): {
+  paymentsList: PaymentRecord[];
+  lineItemsList: LineItemRecord[];
+  refundAmountCents: number;
+  refundsList: RefundRecord[];
+} {
+  const paymentsList = transaction.payments.map((p) => ({ method: p.method, amountCents: p.amountCents }));
+  const lineItemsList = transaction.lineItems.map((l) => ({
+    name: l.name,
+    qty: l.qty,
+    lineTotal: l.lineTotal,
+    sourceLineItemId: l.id,
+    menuItemId: l.item?.cloudId ?? null,
+    optionsJson: l.optionsJson ?? null,
+  }));
+
+  let refundAmountCents = 0;
+  const refundsList: RefundRecord[] = [];
+  for (const r of transaction.refunds) {
+    const amount = r.refundItems.reduce((s, ri) => s + ri.amountRefundedCents, 0);
+    refundAmountCents += amount;
+    refundsList.push({
+      id: r.id,
+      reason: r.reason,
+      amountCents: amount,
+      createdAt: r.createdAt.toISOString(),
+      items: r.refundItems.map((ri) => ({
+        sourceLineItemId: ri.transactionLineItemId,
+        qtyRefunded: ri.qtyRefunded,
+        amountRefundedCents: ri.amountRefundedCents,
+      })),
+    });
+  }
+
+  return { paymentsList, lineItemsList, refundAmountCents, refundsList };
+}
 
 export type TransactionSyncPayload = {
   tx: TxRecord;
@@ -131,7 +221,11 @@ export async function syncTransactionToCloudOrEnqueue(
 
   const transaction = await prisma.transaction.findUnique({
     where: { id: transactionId },
-    include: { payments: true, lineItems: true, refunds: { include: { refundItems: true } } },
+    include: {
+      payments: true,
+      lineItems: { include: { item: { select: { cloudId: true } } } },
+      refunds: { include: { refundItems: true } },
+    },
   });
 
   if (!transaction) {
@@ -155,21 +249,8 @@ export async function syncTransactionToCloudOrEnqueue(
     voidReason: transaction.voidReason,
   };
 
-  const paymentsList = transaction.payments.map((p) => ({ method: p.method, amountCents: p.amountCents }));
-  const lineItemsList = transaction.lineItems.map((l) => ({ name: l.name, qty: l.qty, lineTotal: l.lineTotal }));
-
-  let refundAmountCents = 0;
-  const refundsList: RefundRecord[] = [];
-  for (const r of transaction.refunds) {
-    const amount = r.refundItems.reduce((s, ri) => s + ri.amountRefundedCents, 0);
-    refundAmountCents += amount;
-    refundsList.push({
-      id: r.id,
-      reason: r.reason,
-      amountCents: amount,
-      createdAt: r.createdAt.toISOString(),
-    });
-  }
+  const { paymentsList, lineItemsList, refundAmountCents, refundsList } =
+    buildCloudSyncListsFromTransaction(transaction);
 
   const result = await uploadTransactionToCloud(prisma, txRecord, paymentsList, lineItemsList, {
     refundAmountCents,

@@ -12,6 +12,8 @@ import { deviceRoutes } from "./routes/devices.js";
 import { syncRoutes } from "./routes/sync.js";
 import { storeConfigRoutes } from "./routes/storeConfig.js";
 import { devRoutes } from "./routes/dev.js";
+import { staffOpsSyncRoutes } from "./routes/staffOpsSync.js";
+import { staffOpsAdminRoutes } from "./routes/staffOpsAdmin.js";
 const app = Fastify({ logger: true });
 app.setErrorHandler((err, _req, reply) => {
     app.log.error(err);
@@ -41,7 +43,9 @@ await app.register(adminRoutes, { prefix: "/admin" });
 await app.register(deviceRoutes, { prefix: "/admin" });
 await app.register(storeConfigRoutes);
 await app.register(devRoutes, { prefix: "/admin" });
+await app.register(staffOpsAdminRoutes, { prefix: "/admin" });
 await app.register(syncRoutes, { prefix: "/sync" });
+await app.register(staffOpsSyncRoutes, { prefix: "/sync" });
 // #region agent log
 try {
     const fs = await import("fs");

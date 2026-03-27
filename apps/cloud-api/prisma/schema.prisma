@@ -7,12 +7,18 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum CloudAdminRole {
+  ADMIN
+  MANAGER
+}
+
 model AdminUser {
-  id           String   @id @default(cuid())
-  email        String   @unique
+  id           String         @id @default(cuid())
+  email        String         @unique
   passwordHash String
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  role         CloudAdminRole @default(ADMIN)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
 }
 
 // Single row (id=1): tracks current catalog version for sync
@@ -532,6 +538,14 @@ model StoreSetting {
   id                 String   @id @default("1")
   adminPinHash       String?
   ownerPasswordHash  String?  // Owner/developer tools password (bcrypt-style hash)
+  /** Daily sales + inventory report recipient (CC). Source of truth for automated report email jobs. */
+  reportRecipientEmail      String?
+  /** Local time HH:mm (store / Asia–Manila operational day). Default 00:30 = after midnight close. */
+  dailySalesEmailTimeLocal    String   @default("00:30")
+  inventoryEmailEnabled     Boolean  @default(false)
+  inventoryReportType       String   @default("Ingredients Input Based")
+  /** Fixed service charge percent shown on POS when locked (e.g. 10 = 10%). */
+  fixedServiceChargePercent Int      @default(10)
   updatedAt          DateTime @updatedAt
 }
 
@@ -541,6 +555,21 @@ model BusinessDetails {
   businessName String?
   address      String?
   updatedAt    DateTime @updatedAt
+}
+
+// Settings > Receipts: BIR / PTU display fields (single row, id=1). Owner/trade name comes from BusinessDetails.businessName.
+model ReceiptDetails {
+  id             String   @id @default("1")
+  taxType        String   @default("NONVAT Registered")
+  receiptMessage String?
+  birEnabled     Boolean  @default(true)
+  permitNo       String?
+  issueDate      String? // Display string e.g. MM/DD/YYYY
+  nonVatTin      String?
+  vatTin         String?
+  birMin         String? // BIR machine identification (MIN)
+  birSerialNo    String? // BIR serial (S/N)
+  updatedAt      DateTime @updatedAt
 }
 
 // Staff (POS cashiers/managers): source of truth for names, PINs, email, roles; syncs to POS
@@ -586,6 +615,7 @@ model SyncedTransaction {
   @@index([storeId, createdAt])
   @@index([isTest])
 }
+
 
 // POS devices - one per physical mini PC
 model Device {
@@ -953,4 +983,138 @@ model RecipeLineSize {
   @@index([menuItemId])
   @@index([ingredientId])
   @@index([version])
+}
+
+model SyncedStaffAttendance {
+  id            String   @id @default(cuid())
+  sourceLocalId String
+  storeId       String
+  staffCloudId  String?
+  staffName     String
+  staffRole     String
+  eventType     String
+  happenedAt    DateTime
+  selfieUrl     String?
+  selfieStorageKey String?
+  selfieExpiresAt DateTime?
+  selfiePurgedAt  DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([storeId, sourceLocalId])
+  @@index([storeId, happenedAt])
+}
+
+model SyncedWasteReport {
+  id                   String   @id @default(cuid())
+  sourceLocalId        String
+  storeId              String
+  staffCloudId         String?
+  staffName            String
+  itemType             String
+  inventoryItemCloudId String?
+  inventoryItemName    String
+  quantity             String
+  unit                 String?
+  reason               String
+  notes                String?
+  imageUrl             String?
+  imageStorageKey      String?
+  happenedAt           DateTime
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@unique([storeId, sourceLocalId])
+  @@index([storeId, happenedAt])
+}
+
+model SyncedInventoryCountSession {
+  id                      String   @id @default(cuid())
+  sourceLocalId           String
+  storeId                 String
+  submittedByStaffCloudId String?
+  submittedByStaffName    String
+  source                  String
+  notes                   String?
+  countedAt               DateTime
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+  lines                   SyncedInventoryCountLine[]
+
+  @@unique([storeId, sourceLocalId])
+  @@index([storeId, countedAt])
+}
+
+model SyncedInventoryCountLine {
+  id                      String   @id @default(cuid())
+  sessionId               String
+  inventoryItemCloudId    String
+  inventoryItemName       String
+  expectedQuantity        String?
+  actualQuantity          String
+  varianceQuantity        String?
+  unit                    String?
+  notes                   String?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+  session                 SyncedInventoryCountSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+}
+
+model SyncedSopChecklistSubmission {
+  id                      String   @id @default(cuid())
+  sourceLocalId           String
+  storeId                 String
+  templateCloudId         String?
+  templateName            String
+  templateVersion         Int
+  shiftType               String
+  submittedByStaffCloudId String?
+  submittedByStaffName    String
+  assignedShiftId         String?
+  checklistResultJson     String
+  notes                   String?
+  submittedAt             DateTime
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  @@unique([storeId, sourceLocalId])
+  @@index([storeId, submittedAt])
+}
+
+model CloudStaffShiftAssignment {
+  id             String   @id @default(cuid())
+  storeId        String
+  staffCloudId   String
+  staffName      String
+  role           String
+  shiftDate      DateTime
+  startTimeText  String
+  endTimeText    String
+  shiftType      String
+  assignedBy     String?
+  status         String   @default("ASSIGNED")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([storeId, shiftDate])
+  @@index([staffCloudId, shiftDate])
+}
+
+model CloudStaffIncentiveLedger {
+  id               String   @id @default(cuid())
+  storeId          String
+  staffCloudId     String
+  staffName        String
+  entryType        String
+  reason           String
+  amount           String
+  referenceType    String?
+  referenceCloudId String?
+  happenedAt       DateTime
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([storeId, staffCloudId, happenedAt])
 }

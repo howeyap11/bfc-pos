@@ -36,6 +36,12 @@ model Store {
   tabs                   Tab[]
   tables                 Table[]
   transactions           Transaction[]
+  staffAttendanceEvents  StaffAttendanceEvent[]
+  wasteReports           WasteReport[]
+  staffInventoryCountSessions StaffInventoryCountSession[]
+  sopChecklistSubmissions SopChecklistSubmission[]
+  staffShiftLocals       StaffShiftLocal[]
+  staffIncentiveLedgerLocals StaffIncentiveLedgerLocal[]
   zones                  Zone[]
 }
 
@@ -372,6 +378,8 @@ model Transaction {
   createdBy         String?
   updatedAt         DateTime              @updatedAt
   prepCompletedAt    DateTime?             // When kitchen/bar marked order done (prep time = prepCompletedAt - createdAt)
+  prepStartedAt      DateTime?             // KDS: first bump (new → preparing)
+  prepReadyAt        DateTime?             // KDS: second bump (preparing → ready)
   voidedAt          DateTime?
   voidedBy          String?
   voidReason        String?
@@ -687,6 +695,177 @@ model LocalOutbox {
   @@index([storeId])
   @@index([status])
   @@index([storeId, status])
+}
+
+model StaffAttendanceEvent {
+  id               String                @id @default(cuid())
+  storeId          String                @default("store_1")
+  cloudId          String?               @unique
+  staffCloudId     String?
+  staffName        String
+  staffRole        String
+  eventType        StaffAttendanceEventType
+  happenedAt       DateTime
+  selfieLocalPath  String?
+  selfieUploadedUrl String?
+  syncStatus       StaffSyncStatus       @default(PENDING)
+  syncedAt         DateTime?
+  lastSyncError    String?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+  store            Store                 @relation(fields: [storeId], references: [id])
+
+  @@index([storeId, happenedAt])
+  @@index([storeId, staffCloudId, happenedAt])
+  @@index([syncStatus])
+}
+
+model WasteReport {
+  id                   String                @id @default(cuid())
+  storeId              String                @default("store_1")
+  cloudId              String?               @unique
+  staffCloudId         String?
+  staffName            String
+  itemType             WasteItemType
+  inventoryItemCloudId String?
+  inventoryItemName    String
+  quantity             String
+  unit                 String?
+  reason               String
+  notes                String?
+  imageLocalPath       String
+  imageUploadedUrl     String?
+  happenedAt           DateTime
+  syncStatus           StaffSyncStatus       @default(PENDING)
+  syncedAt             DateTime?
+  lastSyncError        String?
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  store                Store                 @relation(fields: [storeId], references: [id])
+
+  @@index([storeId, happenedAt])
+  @@index([storeId, staffCloudId, happenedAt])
+  @@index([syncStatus])
+}
+
+model StaffInventoryCountSession {
+  id                      String                @id @default(cuid())
+  storeId                 String                @default("store_1")
+  cloudId                 String?               @unique
+  submittedByStaffCloudId String?
+  submittedByStaffName    String
+  source                  StaffCountSource
+  notes                   String?
+  countedAt               DateTime
+  syncStatus              StaffSyncStatus       @default(PENDING)
+  syncedAt                DateTime?
+  lastSyncError           String?
+  createdAt               DateTime              @default(now())
+  updatedAt               DateTime              @updatedAt
+  lines                   StaffInventoryCountLine[]
+  store                   Store                 @relation(fields: [storeId], references: [id])
+
+  @@index([storeId, countedAt])
+  @@index([syncStatus])
+}
+
+model StaffInventoryCountLine {
+  id                   String                     @id @default(cuid())
+  sessionId            String
+  inventoryItemCloudId String
+  inventoryItemName    String
+  expectedQuantity     String?
+  actualQuantity       String
+  varianceQuantity     String?
+  unit                 String?
+  notes                String?
+  createdAt            DateTime                   @default(now())
+  updatedAt            DateTime                   @updatedAt
+  session              StaffInventoryCountSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+}
+
+model SopChecklistTemplateLocal {
+  id           String   @id @default(cuid())
+  cloudId      String?  @unique
+  shiftType    String
+  name         String
+  isActive     Boolean  @default(true)
+  version      Int      @default(1)
+  checklistJson String
+  lastSyncedAt DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([isActive, shiftType])
+}
+
+model SopChecklistSubmission {
+  id                      String          @id @default(cuid())
+  storeId                 String          @default("store_1")
+  cloudId                 String?         @unique
+  templateCloudId         String?
+  templateName            String
+  templateVersion         Int
+  shiftType               String
+  submittedByStaffCloudId String?
+  submittedByStaffName    String
+  assignedShiftId         String?
+  checklistResultJson     String
+  notes                   String?
+  submittedAt             DateTime
+  syncStatus              StaffSyncStatus @default(PENDING)
+  syncedAt                DateTime?
+  lastSyncError           String?
+  createdAt               DateTime        @default(now())
+  updatedAt               DateTime        @updatedAt
+  store                   Store           @relation(fields: [storeId], references: [id])
+
+  @@index([storeId, submittedAt])
+  @@index([syncStatus])
+}
+
+model StaffShiftLocal {
+  id           String   @id @default(cuid())
+  cloudId      String?  @unique
+  storeId      String   @default("store_1")
+  staffCloudId String
+  staffName    String
+  role         String
+  shiftDate    DateTime
+  startTimeText String
+  endTimeText  String
+  shiftType    String
+  assignedBy   String?
+  status       String
+  lastSyncedAt DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  store        Store    @relation(fields: [storeId], references: [id])
+
+  @@index([storeId, shiftDate])
+  @@index([staffCloudId, shiftDate])
+}
+
+model StaffIncentiveLedgerLocal {
+  id               String   @id @default(cuid())
+  cloudId          String?  @unique
+  storeId          String   @default("store_1")
+  staffCloudId     String
+  staffName        String
+  entryType        String
+  reason           String
+  amount           String
+  referenceType    String?
+  referenceCloudId String?
+  happenedAt       DateTime
+  lastSyncedAt     DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  store            Store    @relation(fields: [storeId], references: [id])
+
+  @@index([storeId, staffCloudId, happenedAt])
 }
 
 model CloudMenuItem {
@@ -1247,5 +1426,27 @@ enum InventoryCountStatus {
 enum LocalOutboxStatus {
   PENDING
   SENT
+  FAILED
+}
+
+enum StaffAttendanceEventType {
+  TIME_IN
+  TIME_OUT
+}
+
+enum WasteItemType {
+  INVENTORY_ITEM
+  MENU_ITEM
+  OTHER
+}
+
+enum StaffCountSource {
+  STAFF_UI
+  POS
+}
+
+enum StaffSyncStatus {
+  PENDING
+  SYNCED
   FAILED
 }

@@ -104,9 +104,30 @@ async function seedMenuSizes() {
   }
 }
 
+async function seedReceiptDetails() {
+  await prisma.receiptDetails.upsert({
+    where: { id: "1" },
+    create: {
+      id: "1",
+      taxType: "NONVAT Registered",
+      receiptMessage: null,
+      birEnabled: true,
+      permitNo: "FP032025-099-0506656-00000",
+      issueDate: "03/28/2025",
+      nonVatTin: "615-748-778-000",
+      vatTin: "011-448-443-991",
+      birMin: "25032408594953160",
+      birSerialNo: "HA1Q5EQS",
+    },
+    update: {},
+  });
+  console.log("ReceiptDetails row ready");
+}
+
 async function main() {
   await seedSizesOptionGroup();
   await seedMenuSizes();
+  await seedReceiptDetails();
 
   const email = process.env.ADMIN_EMAIL ?? "admin@bfc.local";
   const password = process.env.ADMIN_PASSWORD ?? "Yapyap12";

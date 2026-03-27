@@ -418,6 +418,17 @@ export async function syncCatalogFromCloud(
 
   try {
     await prisma.$transaction(async (tx) => {
+      // Ensure Store exists before Staff sync (Staff.storeId FK -> Store.id)
+      await tx.store.upsert({
+        where: { id: storeId },
+        update: {},
+        create: {
+          id: storeId,
+          code: storeId === "store_1" ? "BFC-LOCAL" : storeId,
+          name: storeId === "store_1" ? "But First, Coffee (Local)" : `Store ${storeId}`,
+        },
+      });
+
       for (const i of data.items) {
         await tx.cloudMenuItem.upsert({
           where: { cloudId: i.id },
@@ -1068,47 +1079,59 @@ export async function syncCatalogFromCloud(
       }
 
       // Sync staff from Cloud Admin (source of truth for names, PINs, email, roles)
+      // Staff depends on Store (storeId FK); Store is ensured above.
       if (data.staff && Array.isArray(data.staff) && prisma.staff) {
         const validRoles = ["HEAD_BARISTA", "HEAD_CHEF", "BARISTA", "LEAD_BARISTA", "MANAGER", "KITCHEN_STAFF", "ADMIN"];
         for (const s of data.staff) {
-          const cloudId = s.id;
-          const name = String(s.name ?? "").trim();
-          const email = s.email != null && String(s.email).trim() !== "" ? String(s.email).trim() : null;
-          const passcode = String(s.passcode ?? "").trim();
-          const role = validRoles.includes(String(s.role ?? "").trim()) ? String(s.role).trim() : "BARISTA";
-          const isActive = !!s.isActive;
-          if (!name || !passcode) continue;
-          const existingByCloudId = await tx.staff.findUnique({ where: { cloudId } });
-          if (existingByCloudId) {
-            await tx.staff.update({
-              where: { id: existingByCloudId.id },
-              data: { name, email, passcode, role, isActive, updatedAt: new Date() },
+          try {
+            const cloudId = s.id;
+            const name = String(s.name ?? "").trim();
+            const email = s.email != null && String(s.email).trim() !== "" ? String(s.email).trim() : null;
+            const passcode = String(s.passcode ?? "").trim();
+            const role = validRoles.includes(String(s.role ?? "").trim()) ? String(s.role).trim() : "BARISTA";
+            const isActive = !!s.isActive;
+            if (!name || !passcode) continue;
+            const existingByCloudId = await tx.staff.findUnique({ where: { cloudId } });
+            if (existingByCloudId) {
+              await tx.staff.update({
+                where: { id: existingByCloudId.id },
+                data: { name, email, passcode, role, isActive, updatedAt: new Date() },
+              });
+              continue;
+            }
+            const existingByName = await tx.staff.findUnique({
+              where: { storeId_name: { storeId, name } },
             });
-            continue;
-          }
-          const existingByName = await tx.staff.findUnique({
-            where: { storeId_name: { storeId, name } },
-          });
-          if (existingByName) {
-            await tx.staff.update({
-              where: { id: existingByName.id },
-              data: { cloudId, email, passcode, role, isActive, updatedAt: new Date() },
+            if (existingByName) {
+              await tx.staff.update({
+                where: { id: existingByName.id },
+                data: { cloudId, email, passcode, role, isActive, updatedAt: new Date() },
+              });
+              continue;
+            }
+            const newKey = "staff_" + randomBytes(16).toString("hex");
+            await tx.staff.upsert({
+              where: { storeId_name: { storeId, name } },
+              create: {
+                storeId,
+                cloudId,
+                name,
+                email,
+                passcode,
+                role,
+                isActive,
+                key: newKey,
+              },
+              update: { cloudId, email, passcode, role, isActive, key: newKey, updatedAt: new Date() },
             });
-            continue;
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.warn(
+              "[SyncCatalog] Skipping staff due to missing FK dependency or constraint:",
+              { staffId: s.id, staffName: s.name, storeId, error: msg }
+            );
+            // Never throw: skip invalid staff so catalog sync completes; POS remains usable
           }
-          const newKey = "staff_" + randomBytes(16).toString("hex");
-          await tx.staff.create({
-            data: {
-              storeId,
-              cloudId,
-              name,
-              email,
-              passcode,
-              role,
-              isActive,
-              key: newKey,
-            },
-          });
         }
       }
 

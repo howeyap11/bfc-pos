@@ -1,4 +1,5 @@
 import { COLORS } from "@/lib/theme";
+import { InventoryCountForm } from "@/components/staff/InventoryCountForm";
 
 export default function InventoryPage() {
   return (
@@ -11,7 +12,10 @@ export default function InventoryPage() {
       }}
     >
       <h1 style={{ marginTop: 0 }}>Inventory</h1>
-      <p style={{ color: COLORS.textSecondary }}>Manual inventory count entry will be added here.</p>
+      <p style={{ color: COLORS.textSecondary, marginBottom: 16 }}>
+        Manual inventory count submits a local auditable snapshot and syncs to cloud when online.
+      </p>
+      <InventoryCountForm source="POS" />
     </div>
   );
 }

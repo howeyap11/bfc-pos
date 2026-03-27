@@ -5,75 +5,15 @@ import { useRouter } from "next/navigation";
 import { COLORS } from "@/lib/theme";
 import type { CartItem } from "@/lib/buildTransactionPayload";
 import { lineItemDisplayParts } from "@/lib/printHelpers";
+import type { OrderLineItem, PendingItem, PendingTransaction, PendingTransactionLineItem, PosOrder } from "./kitchen-types";
+import KdsBoard from "./kds-board";
+import { playKitchenNewOrderChime } from "./kitchen-alert";
 
 const CART_STORAGE_KEY = "bfc_pos_cart";
 const QR_ORDER_STORAGE_KEY = "bfc_pos_qr_order_id";
 
-type OrderLineItem = {
-  id: string;
-  qty: number;
-  unitPrice: number;
-  lineNote: string | null;
-  item: {
-    id: string;
-    name: string;
-    imageUrl?: string | null;
-    category: { name: string; prepArea?: string } | null;
-  } | null;
-  options: Array<{
-    id: string;
-    option: { name: string; group: { name: string } | null } | null;
-  }>;
-};
-
-type PosOrder = {
-  id: string;
-  orderNo: number;
-  status: string;
-  source: string;
-  paymentMethod: string;
-  paymentStatus: string;
-  customerNote: string | null;
-  createdAt: string;
-  table: { id: string; label: string; zone: { code: string; name: string } | null } | null;
-  items: OrderLineItem[];
-};
-
-/** Pending PAID transaction (no prep completed yet) — shown as order card with timer, transaction labels, images */
-type PendingTransactionLineItem = {
-  id: string;
-  qty: number;
-  unitPrice: number;
-  lineNote: string | null;
-  specialInstructions: string | null;
-  name: string;
-  optionsJson: string | null;
-  categoryName: string | null;
-  subCategoryName: string | null;
-  displayLabel: string;
-  item: {
-    id: string;
-    name: string;
-    imageUrl: string | null;
-    category: { name: string; prepArea: string } | null;
-  } | null;
-};
-
-type PendingTransaction = {
-  id: string;
-  transactionNo: number;
-  status: string;
-  source: string;
-  createdAt: string;
-  createdBy: string | null;
-  table: { id: string; label: string; zone: { code: string; name: string } | null } | null;
-  lineItems: PendingTransactionLineItem[];
-};
-
-/** Unified item for pending tab: either QR/table Order or PAID Transaction */
-type PendingItem = { kind: "order"; order: PosOrder } | { kind: "transaction"; transaction: PendingTransaction };
-
 const POLL_INTERVAL_MS = 5000;
+const POLL_INTERVAL_KDS_MS = 4000;
 const CARD_COLLAPSED_WIDTH = 240;
 const CARD_COLLAPSED_MIN_WIDTH = 200;
 const CARD_EXPANDED_WIDTH = 520;
@@ -220,8 +160,9 @@ function OrdersCartLineItem({ item }: { item: CartItem }) {
   );
 }
 
-export default function OrdersClient() {
+export default function OrdersClient({ variant = "default" }: { variant?: "default" | "kds" }) {
   const router = useRouter();
+  const isKds = variant === "kds";
   const [activeStaff, setActiveStaff] = useState<{ staffKey: string } | null>(null);
   const [innerTab, setInnerTab] = useState<"qr" | "pending">("qr");
   const [orders, setOrders] = useState<PosOrder[]>([]);
@@ -237,7 +178,13 @@ export default function OrdersClient() {
   const [acceptingId, setAcceptingId] = useState<string | null>(null);
   const [decliningId, setDecliningId] = useState<string | null>(null);
   const [completingTransactionId, setCompletingTransactionId] = useState<string | null>(null);
+  const [bumpingOrderId, setBumpingOrderId] = useState<string | null>(null);
+  const [bumpingKdsTxId, setBumpingKdsTxId] = useState<string | null>(null);
+  const [lastSyncAt, setLastSyncAt] = useState<number | null>(null);
   const loadOrdersInFlight = useRef(false);
+  const kdsPrevIdsRef = useRef<Set<string> | null>(null);
+
+  const effectiveTab = isKds ? "pending" : innerTab;
 
   useEffect(() => {
     try {
@@ -271,7 +218,7 @@ export default function OrdersClient() {
 
     try {
       setError(null);
-      const res = await fetch(`/api/pos/orders?tab=${innerTab}`, {
+      const res = await fetch(`/api/pos/orders?tab=${effectiveTab}`, {
         cache: "no-store",
         headers: { "x-staff-key": activeStaff.staffKey },
       });
@@ -293,13 +240,30 @@ export default function OrdersClient() {
       const orderList = Array.isArray(data) ? data : (data.orders ?? []);
       const pendingTxList = Array.isArray(data) ? [] : (data.pendingTransactions ?? []);
       setOrders((prev) => {
-        if (hasLoadedOnce && orderList.length > prev.length) {
+        if (!isKds && hasLoadedOnce && orderList.length > prev.length) {
           setNewOrderBadge((b) => b + (orderList.length - prev.length));
         }
         return orderList;
       });
       setPendingTransactions(pendingTxList);
       setHasLoadedOnce(true);
+
+      if (isKds) {
+        setLastSyncAt(Date.now());
+        const ids = new Set<string>();
+        orderList.forEach((o) => ids.add(`o:${o.id}`));
+        pendingTxList.forEach((t) => ids.add(`t:${t.id}`));
+        const prevIds = kdsPrevIdsRef.current;
+        if (prevIds !== null) {
+          for (const id of ids) {
+            if (!prevIds.has(id)) {
+              playKitchenNewOrderChime();
+              break;
+            }
+          }
+        }
+        kdsPrevIdsRef.current = ids;
+      }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       if (e instanceof TypeError) {
@@ -313,7 +277,7 @@ export default function OrdersClient() {
       loadOrdersInFlight.current = false;
       setLoading(false);
     }
-  }, [activeStaff?.staffKey, innerTab, hasLoadedOnce]);
+  }, [activeStaff?.staffKey, effectiveTab, hasLoadedOnce, isKds]);
 
   useEffect(() => {
     if (!activeStaff?.staffKey) {
@@ -322,13 +286,14 @@ export default function OrdersClient() {
     }
     setNewOrderBadge(0);
     loadOrders();
-    const t = setInterval(loadOrders, POLL_INTERVAL_MS);
+    const pollMs = isKds ? POLL_INTERVAL_KDS_MS : POLL_INTERVAL_MS;
+    const t = setInterval(loadOrders, pollMs);
     return () => clearInterval(t);
-  }, [activeStaff?.staffKey, innerTab, loadOrders]);
+  }, [activeStaff?.staffKey, effectiveTab, loadOrders, isKds]);
 
   // Merge orders + pending transactions for pending tab, sorted by createdAt asc
   const pendingItems: PendingItem[] = useMemo(() => {
-    if (innerTab !== "pending") return [];
+    if (effectiveTab !== "pending") return [];
     const items: PendingItem[] = [
       ...orders.map((o) => ({ kind: "order" as const, order: o })),
       ...pendingTransactions.map((tx) => ({ kind: "transaction" as const, transaction: tx })),
@@ -339,10 +304,10 @@ export default function OrdersClient() {
       return new Date(tA).getTime() - new Date(tB).getTime();
     });
     return items;
-  }, [innerTab, orders, pendingTransactions]);
+  }, [effectiveTab, orders, pendingTransactions]);
 
   useEffect(() => {
-    if (innerTab === "qr") {
+    if (effectiveTab === "qr") {
       if (orders.length === 0) {
         setExpandedOrderId(null);
         return;
@@ -365,7 +330,7 @@ export default function OrdersClient() {
       });
       setExpandedOrderId(null);
     }
-  }, [orders, innerTab, pendingItems]);
+  }, [orders, effectiveTab, pendingItems]);
 
   const clearNewOrderBadge = () => setNewOrderBadge(0);
 
@@ -462,6 +427,69 @@ export default function OrdersClient() {
       setCompletingTransactionId(null);
     }
   }
+
+  async function handleKdsBumpOrder(o: PosOrder, nextStatus: string) {
+    if (!activeStaff?.staffKey || bumpingOrderId) return;
+    setBumpingOrderId(o.id);
+    setError(null);
+    try {
+      const res = await fetch(`/api/order-status/${o.id}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "x-staff-key": activeStaff.staffKey,
+        },
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      const data = (await res.json()) as { error?: string; message?: string };
+      if (!res.ok) throw new Error(data.error || data.message || "Failed to update order");
+      await loadOrders();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBumpingOrderId(null);
+    }
+  }
+
+  async function handleKdsBumpTransaction(txId: string) {
+    if (!activeStaff?.staffKey || bumpingKdsTxId) return;
+    setBumpingKdsTxId(txId);
+    setError(null);
+    try {
+      const res = await fetch(`/api/pos/transactions/${txId}/kds-bump`, {
+        method: "PATCH",
+        headers: { "x-staff-key": activeStaff.staffKey },
+      });
+      const data = (await res.json()) as { error?: string; message?: string };
+      if (!res.ok) throw new Error(data.error || data.message || "Failed to bump ticket");
+      await loadOrders();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBumpingKdsTxId(null);
+    }
+  }
+
+  useEffect(() => {
+    if (!isKds || typeof navigator === "undefined" || !("wakeLock" in navigator)) return;
+    let lock: WakeLockSentinel | null = null;
+    async function acquire() {
+      try {
+        lock = await (navigator as Navigator & { wakeLock?: { request: (t: "screen") => Promise<WakeLockSentinel> } }).wakeLock!.request("screen");
+      } catch {
+        /* user gesture or unsupported */
+      }
+    }
+    void acquire();
+    const onVis = () => {
+      if (document.visibilityState === "visible") void acquire();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      lock?.release?.().catch(() => {});
+    };
+  }, [isKds]);
 
   const renderOrderCard = (
     o: PosOrder,
@@ -831,7 +859,9 @@ export default function OrdersClient() {
         <div style={{ background: COLORS.bgDark, padding: 32, borderRadius: 12, border: `1px solid ${COLORS.borderLight}`, maxWidth: 400, textAlign: "center" }}>
           <h2 style={{ margin: "0 0 16px 0", fontSize: 20, color: COLORS.textPrimary }}>Staff Login Required</h2>
           <p style={{ margin: "0 0 24px 0", fontSize: 15, color: COLORS.textSecondary, lineHeight: 1.5 }}>
-            No active staff session. Please login from the Register page first.
+            {isKds
+              ? "Kitchen Display uses the same staff session as the register. Log in on Register first."
+              : "No active staff session. Please login from the Register page first."}
           </p>
           <button
             type="button"
@@ -840,6 +870,112 @@ export default function OrdersClient() {
           >
             Go to Register
           </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (isKds) {
+    const syncLabel = lastSyncAt
+      ? new Date(lastSyncAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+      : null;
+    const showOfflineBanner = Boolean(error && hasLoadedOnce);
+    return (
+      <div
+        style={{
+          padding: "clamp(10px, 1.5vw, 20px)",
+          flex: 1,
+          minHeight: 0,
+          minWidth: 0,
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+          boxSizing: "border-box",
+          background: COLORS.bgDarkest,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            marginBottom: 12,
+            flexShrink: 0,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+            <h1 style={{ margin: 0, fontSize: 28, fontWeight: 800, color: COLORS.textPrimary }}>Kitchen</h1>
+            <span
+              style={{
+                fontSize: 15,
+                fontWeight: 700,
+                padding: "6px 12px",
+                borderRadius: 8,
+                background: showOfflineBanner ? "rgba(239,68,68,0.2)" : "rgba(34,197,94,0.2)",
+                color: showOfflineBanner ? "#fecaca" : "#86efac",
+              }}
+            >
+              {showOfflineBanner ? "Reconnecting…" : "Live"}
+            </span>
+            {syncLabel && (
+              <span style={{ fontSize: 15, color: COLORS.textSecondary }}>Last sync {syncLabel}</span>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => router.push("/pos/orders")}
+            style={{
+              minHeight: 48,
+              padding: "0 20px",
+              fontSize: 16,
+              fontWeight: 700,
+              background: COLORS.bgPanel,
+              color: COLORS.textPrimary,
+              border: `2px solid ${COLORS.borderLight}`,
+              borderRadius: 10,
+              cursor: "pointer",
+            }}
+          >
+            Orders screen
+          </button>
+        </div>
+
+        {showOfflineBanner && (
+          <div
+            style={{
+              padding: 14,
+              marginBottom: 12,
+              background: "rgba(127,29,29,0.5)",
+              border: `1px solid ${COLORS.error}`,
+              borderRadius: 8,
+              color: "#fecaca",
+              fontSize: 16,
+              flexShrink: 0,
+            }}
+          >
+            <strong>POS unreachable.</strong> Showing the last successful load. Retrying every few seconds…
+            {error && (
+              <span style={{ display: "block", marginTop: 6, fontSize: 14, opacity: 0.9 }}>
+                {error}
+              </span>
+            )}
+          </div>
+        )}
+
+        <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          {loading && !hasLoadedOnce ? (
+            <p style={{ color: COLORS.textSecondary, fontSize: 18, padding: 16 }}>Loading kitchen queue…</p>
+          ) : (
+            <KdsBoard
+              pendingItems={pendingItems}
+              bumpingOrderId={bumpingOrderId}
+              bumpingTxId={bumpingKdsTxId}
+              onBumpOrder={handleKdsBumpOrder}
+              onBumpTransaction={handleKdsBumpTransaction}
+            />
+          )}
         </div>
       </div>
     );

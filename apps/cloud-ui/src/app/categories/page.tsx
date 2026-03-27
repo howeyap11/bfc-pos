@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api, type Category, type SubCategory, normalizeSubCategories } from "@/lib/api";
+import { isCloudAdminRole } from "@/lib/cloudAdminRole";
 import { SortableList, DragHandle } from "@/components/SortableList";
 
 function slugFromName(name: string): string {
@@ -116,6 +117,7 @@ export default function CategoriesPage() {
   }
 
   const safeCategories = Array.isArray(categories) ? categories : [];
+  const canDeleteCategoryOrSubcategory = isCloudAdminRole();
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-6">
@@ -179,13 +181,15 @@ export default function CategoriesPage() {
                       ({subs.map((s) => s.name).join(", ")})
                     </span>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => handleDeleteCategory(cat)}
-                    className="ml-auto rounded border border-red-200 px-2 py-1 text-xs text-red-600 hover:bg-red-50"
-                  >
-                    Delete
-                  </button>
+                  {canDeleteCategoryOrSubcategory && (
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteCategory(cat)}
+                      className="ml-auto rounded border border-red-200 px-2 py-1 text-xs text-red-600 hover:bg-red-50"
+                    >
+                      Delete
+                    </button>
+                  )}
                 </div>
                 {isExpanded && (
                   <div className="border-t px-3 pb-3 pt-2">
@@ -212,13 +216,15 @@ export default function CategoriesPage() {
                             <DragHandle dragHandleProps={dragHandleProps} className="rounded p-0.5" />
                             <span>{sc.name}</span>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteSubCategory(sc, cat.id)}
-                            className="text-red-600 hover:underline"
-                          >
-                            Delete
-                          </button>
+                          {canDeleteCategoryOrSubcategory && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteSubCategory(sc, cat.id)}
+                              className="text-red-600 hover:underline"
+                            >
+                              Delete
+                            </button>
+                          )}
                         </div>
                       )}
                     />
