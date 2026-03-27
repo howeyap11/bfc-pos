@@ -512,11 +512,11 @@ function CartItemEditorModal({
   const [specialInstructions, setSpecialInstructions] = useState(item.specialInstructions || "");
   const [customerName, setCustomerName] = useState(item.customerName || "");
 
-  // Calculate line subtotal (before discount): base + options + shots upcharge
+  // Calculate line subtotal (before discount): base + options.
+  // optionTotalCents already includes shots upcharge when applicable.
   const unitPrice =
     item.basePrice +
-    (item.optionTotalCents || 0) +
-    (item.shotsUpchargeCents || 0);
+    (item.optionTotalCents || 0);
   const lineSubtotal = unitPrice * qty;
 
   // Helper to round to 2 decimals
@@ -2530,6 +2530,40 @@ export default function PosRegisterClient() {
     return 0;
   }
 
+  function debugShotPricing(args: {
+    context: "hasSizes" | "noSizes";
+    itemName: string;
+    shotCount: number;
+    includedShots: number;
+    shotPricingRule?: { shotsPerBundle: number; priceCentsPerBundle: number } | null;
+    computedShotTotalCents: number;
+    basePriceCents: number;
+    optionsWithoutShotsCents: number;
+    qty: number;
+  }) {
+    if (process.env.NODE_ENV !== "development") return;
+    const chargedShots = resolveChargeableExtraShots({
+      selectedShots: args.shotCount,
+      includedShots: args.includedShots,
+    });
+    const shotPricePerBundleCents = args.shotPricingRule?.priceCentsPerBundle ?? 4000;
+    const estimatedLineTotalCents =
+      (args.basePriceCents + args.optionsWithoutShotsCents + args.computedShotTotalCents) * args.qty;
+    console.log("[ShotsPricing]", {
+      context: args.context,
+      itemName: args.itemName,
+      shotCount: args.shotCount,
+      includedShots: args.includedShots,
+      chargedShots,
+      shotPricePerBundleCents,
+      computedShotTotalCents: args.computedShotTotalCents,
+      basePriceCents: args.basePriceCents,
+      optionsWithoutShotsCents: args.optionsWithoutShotsCents,
+      qty: args.qty,
+      estimatedLineTotalCents,
+    });
+  }
+
   /** Resolve substitute price for a size/mode when available (e.g. 70 regular, 180 1-liter). Matches by sizeCloudId first, then by sizeLabel so 1-liter/concentrated get correct price. */
   function getSubstitutePriceCents(
     sub: SubstituteOption | undefined | null,
@@ -2627,6 +2661,17 @@ export default function PosRegisterClient() {
         includedShotsHasSizes,
         configuringItem.shotPricingRule
       );
+      debugShotPricing({
+        context: "hasSizes",
+        itemName: configuringItem.name,
+        shotCount: configShotsQty,
+        includedShots: includedShotsHasSizes,
+        shotPricingRule: configuringItem.shotPricingRule,
+        computedShotTotalCents: shotsUpchargeHasSizes,
+        basePriceCents: unitPrice,
+        optionsWithoutShotsCents: optionTotalCentsHasSizes,
+        qty: configQty,
+      });
       optionTotalCentsHasSizes += shotsUpchargeHasSizes;
 
       const newItem: CartItem = {
@@ -2757,6 +2802,17 @@ export default function PosRegisterClient() {
       includedShotsNoSizes,
       configuringItem.shotPricingRule
     );
+    debugShotPricing({
+      context: "noSizes",
+      itemName: configuringItem.name,
+      shotCount: configShotsQty,
+      includedShots: includedShotsNoSizes,
+      shotPricingRule: configuringItem.shotPricingRule,
+      computedShotTotalCents: shotsUpchargeCents,
+      basePriceCents: configuringItem.basePrice,
+      optionsWithoutShotsCents: optionTotalCents,
+      qty: configQty,
+    });
     optionTotalCents += shotsUpchargeCents;
 
     // Per-line surcharge from selected transaction type (cloud-synced priceDeltaCents)
@@ -2820,11 +2876,10 @@ export default function PosRegisterClient() {
   }
 
   function calculateLineTotal(item: CartItem) {
-    // Base price (or size price for hasSizes) + options (milk, add-ons, etc.) + shots upcharge
+    // Base price (or size price for hasSizes) + options (milk, add-ons, shots, etc.)
     const unitPrice =
       item.basePrice +
-      (item.optionTotalCents || 0) +
-      (item.shotsUpchargeCents || 0);
+      (item.optionTotalCents || 0);
     const subtotal = unitPrice * item.qty;
     const discount = item.discountAmount || 0;
     const surchargeCents = item.surchargeCents || 0;
@@ -5875,8 +5930,7 @@ function TransactionSuccessPanel({
                     Math.max(
                       0,
                       ((item.basePrice || 0) +
-                        (item.optionTotalCents || 0) +
-                        (item.shotsUpchargeCents || 0)) *
+                        (item.optionTotalCents || 0)) *
                         (item.qty || 1) -
                         (item.discountAmount || 0) +
                         ((item.surchargeCents || 0) * (item.qty || 1))
