@@ -1,5 +1,5 @@
-import StaffClient from "./staff-client";
+import StaffHomeClient from "./staff-home-client";
 
 export default function StaffPage() {
-  return <StaffClient />;
+  return <StaffHomeClient />;
 }

@@ -1,5 +1,6 @@
-import OrdersClient from "../orders/orders-client";
+import { redirect } from "next/navigation";
 
-export default function KitchenDisplayPage() {
-  return <OrdersClient variant="kds" />;
+/** Bookmarks to legacy /pos/kds → unified tablet kitchen (no duplicated UI). */
+export default function PosKdsRedirectPage() {
+  redirect("/tablet/kitchen");
 }

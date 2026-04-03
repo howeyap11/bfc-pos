@@ -1229,6 +1229,31 @@ export default function SettingsClient() {
 
               <div style={{ marginBottom: 24, paddingTop: 24, borderTop: `1px solid ${COLORS.borderLight}` }}>
                 <h3 style={{ fontSize: 16, marginBottom: 12, color: COLORS.textSecondary }}>
+                  Staff portal (tablet fallback)
+                </h3>
+                <p style={{ color: COLORS.textSecondary, marginBottom: 12, fontSize: 14, lineHeight: 1.5 }}>
+                  Employees should use the staff app on their phones at <strong style={{ color: COLORS.textPrimary }}>/staff</strong>.
+                  Use this link on the tablet only if someone has no phone.
+                </p>
+                <a
+                  href="/staff"
+                  style={{
+                    display: "inline-block",
+                    padding: "12px 16px",
+                    background: COLORS.bgDark,
+                    color: COLORS.primary,
+                    border: `1px solid ${COLORS.borderLight}`,
+                    borderRadius: 6,
+                    fontWeight: 600,
+                    textDecoration: "none",
+                  }}
+                >
+                  Open staff portal
+                </a>
+              </div>
+
+              <div style={{ marginBottom: 24, paddingTop: 24, borderTop: `1px solid ${COLORS.borderLight}` }}>
+                <h3 style={{ fontSize: 16, marginBottom: 12, color: COLORS.textSecondary }}>
                   Sticker print categories
                 </h3>
                 <p style={{ color: COLORS.textSecondary, marginBottom: 12, fontSize: 14 }}>

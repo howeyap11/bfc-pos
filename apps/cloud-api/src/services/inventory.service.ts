@@ -3,6 +3,9 @@
  * - Stock = SUM(quantityDeltaBaseUnit) per ingredient + location
  * - Idempotent sale deduction via sourceType + sourceId
  * - No silent overwrite; corrections use reversing entries
+ *
+ * Staff manual counts (SyncedInventoryCountSession via sync) carry shiftType + businessDate for daily
+ * beginning/end audit. Future: tie POS inventory reports to those sessions (variance / prior-day basis).
  */
 import type { PrismaClient, StockMovementType } from "@prisma/client";
 

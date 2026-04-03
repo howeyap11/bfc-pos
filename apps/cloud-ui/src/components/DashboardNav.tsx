@@ -10,7 +10,7 @@ const nav = [
   { href: "/transactions", label: "Transactions", icon: IconReceipt },
   { href: "/ingredients", label: "Ingredients", icon: IconFlask },
   { href: "/inventory", label: "Inventory", icon: IconPackage },
-  { href: "/staff-ops", label: "Staff Ops", icon: IconUser },
+  { href: "/staff-ops", label: "Work Log", icon: IconUser },
   { href: "/menu-settings/sizes", label: "Menu Settings", icon: IconSettings, matchPrefix: "/menu-settings" },
   { href: "/settings", label: "Settings", icon: IconSettings },
 ];

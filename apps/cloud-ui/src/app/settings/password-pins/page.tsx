@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { COLORS } from "@/lib/theme";
-import { getCloudAdminRoleFromToken } from "@/lib/cloudAdminRole";
+import { getCloudAdminIdFromToken, getCloudAdminRoleFromToken } from "@/lib/cloudAdminRole";
 
 export default function PasswordPinsPage() {
   const [configured, setConfigured] = useState(false);
@@ -30,6 +30,8 @@ export default function PasswordPinsPage() {
   const [accountError, setAccountError] = useState("");
   const [accountSuccess, setAccountSuccess] = useState("");
   const isAdmin = getCloudAdminRoleFromToken() === "ADMIN";
+  const myAdminId = getCloudAdminIdFromToken();
+  const systemAdminCount = accounts.filter((a) => a.role === "ADMIN").length;
 
   useEffect(() => {
     api.getAdminPinConfigured().then((r) => { setConfigured(r.configured); setLoading(false); }).catch(() => setLoading(false));
@@ -326,34 +328,50 @@ export default function PasswordPinsPage() {
             <p className="text-sm text-white/50">Loading accounts…</p>
           ) : (
             <div className="space-y-2">
-              {accounts.map((acc) => (
-                <div key={acc.id} className="flex items-center justify-between rounded border border-white/10 px-3 py-2">
+              {accounts.map((acc) => {
+                const isSoleAdmin = acc.role === "ADMIN" && systemAdminCount === 1;
+                const isSelf = myAdminId != null && acc.id === myAdminId;
+                const deleteBlocked = isSoleAdmin || isSelf;
+                const blockReason = isSoleAdmin
+                  ? "Sole ADMIN — cannot delete (at least one ADMIN required)."
+                  : isSelf
+                    ? "Current account — cannot delete."
+                    : "";
+                return (
+                <div key={acc.id} className="flex items-center justify-between gap-3 rounded border border-white/10 px-3 py-2">
                   <div>
                     <div className="text-sm text-white">{acc.email}</div>
                     <div className="text-xs text-white/60">{acc.role}</div>
                   </div>
-                  <button
-                    type="button"
-                    className="rounded border border-red-500/50 px-3 py-1 text-xs text-red-300 hover:bg-red-500/10"
-                    onClick={async () => {
-                      if (!confirm(`Delete account ${acc.email}?`)) return;
-                      setAccountError("");
-                      setAccountSuccess("");
-                      try {
-                        await api.deleteAdminAccount(acc.id);
-                        const refreshed = await api.getAdminAccounts();
-                        setAccounts(refreshed.accounts ?? []);
-                        setAccountSuccess("Account deleted.");
-                      } catch (err: unknown) {
-                        const body = (err as { body?: { message?: string } })?.body;
-                        setAccountError(body?.message ?? (err instanceof Error ? err.message : "Failed to delete account"));
-                      }
-                    }}
-                  >
-                    Delete
-                  </button>
+                  {deleteBlocked ? (
+                    <span className="shrink-0 text-right text-xs text-white/45" title={blockReason}>
+                      {blockReason}
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="shrink-0 rounded border border-red-500/50 px-3 py-1 text-xs text-red-300 hover:bg-red-500/10"
+                      onClick={async () => {
+                        if (!confirm(`Delete account ${acc.email}?`)) return;
+                        setAccountError("");
+                        setAccountSuccess("");
+                        try {
+                          await api.deleteAdminAccount(acc.id);
+                          const refreshed = await api.getAdminAccounts();
+                          setAccounts(refreshed.accounts ?? []);
+                          setAccountSuccess("Account deleted.");
+                        } catch (err: unknown) {
+                          const body = (err as { body?: { message?: string } })?.body;
+                          setAccountError(body?.message ?? (err instanceof Error ? err.message : "Failed to delete account"));
+                        }
+                      }}
+                    >
+                      Delete
+                    </button>
+                  )}
                 </div>
-              ))}
+                );
+              })}
               {accounts.length === 0 && <p className="text-sm text-white/50">No accounts found.</p>}
             </div>
           )}

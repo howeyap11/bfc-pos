@@ -160,9 +160,19 @@ function OrdersCartLineItem({ item }: { item: CartItem }) {
   );
 }
 
-export default function OrdersClient({ variant = "default" }: { variant?: "default" | "kds" }) {
+export default function OrdersClient({
+  variant = "default",
+  kdsExitHref = "/tablet/pending",
+}: {
+  variant?: "default" | "kds" | "tabletPending" | "tabletQr";
+  /** Shown on Kitchen display header (tablet shell). */
+  kdsExitHref?: string;
+}) {
   const router = useRouter();
   const isKds = variant === "kds";
+  const isTabletPending = variant === "tabletPending";
+  const isTabletQr = variant === "tabletQr";
+  const isTabletOrders = isTabletPending || isTabletQr;
   const [activeStaff, setActiveStaff] = useState<{ staffKey: string } | null>(null);
   const [innerTab, setInnerTab] = useState<"qr" | "pending">("qr");
   const [orders, setOrders] = useState<PosOrder[]>([]);
@@ -184,7 +194,7 @@ export default function OrdersClient({ variant = "default" }: { variant?: "defau
   const loadOrdersInFlight = useRef(false);
   const kdsPrevIdsRef = useRef<Set<string> | null>(null);
 
-  const effectiveTab = isKds ? "pending" : innerTab;
+  const effectiveTab = isKds || isTabletPending ? "pending" : isTabletQr ? "qr" : innerTab;
 
   useEffect(() => {
     try {
@@ -240,7 +250,7 @@ export default function OrdersClient({ variant = "default" }: { variant?: "defau
       const orderList = Array.isArray(data) ? data : (data.orders ?? []);
       const pendingTxList = Array.isArray(data) ? [] : (data.pendingTransactions ?? []);
       setOrders((prev) => {
-        if (!isKds && hasLoadedOnce && orderList.length > prev.length) {
+        if (!isKds && !isTabletOrders && hasLoadedOnce && orderList.length > prev.length) {
           setNewOrderBadge((b) => b + (orderList.length - prev.length));
         }
         return orderList;
@@ -273,11 +283,12 @@ export default function OrdersClient({ variant = "default" }: { variant?: "defau
       }
       setError(msg);
       // Keep last successful orders / pending data visible during transient API issues
+      // KDS: do not update kdsPrevIdsRef on failure — avoids replaying "new order" chimes after reconnect for known tickets.
     } finally {
       loadOrdersInFlight.current = false;
       setLoading(false);
     }
-  }, [activeStaff?.staffKey, effectiveTab, hasLoadedOnce, isKds]);
+  }, [activeStaff?.staffKey, effectiveTab, hasLoadedOnce, isKds, isTabletOrders]);
 
   useEffect(() => {
     if (!activeStaff?.staffKey) {
@@ -861,7 +872,9 @@ export default function OrdersClient({ variant = "default" }: { variant?: "defau
           <p style={{ margin: "0 0 24px 0", fontSize: 15, color: COLORS.textSecondary, lineHeight: 1.5 }}>
             {isKds
               ? "Kitchen Display uses the same staff session as the register. Log in on Register first."
-              : "No active staff session. Please login from the Register page first."}
+              : isTabletOrders
+                ? "Orders on this tablet use the same staff session as the register. Log in on Register or use Staff on the tablet menu."
+                : "No active staff session. Please login from the Register page first."}
           </p>
           <button
             type="button"
@@ -925,7 +938,7 @@ export default function OrdersClient({ variant = "default" }: { variant?: "defau
           </div>
           <button
             type="button"
-            onClick={() => router.push("/pos/orders")}
+            onClick={() => router.push(kdsExitHref)}
             style={{
               minHeight: 48,
               padding: "0 20px",
@@ -938,7 +951,7 @@ export default function OrdersClient({ variant = "default" }: { variant?: "defau
               cursor: "pointer",
             }}
           >
-            Orders screen
+            Pending orders
           </button>
         </div>
 
@@ -981,10 +994,12 @@ export default function OrdersClient({ variant = "default" }: { variant?: "defau
     );
   }
 
+  const pad = isTabletOrders ? "clamp(16px, 2vw, 28px)" : "clamp(12px, 2.5vw, 24px)";
+
   return (
     <div
       style={{
-        padding: "clamp(12px, 2.5vw, 24px)",
+        padding: pad,
         flex: 1,
         minHeight: 0,
         minWidth: 0,
@@ -995,9 +1010,18 @@ export default function OrdersClient({ variant = "default" }: { variant?: "defau
         background: COLORS.bgDarkest,
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 24 }}>
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 600, color: COLORS.textPrimary }}>Orders</h1>
-        {newOrderBadge > 0 && (
+      <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: isTabletOrders ? 16 : 24 }}>
+        <h1
+          style={{
+            margin: 0,
+            fontSize: isTabletOrders ? 28 : 22,
+            fontWeight: isTabletOrders ? 800 : 600,
+            color: COLORS.textPrimary,
+          }}
+        >
+          {isTabletPending ? "Pending orders" : isTabletQr ? "QR orders" : "Orders"}
+        </h1>
+        {!isTabletOrders && newOrderBadge > 0 && (
           <span
             onClick={clearNewOrderBadge}
             style={{ padding: "4px 10px", fontSize: 13, fontWeight: "600", background: COLORS.primary, color: "#fff", borderRadius: 20, cursor: "pointer" }}
@@ -1007,6 +1031,7 @@ export default function OrdersClient({ variant = "default" }: { variant?: "defau
         )}
       </div>
 
+      {!isTabletOrders && (
       <div style={{ display: "flex", gap: 8, marginBottom: 24, borderBottom: `1px solid ${COLORS.borderLight}`, paddingBottom: 16 }}>
         <button
           type="button"
@@ -1041,6 +1066,7 @@ export default function OrdersClient({ variant = "default" }: { variant?: "defau
           Pending Orders
         </button>
       </div>
+      )}
 
       {error && (
         <div style={{ padding: 12, marginBottom: 16, background: "#7f1d1d", border: `1px solid ${COLORS.error}`, borderRadius: 6, color: "#fecaca" }}>
@@ -1060,7 +1086,7 @@ export default function OrdersClient({ variant = "default" }: { variant?: "defau
             overflowY: "hidden",
             alignItems: "stretch",
             paddingBottom: 8,
-            borderRight: "2px solid #2a2a2a",
+            borderRight: isTabletPending ? "none" : "2px solid #2a2a2a",
           }}
         >
           {loading ? (
@@ -1097,6 +1123,7 @@ export default function OrdersClient({ variant = "default" }: { variant?: "defau
           )}
         </div>
 
+        {!isTabletPending && (
         <div
           style={{
             flexShrink: 0,
@@ -1169,6 +1196,7 @@ export default function OrdersClient({ variant = "default" }: { variant?: "defau
             </>
           )}
         </div>
+        )}
       </div>
     </div>
   );

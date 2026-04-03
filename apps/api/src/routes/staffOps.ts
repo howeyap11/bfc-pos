@@ -1,9 +1,15 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { z } from "zod";
 import { enqueueOutbox } from "../services/outbox.service";
 import { canAuditStaffOps, canManageStaffOps } from "../lib/staffRoles";
+import { staffBusinessDateKey } from "../lib/staffBusinessDate";
+import { resolveManualInventoryShiftType } from "../lib/manualInventoryShiftType";
 import { decodeBase64Image, saveStaffMedia, toRelativeStaffMediaPath } from "../services/localStaffMedia.service";
 import { requireStaffHook } from "../plugins/staffGuard";
+
+const STAFF_MEDIA_ABS_ROOT = path.resolve(process.cwd(), "storage", "staff-media");
 
 const STORE_ID = "store_1";
 
@@ -37,6 +43,24 @@ function ensureStaff(req: StaffReq, reply: FastifyReply): { id: string; cloudId:
 
 export async function staffOpsRoutes(app: FastifyInstance) {
   app.addHook("preHandler", requireStaffHook);
+
+  /** Synced cloud ingredients (local cache) for waste / counts — no free-text inventory IDs */
+  app.get("/staff/inventory/ingredients", async (req, reply) => {
+    const staff = ensureStaff(req as StaffReq, reply);
+    if (!staff) return;
+    const storeId = getStoreId(req as StaffReq);
+    const rows = await app.prisma.cloudIngredient.findMany({
+      where: { storeId, isActive: true, deletedAt: null },
+      orderBy: { name: "asc" },
+      select: { cloudId: true, name: true, unitCode: true, imageUrl: true },
+    });
+    return rows.map((r) => ({
+      cloudId: r.cloudId,
+      name: r.name,
+      unitCode: r.unitCode,
+      imageUrl: r.imageUrl ?? null,
+    }));
+  });
 
   app.post("/staff/attendance/time-in", async (req, reply) => {
     const staff = ensureStaff(req as StaffReq, reply);
@@ -117,6 +141,38 @@ export async function staffOpsRoutes(app: FastifyInstance) {
     });
   });
 
+  /** Serve local attendance selfie file for the signed-in staff member only. */
+  app.get("/staff/attendance/event/:eventId/selfie", async (req, reply) => {
+    const staff = ensureStaff(req as StaffReq, reply);
+    if (!staff) return;
+    const { eventId } = req.params as { eventId: string };
+    const storeId = getStoreId(req as StaffReq);
+    const row = await app.prisma.staffAttendanceEvent.findFirst({
+      where: {
+        id: eventId,
+        storeId,
+        staffName: staff.name,
+        selfieLocalPath: { not: null },
+      },
+      select: { selfieLocalPath: true },
+    });
+    if (!row?.selfieLocalPath) return reply.code(404).send({ error: "NOT_FOUND" });
+    const rel = row.selfieLocalPath.replace(/^\.\//, "");
+    const abs = path.resolve(process.cwd(), rel);
+    if (!abs.startsWith(STAFF_MEDIA_ABS_ROOT)) {
+      return reply.code(403).send({ error: "INVALID_PATH" });
+    }
+    try {
+      const buf = await readFile(abs);
+      const ext = path.extname(abs).toLowerCase();
+      const mime =
+        ext === ".png" ? "image/png" : ext === ".webp" ? "image/webp" : ext === ".gif" ? "image/gif" : "image/jpeg";
+      return reply.type(mime).send(buf);
+    } catch {
+      return reply.code(404).send({ error: "FILE_MISSING" });
+    }
+  });
+
   app.get("/staff/attendance/store/today", async (req, reply) => {
     if (!requireManagerOrAuditor(req as StaffReq, reply)) return;
     const start = new Date();
@@ -136,7 +192,7 @@ export async function staffOpsRoutes(app: FastifyInstance) {
       .object({
         itemType: z.enum(["INVENTORY_ITEM", "MENU_ITEM", "OTHER"]),
         inventoryItemCloudId: z.string().optional(),
-        inventoryItemName: z.string().min(1),
+        inventoryItemName: z.string().optional(),
         quantity: z.string().min(1),
         unit: z.string().optional(),
         reason: z.string().min(1),
@@ -146,6 +202,27 @@ export async function staffOpsRoutes(app: FastifyInstance) {
       })
       .safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: "INVALID_BODY", details: parsed.error.flatten() });
+    const storeId = getStoreId(req as StaffReq);
+    let inventoryItemName = (parsed.data.inventoryItemName ?? "").trim();
+    let inventoryItemCloudId = (parsed.data.inventoryItemCloudId ?? "").trim();
+    let unitOut: string | null = parsed.data.unit ?? null;
+    if (parsed.data.itemType === "INVENTORY_ITEM") {
+      if (!inventoryItemCloudId) {
+        return reply.code(400).send({ error: "MISSING_INVENTORY_ITEM", message: "Select an item from synced inventory." });
+      }
+      const ing = await app.prisma.cloudIngredient.findFirst({
+        where: { storeId, cloudId: inventoryItemCloudId, deletedAt: null, isActive: true },
+      });
+      if (!ing) {
+        return reply.code(400).send({ error: "INVALID_INVENTORY_ITEM", message: "Item not in local synced inventory." });
+      }
+      inventoryItemName = ing.name;
+      unitOut = ing.unitCode;
+    } else {
+      if (!inventoryItemName) {
+        return reply.code(400).send({ error: "INVALID_BODY", message: "inventoryItemName required for this item type." });
+      }
+    }
     const decoded = decodeBase64Image(parsed.data.imageBase64);
     const filePath = await saveStaffMedia({
       folder: "waste",
@@ -154,14 +231,14 @@ export async function staffOpsRoutes(app: FastifyInstance) {
     });
     const row = await app.prisma.wasteReport.create({
       data: {
-        storeId: getStoreId(req as StaffReq),
+        storeId,
         staffCloudId: staff.cloudId,
         staffName: staff.name,
         itemType: parsed.data.itemType,
-        inventoryItemCloudId: parsed.data.inventoryItemCloudId ?? null,
-        inventoryItemName: parsed.data.inventoryItemName,
+        inventoryItemCloudId: inventoryItemCloudId || null,
+        inventoryItemName,
         quantity: parsed.data.quantity,
-        unit: parsed.data.unit ?? null,
+        unit: unitOut,
         reason: parsed.data.reason,
         notes: parsed.data.notes ?? null,
         imageLocalPath: toRelativeStaffMediaPath(filePath),
@@ -196,13 +273,20 @@ export async function staffOpsRoutes(app: FastifyInstance) {
     });
   });
 
+  /**
+   * Manual inventory count (staff phone / POS):
+   * - Web: StaffFullInventoryCount + InventoryCountForm POST JSON to /staff/inventory-count-sessions (rewritten from Next /api/*).
+   * - Persisted: StaffInventoryCountSession + lines in local SQLite; session notes removed — only line-level notes remain on lines.
+   * - Outbox: topic staffops.inventory-count.sync → staffOpsSync.uploadInventoryCount → POST cloud /sync/staff-ops/inventory-count-sessions.
+   * - Cloud: SyncedInventoryCountSession (+ lines); ingest schema in cloud-api routes/sync.ts.
+   * - shiftType + businessDate: computed here (see manualInventoryShiftType.ts, staffBusinessDate.ts).
+   */
   app.post("/staff/inventory-count-sessions", async (req, reply) => {
     const staff = ensureStaff(req as StaffReq, reply);
     if (!staff) return;
     const parsed = z
       .object({
         source: z.enum(["STAFF_UI", "POS"]).default("STAFF_UI"),
-        notes: z.string().optional(),
         countedAt: z.string().optional(),
         lines: z
           .array(
@@ -221,14 +305,33 @@ export async function staffOpsRoutes(app: FastifyInstance) {
       .safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: "INVALID_BODY", details: parsed.error.flatten() });
 
+    const storeId = getStoreId(req as StaffReq);
+    const countedAt = parsed.data.countedAt ? new Date(parsed.data.countedAt) : new Date();
+    const businessDate = staffBusinessDateKey(countedAt);
+
+    const assignments =
+      staff.cloudId != null && staff.cloudId !== ""
+        ? await app.prisma.staffShiftLocal.findMany({
+            where: { storeId, staffCloudId: staff.cloudId },
+            orderBy: { shiftDate: "desc" },
+            take: 40,
+            select: { shiftDate: true, shiftType: true },
+          })
+        : [];
+
+    const shiftType = resolveManualInventoryShiftType({ submittedAt: countedAt, assignments });
+
     const session = await app.prisma.staffInventoryCountSession.create({
       data: {
-        storeId: getStoreId(req as StaffReq),
+        storeId,
         submittedByStaffCloudId: staff.cloudId,
+        submittedByLocalStaffId: staff.id,
         submittedByStaffName: staff.name,
         source: parsed.data.source,
-        notes: parsed.data.notes ?? null,
-        countedAt: parsed.data.countedAt ? new Date(parsed.data.countedAt) : new Date(),
+        notes: null,
+        shiftType,
+        businessDate,
+        countedAt,
         lines: {
           create: parsed.data.lines.map((l) => ({
             inventoryItemCloudId: l.inventoryItemCloudId,

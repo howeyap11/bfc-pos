@@ -434,6 +434,8 @@ export type DeviceCommandRow = {
   completedAt: string | null;
 };
 
+export type CloudStaffGroupRef = { id: string; name: string };
+
 export type CloudStaffRow = {
   id: string;
   name: string;
@@ -442,6 +444,18 @@ export type CloudStaffRow = {
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
+  groupId?: string | null;
+  staffGroup?: CloudStaffGroupRef | null;
+};
+
+export type CloudStaffGroupRow = {
+  id: string;
+  name: string;
+  description: string | null;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+  _count: { staff: number };
 };
 
 export type CloudAdminAccount = {
@@ -1156,8 +1170,31 @@ export const api = {
   getStaffById(id: string): Promise<CloudStaffRow> {
     return apiFetch(`/admin/staff/${id}`);
   },
-  patchStaff(id: string, body: { name?: string; email?: string | null; passcode?: string; role?: string; isActive?: boolean }): Promise<CloudStaffRow> {
+  patchStaff(id: string, body: {
+    name?: string;
+    email?: string | null;
+    passcode?: string;
+    role?: string;
+    isActive?: boolean;
+    groupId?: string | null;
+  }): Promise<CloudStaffRow> {
     return apiFetch(`/admin/staff/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+  },
+
+  getStaffGroups(): Promise<{ groups: CloudStaffGroupRow[] }> {
+    return apiFetch("/admin/staff-groups");
+  },
+  createStaffGroup(body: { name: string; description?: string | null }): Promise<CloudStaffGroupRow> {
+    return apiFetch("/admin/staff-groups", { method: "POST", body: JSON.stringify(body) });
+  },
+  patchStaffGroup(
+    id: string,
+    body: { name?: string; description?: string | null; isActive?: boolean }
+  ): Promise<CloudStaffGroupRow> {
+    return apiFetch(`/admin/staff-groups/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+  },
+  deleteStaffGroup(id: string): Promise<void> {
+    return apiFetch(`/admin/staff-groups/${id}`, { method: "DELETE" });
   },
 
   getMonthlyReport(params: { storeId?: string; year?: number; month?: number }): Promise<MonthlyReport> {

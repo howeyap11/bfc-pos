@@ -79,9 +79,14 @@ const inventoryCountIngestSchema = z.object({
   storeId: z.string().min(1),
   sourceSessionId: z.string().min(1),
   submittedByStaffCloudId: z.string().nullable().optional(),
+  submittedByLocalStaffId: z.string().nullable().optional(),
   submittedByStaffName: z.string().min(1),
   source: z.string().default("STAFF_UI"),
   notes: z.string().nullable().optional(),
+  shiftType: z.string().nullable().optional(),
+  businessDate: z.string().nullable().optional(),
+  timeSubmitted: z.string().optional(),
+  auditSource: z.string().optional(),
   countedAt: z.string(),
   lines: z.array(z.record(z.string(), z.any())).min(1),
 });
@@ -207,7 +212,16 @@ export async function syncRoutes(app: FastifyInstance) {
         app.prisma.staff.findMany({
           where: { storeId: "store_1" },
           orderBy: { name: "asc" },
-          select: { id: true, name: true, email: true, passcode: true, role: true, isActive: true, updatedAt: true },
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            passcode: true,
+            passcodeHash: true,
+            role: true,
+            isActive: true,
+            updatedAt: true,
+          },
         }),
       ]);
 
@@ -346,6 +360,7 @@ export async function syncRoutes(app: FastifyInstance) {
           name: s.name,
           email: s.email ?? null,
           passcode: s.passcode,
+          passcodeHash: s.passcodeHash ?? null,
           role: s.role,
           isActive: s.isActive,
           updatedAt: s.updatedAt.toISOString(),
@@ -618,9 +633,12 @@ export async function syncRoutes(app: FastifyInstance) {
           sourceLocalId: d.sourceSessionId,
           storeId: d.storeId,
           submittedByStaffCloudId: d.submittedByStaffCloudId ?? null,
+          submittedByLocalStaffId: d.submittedByLocalStaffId ?? null,
           submittedByStaffName: d.submittedByStaffName,
           source: d.source,
           notes: d.notes ?? null,
+          shiftType: d.shiftType ?? null,
+          businessDate: d.businessDate ?? null,
           countedAt: new Date(d.countedAt),
         },
       });
@@ -629,9 +647,12 @@ export async function syncRoutes(app: FastifyInstance) {
         where: { id: row.id },
         data: {
           submittedByStaffCloudId: d.submittedByStaffCloudId ?? null,
+          submittedByLocalStaffId: d.submittedByLocalStaffId ?? null,
           submittedByStaffName: d.submittedByStaffName,
           source: d.source,
           notes: d.notes ?? null,
+          shiftType: d.shiftType ?? null,
+          businessDate: d.businessDate ?? null,
           countedAt: new Date(d.countedAt),
         },
       });
@@ -798,12 +819,32 @@ export async function syncRoutes(app: FastifyInstance) {
     });
     if (!countRow) {
       countRow = await app.prisma.syncedInventoryCountSession.create({
-        data: { sourceLocalId: d.sourceSessionId, storeId: d.storeId, submittedByStaffCloudId: d.submittedByStaffCloudId ?? null, submittedByStaffName: d.submittedByStaffName, source: d.source, notes: d.notes ?? null, countedAt: new Date(d.countedAt) },
+        data: {
+          sourceLocalId: d.sourceSessionId,
+          storeId: d.storeId,
+          submittedByStaffCloudId: d.submittedByStaffCloudId ?? null,
+          submittedByLocalStaffId: d.submittedByLocalStaffId ?? null,
+          submittedByStaffName: d.submittedByStaffName,
+          source: d.source,
+          notes: d.notes ?? null,
+          shiftType: d.shiftType ?? null,
+          businessDate: d.businessDate ?? null,
+          countedAt: new Date(d.countedAt),
+        },
       });
     } else {
       countRow = await app.prisma.syncedInventoryCountSession.update({
         where: { id: countRow.id },
-        data: { submittedByStaffCloudId: d.submittedByStaffCloudId ?? null, submittedByStaffName: d.submittedByStaffName, source: d.source, notes: d.notes ?? null, countedAt: new Date(d.countedAt) },
+        data: {
+          submittedByStaffCloudId: d.submittedByStaffCloudId ?? null,
+          submittedByLocalStaffId: d.submittedByLocalStaffId ?? null,
+          submittedByStaffName: d.submittedByStaffName,
+          source: d.source,
+          notes: d.notes ?? null,
+          shiftType: d.shiftType ?? null,
+          businessDate: d.businessDate ?? null,
+          countedAt: new Date(d.countedAt),
+        },
       });
     }
     await app.prisma.syncedInventoryCountLine.deleteMany({ where: { sessionId: countRow.id } });

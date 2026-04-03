@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { api, type CloudStaffRow, STAFF_ROLES, STAFF_ROLE_LABELS } from "@/lib/api";
 import { COLORS } from "@/lib/theme";
@@ -134,6 +135,11 @@ export default function StaffPage() {
       <h1 className="mb-2 text-xl font-semibold text-white">Staff (POS Login)</h1>
       <p className="mb-6 text-sm text-white/60">
         Manage staff names and PINs. These sync to the POS for cashier login. Only active staff can log in on the POS.
+        Operational groups are managed under{" "}
+        <Link href="/staff-ops/groups" className="text-white/80 underline hover:text-white">
+          Work Log → Groups
+        </Link>
+        .
       </p>
 
       {error && (
@@ -178,6 +184,9 @@ export default function StaffPage() {
                       <span className="ml-2 text-xs text-white/50">
                         {STAFF_ROLE_LABELS[row.role] ?? row.role}
                       </span>
+                      {row.staffGroup && (
+                        <span className="ml-2 text-xs text-white/40">· {row.staffGroup.name}</span>
+                      )}
                       {!row.isActive && (
                         <span className="ml-2 text-xs text-amber-400">(inactive)</span>
                       )}

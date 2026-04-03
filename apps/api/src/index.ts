@@ -39,6 +39,7 @@ import { deviceCommandsRoutes } from "./routes/deviceCommands.js";
 import { storeConfigRoutes } from "./routes/storeConfig";
 import { systemPrintersRoutes } from "./routes/systemPrinters";
 import { snapResiboRoutes } from "./routes/snapResibo";
+import { sopRoutes } from "./routes/sop";
 import { devRoutes } from "./routes/dev.js";
 import { ownerRoutesPlugin } from "./routes/owner.js";
 import { ensureItemForCloudId } from "./services/catalogCache.service";
@@ -68,6 +69,8 @@ await app.register(staffRoutesPlugin);
 // Staff routes (protected by x-staff-key inside the route files)
 await app.register(staffQueueRoutes);
 await app.register(staffOpsRoutes);
+// Legacy POS SOP (/sop/*) — used by apps/web /sop and /api/sop/* proxies
+await app.register(sopRoutes);
 await app.register(posOrdersRoutes);
 await app.register(orderStatusRoutes);
 await app.register(functionRoomRoutes);
@@ -81,7 +84,6 @@ await app.register(deviceCommandsRoutes);
 await app.register(storeConfigRoutes);
 await app.register(systemPrintersRoutes);
 await app.register(snapResiboRoutes);
-await app.register(staffOpsRoutes);
 await app.register(devRoutes);
 await app.register(ownerRoutesPlugin);
 

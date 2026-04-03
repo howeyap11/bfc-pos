@@ -279,9 +279,9 @@ function StaffSelectorModal({
   onClose,
   busy,
 }: {
-  staffList: Array<{ id: string; name: string; role: string; passcode: string; key: string }>;
+  staffList: Array<{ id: string; name: string; role: string; key: string | null }>;
   activeStaff: { id: string; name: string; role: string; staffKey: string } | null;
-  onLogin: (staffId: string, passcode: string, staffName: string, staffRole: string) => void;
+  onLogin: (staffId: string, passcode: string, staffName: string, staffRole: string) => void | Promise<void>;
   onLogout: () => void;
   onClose: () => void;
   busy: string | null;
@@ -464,10 +464,7 @@ function StaffSelectorModal({
           {staffList.length === 0 && (
             <div style={{ padding: 24, textAlign: "center", color: "#aaa" }}>
               <p style={{ fontSize: 13 }}>No staff available</p>
-              <p style={{ fontSize: 12, marginTop: 8 }}>Default passcodes:</p>
-              <div style={{ fontSize: 12, marginTop: 12, color: "#666" }}>
-                Andrea: 1000 | John: 1001 | Maria: 1002
-              </div>
+              <p style={{ fontSize: 12, marginTop: 8 }}>Sync catalog from cloud or check POS API connection.</p>
             </div>
           )}
         </div>
@@ -1709,7 +1706,7 @@ export default function PosRegisterClient() {
 
   // Staff session
   const [activeStaff, setActiveStaff] = useState<{ id: string; name: string; role: string; staffKey: string } | null>(null);
-  const [staffList, setStaffList] = useState<Array<{ id: string; name: string; role: string; passcode: string; key: string }>>([]);
+  const [staffList, setStaffList] = useState<Array<{ id: string; name: string; role: string; key: string | null }>>([]);
   const [showStaffModal, setShowStaffModal] = useState(false);
   const [staffBusy, setStaffBusy] = useState<string | null>(null);
 
@@ -1901,7 +1898,7 @@ export default function PosRegisterClient() {
     }
   }
 
-  function handleStaffLogin(staffId: string, enteredPasscode: string, staffName: string, staffRole: string) {
+  async function handleStaffLogin(staffId: string, enteredPasscode: string, staffName: string, staffRole: string) {
     if (!enteredPasscode) {
       setError("Please enter passcode");
       return;
@@ -1910,54 +1907,49 @@ export default function PosRegisterClient() {
     setStaffBusy(staffId);
     setError(null);
 
-    // Find staff in list
     const staff = staffList.find((s) => s.id === staffId);
-    
+
     if (!staff) {
       setError("Staff not found");
       setStaffBusy(null);
       return;
     }
 
-    // Local PIN validation
-    if (enteredPasscode !== staff.passcode) {
-      setError("Invalid passcode");
-      setStaffBusy(null);
-      return;
-    }
-
-    // PIN is correct - save active staff (including staffKey for API authentication)
-    const activeStaffData = { 
-      id: staff.id, 
-      name: staff.name, 
-      role: staff.role, 
-      staffKey: staff.key // Map DB field 'key' to 'staffKey' for consistency
-    };
-    
-    console.log("[STAFF] Login successful", { 
-      name: staff.name, 
-      hasStaffKey: !!activeStaffData.staffKey,
-      staffKeyPreview: activeStaffData.staffKey?.slice(0, 10)
-    });
-    
     try {
-      const jsonString = JSON.stringify(activeStaffData);
-      localStorage.setItem("bfc_active_staff", jsonString);
-      console.log("[STAFF] Saved to localStorage:", jsonString.slice(0, 100));
+      const res = await fetch("/api/staff/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ staffId, passcode: enteredPasscode }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.error === "INVALID_PASSCODE" ? "Invalid PIN" : data.message || data.error || "Login failed");
+        setStaffBusy(null);
+        return;
+      }
+      const activeStaffData = {
+        id: data.id as string,
+        name: data.name as string,
+        role: data.role as string,
+        staffKey: data.key as string,
+        email: (data.email as string | null | undefined) ?? undefined,
+        staffCloudId: (data.cloudId as string | null | undefined) ?? undefined,
+      };
+      if (!activeStaffData.staffKey) {
+        setError("Staff has no auth key — sync staff from cloud");
+        setStaffBusy(null);
+        return;
+      }
+      localStorage.setItem("bfc_active_staff", JSON.stringify(activeStaffData));
+      setActiveStaff(activeStaffData);
+      setShowStaffModal(false);
+      setError(null);
     } catch (e) {
-      console.error("[Staff] Failed to save to localStorage", e);
+      console.error("[Staff] Login request failed", e);
+      setError("Could not reach POS API");
+    } finally {
+      setStaffBusy(null);
     }
-    
-    setActiveStaff(activeStaffData);
-    setShowStaffModal(false);
-    setError(null);
-    setStaffBusy(null);
-    
-    console.log("[Staff] Login successful - activeStaff state set:", {
-      name: staff.name,
-      hasStaffKey: !!activeStaffData.staffKey,
-      staffKeyPreview: activeStaffData.staffKey?.slice(0, 10),
-    });
   }
 
   function handleStaffLogout() {

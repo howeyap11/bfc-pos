@@ -6,6 +6,7 @@ import { z } from "zod";
 import { uploadImage } from "../services/r2.service.js";
 import { bumpCatalogVersion } from "../lib/catalogVersion.js";
 import { hashPassword, verifyPassword } from "../lib/password.js";
+import { hashStaffPin } from "../lib/staffPin.js";
 import { getDrinkSizesOptionGroup, getDrinkSizesOptionIds } from "../lib/drinkSizes.js";
 import {
   getDashboardKpis,
@@ -26,6 +27,7 @@ import {
   localBusinessDayToUtcRange,
   localBusinessMonthToUtcRange,
 } from "../lib/businessDay.js";
+import { buildWorkLogFeed, type WorkLogKind } from "../services/workLogFeed.service.js";
 
 function generateSlug(name: string): string {
   return name
@@ -185,7 +187,11 @@ export async function adminRoutes(app: FastifyInstance) {
       const adminCount = await app.prisma.adminUser.count({ where: { role: "ADMIN" } });
       if (adminCount <= 1) {
         reply.code(400);
-        return { error: "LAST_ADMIN_PROTECTED", message: "Cannot delete the last remaining ADMIN account." };
+        return {
+          error: "LAST_ADMIN_PROTECTED",
+          message:
+            "At least one ADMIN account is required. This is the only ADMIN in the system and cannot be deleted.",
+        };
       }
     }
     await app.prisma.adminUser.delete({ where: { id } });
@@ -399,6 +405,7 @@ export async function adminRoutes(app: FastifyInstance) {
     passcode: z.string().min(4, "PIN must be at least 4 characters").max(20).regex(/^\d+$/, "PIN must be digits only"),
     role: staffRoleSchema.default("BARISTA"),
     isActive: z.boolean().optional().default(true),
+    groupId: z.union([z.string().cuid(), z.null()]).optional(),
   });
   const staffUpdateSchema = z.object({
     name: z.string().min(1).max(120).trim().optional(),
@@ -406,9 +413,56 @@ export async function adminRoutes(app: FastifyInstance) {
     passcode: z.string().min(4).max(20).regex(/^\d+$/).optional(),
     role: staffRoleSchema.optional(),
     isActive: z.boolean().optional(),
+    groupId: z.union([z.string().cuid(), z.null()]).optional(),
   });
 
-  const staffSelect = { id: true, name: true, email: true, role: true, isActive: true, createdAt: true, updatedAt: true };
+  const staffSelect = {
+    id: true,
+    name: true,
+    email: true,
+    role: true,
+    isActive: true,
+    createdAt: true,
+    updatedAt: true,
+    groupId: true,
+    staffGroup: { select: { id: true, name: true } },
+  };
+
+  async function assertStaffGroupIdForStore(
+    groupId: string | null | undefined,
+    reply: FastifyReply
+  ): Promise<boolean> {
+    if (groupId === undefined || groupId === null) return true;
+    const g = await app.prisma.staffGroup.findFirst({
+      where: { id: groupId, storeId: STAFF_STORE_ID },
+      select: { id: true },
+    });
+    if (!g) {
+      reply.code(400);
+      reply.send({ error: "INVALID_GROUP", message: "Staff group not found for this store" });
+      return false;
+    }
+    return true;
+  }
+
+  const staffGroupCreateSchema = z.object({
+    name: z.string().min(1).max(120).trim(),
+    description: z.string().max(500).optional().nullable(),
+  });
+  const staffGroupUpdateSchema = z.object({
+    name: z.string().min(1).max(120).trim().optional(),
+    description: z.union([z.string().max(500), z.null()]).optional(),
+    isActive: z.boolean().optional(),
+  });
+  const staffGroupListSelect = {
+    id: true,
+    name: true,
+    description: true,
+    isActive: true,
+    createdAt: true,
+    updatedAt: true,
+    _count: { select: { staff: true } },
+  };
 
   app.get("/staff", async (req: FastifyRequest, reply: FastifyReply) => {
     const list = await app.prisma.staff.findMany({
@@ -425,21 +479,35 @@ export async function adminRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "VALIDATION_ERROR", message: parsed.error.issues.map((i) => i.message).join("; ") };
     }
-    const { name, email, passcode, role, isActive } = parsed.data;
+    const { name, passcode, role, isActive, groupId: createGroupId } = parsed.data;
+    const email = parsed.data.email != null ? String(parsed.data.email).trim().toLowerCase() : undefined;
+    if (!(await assertStaffGroupIdForStore(createGroupId === undefined ? undefined : createGroupId, reply))) {
+      return;
+    }
     const existingByName = await app.prisma.staff.findUnique({ where: { storeId_name: { storeId: STAFF_STORE_ID, name } } });
     if (existingByName) {
       reply.code(409);
       return { error: "DUPLICATE_NAME", message: "A staff member with this name already exists" };
     }
-    if (email) {
+    if (email != null) {
       const existingByEmail = await app.prisma.staff.findFirst({ where: { storeId: STAFF_STORE_ID, email } });
       if (existingByEmail) {
         reply.code(409);
         return { error: "DUPLICATE_EMAIL", message: "A staff member with this email already exists" };
       }
     }
+    const passcodeHash = hashStaffPin(passcode);
     const staff = await app.prisma.staff.create({
-      data: { storeId: STAFF_STORE_ID, name, email: email ?? null, passcode, role, isActive },
+      data: {
+        storeId: STAFF_STORE_ID,
+        name,
+        email: email ?? null,
+        passcode: "",
+        passcodeHash,
+        role,
+        isActive,
+        ...(createGroupId !== undefined ? { groupId: createGroupId } : {}),
+      },
       select: staffSelect,
     });
     return staff;
@@ -470,7 +538,9 @@ export async function adminRoutes(app: FastifyInstance) {
       reply.code(404);
       return { error: "NOT_FOUND" };
     }
-    const { name, email, passcode, role, isActive } = parsed.data;
+    const { name, email: emailRaw, passcode, role, isActive, groupId } = parsed.data;
+    const emailNormalized =
+      emailRaw === undefined ? undefined : emailRaw === null || emailRaw === "" ? null : String(emailRaw).trim().toLowerCase();
     if (name !== undefined && name !== existing.name) {
       const duplicate = await app.prisma.staff.findUnique({ where: { storeId_name: { storeId: STAFF_STORE_ID, name } } });
       if (duplicate) {
@@ -478,27 +548,134 @@ export async function adminRoutes(app: FastifyInstance) {
         return { error: "DUPLICATE_NAME", message: "A staff member with this name already exists" };
       }
     }
-    if (email !== undefined && email !== existing.email) {
-      if (email) {
-        const duplicate = await app.prisma.staff.findFirst({ where: { storeId: STAFF_STORE_ID, email } });
+    if (emailNormalized !== undefined && emailNormalized !== existing.email) {
+      if (emailNormalized) {
+        const duplicate = await app.prisma.staff.findFirst({ where: { storeId: STAFF_STORE_ID, email: emailNormalized } });
         if (duplicate) {
           reply.code(409);
           return { error: "DUPLICATE_EMAIL", message: "A staff member with this email already exists" };
         }
       }
     }
-    const updateData: { name?: string; email?: string | null; passcode?: string; role?: string; isActive?: boolean } = {};
+    const updateData: {
+      name?: string;
+      email?: string | null;
+      passcode?: string;
+      passcodeHash?: string | null;
+      role?: string;
+      isActive?: boolean;
+      groupId?: string | null;
+    } = {};
     if (name !== undefined) updateData.name = name;
-    if (email !== undefined) updateData.email = email;
-    if (passcode !== undefined) updateData.passcode = passcode;
+    if (emailNormalized !== undefined) {
+      updateData.email = emailNormalized;
+    }
+    if (passcode !== undefined) {
+      updateData.passcode = "";
+      updateData.passcodeHash = hashStaffPin(passcode);
+    }
     if (role !== undefined) updateData.role = role;
     if (isActive !== undefined) updateData.isActive = isActive;
+    if (groupId !== undefined) {
+      if (!(await assertStaffGroupIdForStore(groupId, reply))) return;
+      updateData.groupId = groupId;
+    }
     const staff = await app.prisma.staff.update({
       where: { id: req.params.id },
       data: updateData,
       select: staffSelect,
     });
     return staff;
+  });
+
+  app.get("/staff-groups", async () => {
+    const groups = await app.prisma.staffGroup.findMany({
+      where: { storeId: STAFF_STORE_ID },
+      orderBy: { name: "asc" },
+      select: staffGroupListSelect,
+    });
+    return { groups };
+  });
+
+  app.post("/staff-groups", async (req: FastifyRequest, reply: FastifyReply) => {
+    const parsed = staffGroupCreateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "VALIDATION_ERROR", message: parsed.error.issues.map((i) => i.message).join("; ") };
+    }
+    const { name, description } = parsed.data;
+    const dup = await app.prisma.staffGroup.findUnique({
+      where: { storeId_name: { storeId: STAFF_STORE_ID, name } },
+    });
+    if (dup) {
+      reply.code(409);
+      return { error: "DUPLICATE_NAME", message: "A group with this name already exists" };
+    }
+    const row = await app.prisma.staffGroup.create({
+      data: {
+        storeId: STAFF_STORE_ID,
+        name,
+        description: description?.trim() || null,
+      },
+      select: staffGroupListSelect,
+    });
+    return row;
+  });
+
+  app.patch("/staff-groups/:id", async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>, reply: FastifyReply) => {
+    const parsed = staffGroupUpdateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "VALIDATION_ERROR", message: parsed.error.issues.map((i) => i.message).join("; ") };
+    }
+    const existing = await app.prisma.staffGroup.findFirst({
+      where: { id: req.params.id, storeId: STAFF_STORE_ID },
+    });
+    if (!existing) {
+      reply.code(404);
+      return { error: "NOT_FOUND" };
+    }
+    const { name, description, isActive } = parsed.data;
+    if (name !== undefined && name !== existing.name) {
+      const dup = await app.prisma.staffGroup.findUnique({
+        where: { storeId_name: { storeId: STAFF_STORE_ID, name } },
+      });
+      if (dup) {
+        reply.code(409);
+        return { error: "DUPLICATE_NAME", message: "A group with this name already exists" };
+      }
+    }
+    const data: { name?: string; description?: string | null; isActive?: boolean } = {};
+    if (name !== undefined) data.name = name;
+    if (description !== undefined) data.description = description?.trim() || null;
+    if (isActive !== undefined) data.isActive = isActive;
+    const row = await app.prisma.staffGroup.update({
+      where: { id: req.params.id },
+      data,
+      select: staffGroupListSelect,
+    });
+    return row;
+  });
+
+  app.delete("/staff-groups/:id", async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    const existing = await app.prisma.staffGroup.findFirst({
+      where: { id: req.params.id, storeId: STAFF_STORE_ID },
+      include: { _count: { select: { staff: true } } },
+    });
+    if (!existing) {
+      reply.code(404);
+      return { error: "NOT_FOUND" };
+    }
+    if (existing._count.staff > 0) {
+      reply.code(409);
+      return {
+        error: "GROUP_IN_USE",
+        message: "Reassign or remove staff from this group before deleting",
+      };
+    }
+    await app.prisma.staffGroup.delete({ where: { id: req.params.id } });
+    reply.code(204);
+    return;
   });
 
   // MenuItem CRUD - subCategoryId required
@@ -3636,6 +3813,15 @@ export async function adminRoutes(app: FastifyInstance) {
     const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize || "10", 10) || 10));
     const { rows, total } = await getItemsSold(app.prisma, storeId, range, { sortBy, order, page, pageSize });
     return { rows, total, page, pageSize };
+  });
+
+  /** Unified audit feed (4am business-day grouping in payload). Filter: all | attendance | inventory | waste | sop | shifts | violations */
+  app.get("/work-log", async (req: FastifyRequest<{ Querystring: { filter?: string } }>) => {
+    const f = String(req.query.filter ?? "all") as WorkLogKind;
+    const allowed: WorkLogKind[] = ["all", "attendance", "inventory", "waste", "sop", "shifts", "violations"];
+    const filter = allowed.includes(f) ? f : "all";
+    const entries = await buildWorkLogFeed(app.prisma, filter);
+    return { entries };
   });
 
   app.get("/staff-ops/attendance", async () => {

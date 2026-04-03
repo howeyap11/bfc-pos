@@ -68,11 +68,10 @@ export default function PosLayout({ children }: { children: React.ReactNode }) {
   const menuItems = [
     { label: "Register", route: "/pos/register" },
     { label: "Orders", route: "/pos/orders" },
-    { label: "Kitchen (KDS)", route: "/pos/kds" },
+    { label: "Tablet", route: "/tablet" },
     { label: "Transactions", route: "/pos/transactions" },
     { label: "Open Drawer", route: "/pos/drawer" },
     { label: "Inventory", route: "/pos/inventory" },
-    { label: "Staff Ops", route: "/staff" },
     { label: "Settings", route: "/pos/settings" },
   ];
 

@@ -14,6 +14,8 @@ type ActiveStaff = {
   name: string;
   role: string;
   staffKey: string;
+  email?: string | null;
+  staffCloudId?: string | null;
 };
 
 const STORAGE_KEY = "bfc_active_staff";
@@ -31,7 +33,13 @@ function roleLabel(role: string): string {
   return ROLE_LABELS[role] ?? role;
 }
 
-export default function StaffLoginClient() {
+export default function StaffLoginClient({
+  afterLoginRedirect = "/pos/register",
+  largeTouch = false,
+}: {
+  afterLoginRedirect?: string;
+  largeTouch?: boolean;
+}) {
   const router = useRouter();
   const [staffList, setStaffList] = useState<Staff[]>([]);
   const [activeStaff, setActiveStaff] = useState<ActiveStaff | null>(null);
@@ -154,6 +162,8 @@ export default function StaffLoginClient() {
         name: data.name,
         role: data.role,
         staffKey: data.key,
+        email: data.email ?? null,
+        staffCloudId: data.cloudId ?? null,
       });
 
       console.log("[Staff] Saved staff with key:", {
@@ -168,7 +178,7 @@ export default function StaffLoginClient() {
       console.log("[Staff] Login successful, navigating to register");
       
       // Navigate back to register
-      router.push("/pos/register");
+      router.push(afterLoginRedirect);
     } catch (e: any) {
       console.error("[Staff] Login error:", e.message || e);
       setError(e?.message ?? String(e));
@@ -182,17 +192,23 @@ export default function StaffLoginClient() {
     setError(null);
   }
 
+  const pad = largeTouch ? 28 : 24;
+  const titleFs = largeTouch ? 32 : 24;
+  const rowFs = largeTouch ? 20 : 16;
+  const inputPad = largeTouch ? "14px 16px" : "8px 12px";
+  const btnPad = largeTouch ? "14px 22px" : "8px 16px";
+
   if (loading) {
     return (
-      <div style={{ padding: 24, background: "#0a0a0a", minHeight: "100vh", color: "#fff" }}>
-        <p>Loading staff...</p>
+      <div style={{ padding: pad, background: "#0a0a0a", minHeight: "100%", color: "#fff" }}>
+        <p style={{ fontSize: rowFs }}>Loading staff...</p>
       </div>
     );
   }
 
   return (
-    <div style={{ padding: 24, background: "#0a0a0a", minHeight: "100vh", color: "#fff" }}>
-      <h1 style={{ fontSize: 24, fontWeight: "bold", marginBottom: 24 }}>Staff Login</h1>
+    <div style={{ padding: pad, background: "#0a0a0a", minHeight: "100%", color: "#fff" }}>
+      <h1 style={{ fontSize: titleFs, fontWeight: "bold", marginBottom: largeTouch ? 28 : 24 }}>Staff Login</h1>
 
       {error && (
         <div
@@ -244,7 +260,7 @@ export default function StaffLoginClient() {
         </div>
       )}
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: largeTouch ? 16 : 12 }}>
         {staffList.map((staff) => {
           const isActive = activeStaff?.id === staff.id;
 
@@ -252,21 +268,21 @@ export default function StaffLoginClient() {
             <div
               key={staff.id}
               style={{
-                padding: 16,
+                padding: largeTouch ? 22 : 16,
                 background: isActive ? "#2a2a2a" : "#2a2a2a",
                 border: isActive ? "2px solid #22c55e" : "1px solid #3a3a3a",
-                borderRadius: 8,
+                borderRadius: largeTouch ? 12 : 8,
                 opacity: isActive ? 0.6 : 1,
               }}
             >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
                 <div>
-                  <div style={{ fontSize: 16, fontWeight: "600", marginBottom: 4 }}>{staff.name}</div>
-                  <div style={{ fontSize: 12, color: "#aaa" }}>{roleLabel(staff.role)}</div>
+                  <div style={{ fontSize: rowFs, fontWeight: "600", marginBottom: 4 }}>{staff.name}</div>
+                  <div style={{ fontSize: largeTouch ? 15 : 12, color: "#aaa" }}>{roleLabel(staff.role)}</div>
                 </div>
 
                 {!isActive && (
-                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <div style={{ display: "flex", gap: largeTouch ? 12 : 8, alignItems: "center" }}>
                     <input
                       type="password"
                       inputMode="numeric"
@@ -280,26 +296,28 @@ export default function StaffLoginClient() {
                       }}
                       disabled={busy === staff.id}
                       style={{
-                        width: 120,
-                        padding: "8px 12px",
+                        width: largeTouch ? 160 : 120,
+                        minHeight: largeTouch ? 52 : undefined,
+                        padding: inputPad,
                         background: "#1f1f1f",
                         border: "1px solid #3a3a3a",
                         borderRadius: 6,
                         color: "#fff",
-                        fontSize: 14,
+                        fontSize: largeTouch ? 18 : 14,
                       }}
                     />
                     <button
                       onClick={() => handleLogin(staff.id, staff.name)}
                       disabled={busy === staff.id}
                       style={{
-                        padding: "8px 16px",
+                        padding: btnPad,
+                        minHeight: largeTouch ? 52 : undefined,
                         background: "#22c55e",
                         color: "#fff",
                         border: "none",
                         borderRadius: 6,
                         cursor: busy === staff.id ? "not-allowed" : "pointer",
-                        fontSize: 14,
+                        fontSize: largeTouch ? 18 : 14,
                         fontWeight: "600",
                       }}
                     >

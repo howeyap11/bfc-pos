@@ -572,20 +572,40 @@ model ReceiptDetails {
   updatedAt      DateTime @updatedAt
 }
 
+// Operational team grouping for cloud admin. Future: SOP and schedule assignment may target groupId.
+model StaffGroup {
+  id          String   @id @default(cuid())
+  storeId     String   @default("store_1")
+  name        String
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  staff Staff[]
+
+  @@unique([storeId, name])
+  @@index([storeId])
+}
+
 // Staff (POS cashiers/managers): source of truth for names, PINs, email, roles; syncs to POS
 model Staff {
   id        String   @id @default(cuid())
   storeId   String   @default("store_1")
   name      String
   email     String?  // Optional; for future staff web login
-  passcode  String   // PIN for POS login; stored plaintext for offline verification on POS
+  passcode  String   @default("") // Deprecated: kept empty when passcodeHash is set; legacy rows may still have digits
+  passcodeHash String? // scrypt1$… hashed PIN; source of truth for verification; synced to POS
   role      String   @default("BARISTA") // HEAD_BARISTA | HEAD_CHEF | BARISTA | LEAD_BARISTA | MANAGER | KITCHEN_STAFF | ADMIN
   isActive  Boolean  @default(true)
+  groupId   String?
+  staffGroup StaffGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@unique([storeId, name])
   @@index([storeId])
+  @@index([groupId])
 }
 
 // Synced from POS for Cloud Admin reporting
@@ -1033,9 +1053,12 @@ model SyncedInventoryCountSession {
   sourceLocalId           String
   storeId                 String
   submittedByStaffCloudId String?
+  submittedByLocalStaffId String?
   submittedByStaffName    String
   source                  String
   notes                   String?
+  shiftType               String?
+  businessDate            String?
   countedAt               DateTime
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
@@ -1043,6 +1066,7 @@ model SyncedInventoryCountSession {
 
   @@unique([storeId, sourceLocalId])
   @@index([storeId, countedAt])
+  @@index([storeId, businessDate])
 }
 
 model SyncedInventoryCountLine {

@@ -58,6 +58,8 @@ model StoreConfig {
   snapResiboEnabled       Boolean  @default(false)
   snapResiboPriceCents    Int?     // Price in centavos for paid SnapResibo QR item
   snapResiboRewardMinimumCents Int? // Order total (centavos) above which one free SnapResibo voucher is issued
+  /** JSON: { showPending, showQr, showKitchen, showStaff } for /tablet drawer visibility (local POS). */
+  tabletNavJson           String?
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
   store                   Store    @relation(fields: [storeId], references: [id])
@@ -88,7 +90,8 @@ model Staff {
   cloudId   String?  @unique  // Cloud Admin staff id; set when synced from cloud
   name      String
   email     String?  // Optional; synced from cloud for future web login
-  passcode  String   @default("1000")
+  passcode  String   @default("1000") // Legacy plaintext PIN; empty when passcodeHash is used
+  passcodeHash String? // scrypt1$… from cloud; preferred for verification (offline)
   key       String?  @unique
   role      String   @default("BARISTA") // HEAD_BARISTA | HEAD_CHEF | BARISTA | LEAD_BARISTA | MANAGER | KITCHEN_STAFF | ADMIN
   isActive  Boolean  @default(true)
@@ -753,9 +756,14 @@ model StaffInventoryCountSession {
   storeId                 String                @default("store_1")
   cloudId                 String?               @unique
   submittedByStaffCloudId String?
+  submittedByLocalStaffId String?
   submittedByStaffName    String
   source                  StaffCountSource
   notes                   String?
+  /// Beginning | End — derived from shift assignment + time window; see manualInventoryShiftType.ts
+  shiftType               String
+  /// YYYY-MM-DD staff audit business day (4am cutover); see staffBusinessDate.ts
+  businessDate            String
   countedAt               DateTime
   syncStatus              StaffSyncStatus       @default(PENDING)
   syncedAt                DateTime?

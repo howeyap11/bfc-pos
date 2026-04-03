@@ -2,8 +2,36 @@
 import fp from "fastify-plugin";
 import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
 import { requireStaffHook } from "../plugins/staffGuard.js";
+import { verifyAdminPin } from "../services/adminPin.service.js";
 
 const STORE_ID = "store_1";
+
+export type TabletNavConfig = {
+  showPending: boolean;
+  showQr: boolean;
+  showKitchen: boolean;
+  showStaff: boolean;
+};
+
+function defaultTabletNav(): TabletNavConfig {
+  return { showPending: true, showQr: true, showKitchen: true, showStaff: true };
+}
+
+export function parseTabletNavJson(raw: string | null | undefined): TabletNavConfig {
+  if (!raw?.trim()) return defaultTabletNav();
+  try {
+    const o = JSON.parse(raw) as Record<string, unknown>;
+    const d = defaultTabletNav();
+    return {
+      showPending: typeof o.showPending === "boolean" ? o.showPending : d.showPending,
+      showQr: typeof o.showQr === "boolean" ? o.showQr : d.showQr,
+      showKitchen: typeof o.showKitchen === "boolean" ? o.showKitchen : d.showKitchen,
+      showStaff: typeof o.showStaff === "boolean" ? o.showStaff : d.showStaff,
+    };
+  } catch {
+    return defaultTabletNav();
+  }
+}
 
 /** Body is only business name/address (Cloud Admin Business Details page). */
 function isBusinessDetailsOnly(body: unknown): boolean {
@@ -55,6 +83,7 @@ const storeConfigRoutesImpl: FastifyPluginAsync = async (app) => {
           snapResiboEnabled: false,
           snapResiboPriceCents: null as number | null,
           snapResiboRewardMinimumCents: null as number | null,
+          tabletNav: defaultTabletNav(),
         };
       }
 
@@ -63,6 +92,14 @@ const storeConfigRoutesImpl: FastifyPluginAsync = async (app) => {
       const stickerPrintCategoryIds = config.stickerPrintCategoryIds
         ? (JSON.parse(config.stickerPrintCategoryIds) as string[])
         : [];
+
+      /* tabletNavJson: safe if null, invalid JSON, or column missing on very old Prisma client — parseTabletNavJson covers all. */
+      let tabletNav = defaultTabletNav();
+      try {
+        tabletNav = parseTabletNavJson((config as { tabletNavJson?: string | null }).tabletNavJson);
+      } catch {
+        tabletNav = defaultTabletNav();
+      }
 
       return {
         storeId: config.storeId,
@@ -76,6 +113,7 @@ const storeConfigRoutesImpl: FastifyPluginAsync = async (app) => {
         snapResiboEnabled: config.snapResiboEnabled ?? false,
         snapResiboPriceCents: config.snapResiboPriceCents ?? null,
         snapResiboRewardMinimumCents: config.snapResiboRewardMinimumCents ?? null,
+        tabletNav,
       };
     } catch (err) {
       app.log.error({ err }, "[StoreConfig] Error loading config");
@@ -188,9 +226,45 @@ const storeConfigRoutesImpl: FastifyPluginAsync = async (app) => {
         snapResiboEnabled: config.snapResiboEnabled ?? false,
         snapResiboPriceCents: config.snapResiboPriceCents ?? null,
         snapResiboRewardMinimumCents: config.snapResiboRewardMinimumCents ?? null,
+        tabletNav: parseTabletNavJson(config.tabletNavJson),
       };
     }
   );
+
+  /** Tablet nav visibility: admin PIN only (no staff session required). Local-first. */
+  app.patch("/store-config/tablet-nav", async (req, reply) => {
+    const body = req.body as { adminPin?: string; tabletNav?: unknown };
+    const pin = (body.adminPin ?? "").trim();
+    const pinResult = await verifyAdminPin(pin, app.prisma);
+    if (!pinResult.valid) {
+      return reply.code(401).send({ error: "INVALID_PIN", message: "Invalid admin PIN" });
+    }
+    const t = body.tabletNav;
+    if (!t || typeof t !== "object") {
+      return reply.code(400).send({ error: "INVALID_BODY", message: "tabletNav object required" });
+    }
+    const raw = t as Record<string, unknown>;
+    const cur = await app.prisma.storeConfig.findUnique({ where: { storeId: STORE_ID } });
+    const base = parseTabletNavJson(cur?.tabletNavJson ?? null);
+    /* Only these four booleans are persisted — ignore any other keys. */
+    const next: TabletNavConfig = {
+      showPending: typeof raw.showPending === "boolean" ? raw.showPending : base.showPending,
+      showQr: typeof raw.showQr === "boolean" ? raw.showQr : base.showQr,
+      showKitchen: typeof raw.showKitchen === "boolean" ? raw.showKitchen : base.showKitchen,
+      showStaff: typeof raw.showStaff === "boolean" ? raw.showStaff : base.showStaff,
+    };
+    await app.prisma.storeConfig.upsert({
+      where: { storeId: STORE_ID },
+      update: { tabletNavJson: JSON.stringify(next) },
+      create: {
+        storeId: STORE_ID,
+        enabledPaymentMethods: JSON.stringify(["CASH", "CARD", "GCASH", "FOODPANDA"]),
+        splitPaymentEnabled: true,
+        tabletNavJson: JSON.stringify(next),
+      },
+    });
+    return { ok: true, tabletNav: next };
+  });
 };
 
 export const storeConfigRoutes = fp(storeConfigRoutesImpl, { name: "storeConfigRoutes", dependencies: ["prisma"] });

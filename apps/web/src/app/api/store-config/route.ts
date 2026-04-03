@@ -1,6 +1,7 @@
 // apps/web/src/app/api/store-config/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { getBackendUrl } from "@/lib/api-helpers";
+import { normalizeTabletNav } from "@/lib/tabletNav";
 
 // Default fallback config
 const DEFAULT_CONFIG = {
@@ -12,6 +13,12 @@ const DEFAULT_CONFIG = {
   snapResiboEnabled: false,
   snapResiboPriceCents: null as number | null,
   snapResiboRewardMinimumCents: null as number | null,
+  tabletNav: {
+    showPending: true,
+    showQr: true,
+    showKitchen: true,
+    showStaff: true,
+  },
 };
 
 export async function GET(req: NextRequest) {
@@ -46,8 +53,13 @@ export async function GET(req: NextRequest) {
       return NextResponse.json(DEFAULT_CONFIG);
     }
 
-    console.log("[API /store-config] Success, returning data:", data);
-    return NextResponse.json(data);
+    /* Always expose a full tabletNav shape for /tablet (backend or proxy may omit before migration). */
+    const merged = {
+      ...data,
+      tabletNav: normalizeTabletNav(data?.tabletNav ?? DEFAULT_CONFIG.tabletNav),
+    };
+    console.log("[API /store-config] Success, returning data:", merged);
+    return NextResponse.json(merged);
   } catch (error: any) {
     console.error("[API /store-config] Fetch error:", error.message || error);
     console.log("[API /store-config] Returning default config due to error");
