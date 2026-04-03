@@ -25,9 +25,21 @@ export type DateRange = { start: Date; end: Date };
 /** Re-export for backwards compatibility. Uses Asia/Manila for business-day boundaries. */
 export const buildDateRange = localBusinessDateRangeToUtc;
 
-function parsePayments(paymentsJson: string): { method: string; amountCents: number }[] {
+/** Parse synced payment lines; coerce amountCents to int (avoids string JSON corrupting sums). */
+export function parsePaymentLinesJson(paymentsJson: string): { method: string; amountCents: number }[] {
   try {
-    return JSON.parse(paymentsJson) as { method: string; amountCents: number }[];
+    const raw = JSON.parse(paymentsJson) as unknown;
+    if (!Array.isArray(raw)) return [];
+    const out: { method: string; amountCents: number }[] = [];
+    for (const x of raw) {
+      if (!x || typeof x !== "object") continue;
+      const o = x as Record<string, unknown>;
+      const method = typeof o.method === "string" ? o.method : "UNKNOWN";
+      const n = Number(o.amountCents);
+      const amountCents = Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
+      out.push({ method, amountCents });
+    }
+    return out;
   } catch {
     return [];
   }
@@ -43,10 +55,62 @@ function parseLineItems(lineItemsSummaryJson: string | null): { name: string; qt
 }
 
 /** Normalize payment method for display (match POS enums). Others grouped as Other. */
-function normalizePaymentMethod(method: string): string {
+export function normalizePaymentMethod(method: string): string {
   const u = (method || "CASH").toUpperCase().replace(/\s+/g, "");
   if (["CASH", "CARD", "GCASH", "FOODPANDA"].includes(u)) return u;
   return "Other";
+}
+
+/**
+ * Split each transaction's net sales across payment lines proportionally so bucket totals
+ * match KPI net sales (handles refunds + split payments without double-counting full totals).
+ */
+export function allocatePaymentLinesToNetCents(
+  payments: { method: string; amountCents: number }[],
+  netCents: number
+): { method: string; amountCents: number }[] {
+  if (netCents <= 0) return [];
+  const safe = payments.map((p) => ({
+    method: p.method,
+    amountCents: Math.max(0, Math.trunc(Number(p.amountCents) || 0)),
+  }));
+  const sum = safe.reduce((s, p) => s + p.amountCents, 0);
+  if (sum <= 0) return [];
+  let allocated = 0;
+  const out: { method: string; amountCents: number }[] = [];
+  for (let i = 0; i < safe.length; i++) {
+    const p = safe[i];
+    const isLast = i === safe.length - 1;
+    const share = isLast ? netCents - allocated : Math.round((p.amountCents / sum) * netCents);
+    const v = Math.max(0, Math.min(share, netCents - allocated));
+    out.push({ method: p.method, amountCents: v });
+    allocated += v;
+  }
+  return out;
+}
+
+/**
+ * Per-tx net sales allocated across payment methods (same rules as dashboard donut).
+ * Sum of bucket cents equals sum of net sales for the provided rows (when every tx with net>0 has parsable payment lines).
+ */
+export function foldPaymentsFromSyncedTransactions(
+  txs: Array<{
+    paymentsJson: string;
+    totalCents: number;
+    refundAmountCents: number | null | undefined;
+  }>
+): { byMethod: Record<string, number> } {
+  const byMethod: Record<string, number> = {};
+  for (const t of txs) {
+    const net = netSalesCentsForSyncedTransaction(t.totalCents, t.refundAmountCents);
+    const payments = parsePaymentLinesJson(t.paymentsJson);
+    const allocated = allocatePaymentLinesToNetCents(payments, net);
+    for (const p of allocated) {
+      const m = normalizePaymentMethod(p.method);
+      byMethod[m] = (byMethod[m] ?? 0) + p.amountCents;
+    }
+  }
+  return { byMethod };
 }
 
 export type DashboardKpis = {
@@ -233,17 +297,10 @@ export async function getPaymentTypeTotals(
 ): Promise<PaymentTypeTotal[]> {
   const txs = await prisma.syncedTransaction.findMany({
     where: { storeId, status: "PAID", createdAt: { gte: range.start, lt: range.end } },
-    select: { paymentsJson: true },
+    select: { paymentsJson: true, totalCents: true, refundAmountCents: true },
   });
 
-  const byMethod: Record<string, number> = {};
-  for (const t of txs) {
-    const payments = parsePayments(t.paymentsJson);
-    for (const p of payments) {
-      const m = normalizePaymentMethod(p.method);
-      byMethod[m] = (byMethod[m] ?? 0) + p.amountCents;
-    }
-  }
+  const { byMethod } = foldPaymentsFromSyncedTransactions(txs);
 
   const total = Object.values(byMethod).reduce((s, v) => s + v, 0);
   const displayOrder = ["CASH", "CARD", "GCASH", "FOODPANDA", "Other"];

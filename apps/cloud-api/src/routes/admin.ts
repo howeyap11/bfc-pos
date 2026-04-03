@@ -21,6 +21,8 @@ import {
   getStoreName,
   buildDateRange,
   getDefaultDateRange,
+  netSalesCentsForSyncedTransaction,
+  foldPaymentsFromSyncedTransactions,
 } from "../services/dashboard.service.js";
 import {
   localBusinessDateRangeToUtc,
@@ -28,6 +30,13 @@ import {
   localBusinessMonthToUtcRange,
 } from "../lib/businessDay.js";
 import { buildWorkLogFeed, type WorkLogKind } from "../services/workLogFeed.service.js";
+import { staffBusinessDateKeyWithRollover } from "../lib/staffBusinessDate.js";
+import { getWorkDayRolloverMinutesFromDb } from "../services/workDaySettings.service.js";
+import {
+  getInventoryVarianceTotalsForDay,
+  buildWorkLogInventoryCompare,
+} from "../services/workLogInventory.service.js";
+import { getIngredientMovementRollups, sumWasteFromSyncedReports } from "../services/inventoryMovementAggregates.service.js";
 
 function generateSlug(name: string): string {
   return name
@@ -325,6 +334,8 @@ export async function adminRoutes(app: FastifyInstance) {
     inventoryEmailEnabled: z.boolean().optional(),
     inventoryReportType: z.string().min(1).max(120).optional(),
     fixedServiceChargePercent: z.number().int().min(0).max(100).optional(),
+    workDayFromTimeLocal: timeHhMmSchema.optional(),
+    workDayToTimeLocal: timeHhMmSchema.optional(),
   });
 
   // Daily sales / inventory mailers (when implemented) should load recipient + time from this row only — no duplicate keys.
@@ -341,6 +352,8 @@ export async function adminRoutes(app: FastifyInstance) {
       inventoryEmailEnabled: row.inventoryEmailEnabled,
       inventoryReportType: row.inventoryReportType,
       fixedServiceChargePercent: row.fixedServiceChargePercent,
+      workDayFromTimeLocal: row.workDayFromTimeLocal,
+      workDayToTimeLocal: row.workDayToTimeLocal,
       /** POS may still allow toggling per transaction; this value is the fixed % when policy is locked. */
       fixedServiceChargeLocked: true,
     };
@@ -360,6 +373,8 @@ export async function adminRoutes(app: FastifyInstance) {
       inventoryEmailEnabled?: boolean;
       inventoryReportType?: string;
       fixedServiceChargePercent?: number;
+      workDayFromTimeLocal?: string;
+      workDayToTimeLocal?: string;
     } = {};
 
     if (body.reportRecipientEmail !== undefined) {
@@ -379,6 +394,8 @@ export async function adminRoutes(app: FastifyInstance) {
     if (body.inventoryEmailEnabled !== undefined) data.inventoryEmailEnabled = body.inventoryEmailEnabled;
     if (body.inventoryReportType !== undefined) data.inventoryReportType = body.inventoryReportType.trim();
     if (body.fixedServiceChargePercent !== undefined) data.fixedServiceChargePercent = body.fixedServiceChargePercent;
+    if (body.workDayFromTimeLocal !== undefined) data.workDayFromTimeLocal = body.workDayFromTimeLocal;
+    if (body.workDayToTimeLocal !== undefined) data.workDayToTimeLocal = body.workDayToTimeLocal;
 
     const row = await app.prisma.storeSetting.upsert({
       where: { id: STORE_SETTING_ID },
@@ -391,6 +408,8 @@ export async function adminRoutes(app: FastifyInstance) {
       inventoryEmailEnabled: row.inventoryEmailEnabled,
       inventoryReportType: row.inventoryReportType,
       fixedServiceChargePercent: row.fixedServiceChargePercent,
+      workDayFromTimeLocal: row.workDayFromTimeLocal,
+      workDayToTimeLocal: row.workDayToTimeLocal,
       fixedServiceChargeLocked: true,
     };
   });
@@ -996,6 +1015,8 @@ export async function adminRoutes(app: FastifyInstance) {
         shotsPerBundle: z.number().int().min(1),
         priceCentsPerBundle: z.number().int().min(0),
         isActive: z.boolean().optional().default(true),
+        extraShotIngredientId: z.string().nullable().optional(),
+        qtyPerExtraShot: z.union([z.number(), z.string()]).nullable().optional(),
       })
       .safeParse(req.body);
     if (!parsed.success) {
@@ -1003,6 +1024,10 @@ export async function adminRoutes(app: FastifyInstance) {
       return { error: "INVALID_BODY", details: parsed.error.flatten() };
     }
     const count = await app.prisma.shotPricingRule.count();
+    const qExtra =
+      parsed.data.qtyPerExtraShot != null && parsed.data.qtyPerExtraShot !== ""
+        ? String(parsed.data.qtyPerExtraShot)
+        : null;
     return app.prisma.shotPricingRule.create({
       data: {
         name: parsed.data.name ?? "Standard",
@@ -1010,6 +1035,8 @@ export async function adminRoutes(app: FastifyInstance) {
         priceCentsPerBundle: parsed.data.priceCentsPerBundle,
         isActive: parsed.data.isActive ?? true,
         sortOrder: count,
+        extraShotIngredientId: parsed.data.extraShotIngredientId?.trim() || null,
+        qtyPerExtraShot: qExtra,
       },
     });
   });
@@ -1022,6 +1049,8 @@ export async function adminRoutes(app: FastifyInstance) {
         shotsPerBundle: z.number().int().min(1).optional(),
         priceCentsPerBundle: z.number().int().min(0).optional(),
         isActive: z.boolean().optional(),
+        extraShotIngredientId: z.string().nullable().optional(),
+        qtyPerExtraShot: z.union([z.number(), z.string()]).nullable().optional(),
       })
       .partial()
       .safeParse(req.body);
@@ -1034,7 +1063,15 @@ export async function adminRoutes(app: FastifyInstance) {
       reply.code(404);
       return { error: "NOT_FOUND" };
     }
-    return app.prisma.shotPricingRule.update({ where: { id }, data: parsed.data });
+    const data: Record<string, unknown> = { ...parsed.data };
+    if (parsed.data.qtyPerExtraShot !== undefined) {
+      const v = parsed.data.qtyPerExtraShot;
+      data.qtyPerExtraShot = v != null && v !== "" ? String(v) : null;
+    }
+    if (parsed.data.extraShotIngredientId !== undefined) {
+      data.extraShotIngredientId = parsed.data.extraShotIngredientId?.trim() || null;
+    }
+    return app.prisma.shotPricingRule.update({ where: { id }, data: data as object });
   });
 
   // Menu Settings > Transaction Types (requires Prisma client with TransactionTypeSetting model)
@@ -1813,6 +1850,10 @@ export async function adminRoutes(app: FastifyInstance) {
   // GET /admin/inventory/stock - computed stock from StockMovement ledger (location-aware)
   app.get("/inventory/stock", async () => {
     const byKey = await app.inventoryService.getStockByIngredientLocation();
+    const [lifetimeMoves, wasteAll] = await Promise.all([
+      getIngredientMovementRollups(app.prisma),
+      sumWasteFromSyncedReports(app.prisma),
+    ]);
     const locations = await app.prisma.inventoryLocation.findMany({
       where: { isActive: true },
       orderBy: [{ sortOrder: "asc" }],
@@ -1845,6 +1886,7 @@ export async function adminRoutes(app: FastifyInstance) {
       }
       const mainCafe = locations.find((l) => l.code === "MAIN_CAFE");
       const warehouse = locations.find((l) => l.code === "WAREHOUSE");
+      const roll = lifetimeMoves.get(ing.id) ?? { storeAdded: 0, warehouseAdded: 0, pulledOut: 0 };
       return {
         ingredientId: ing.id,
         ingredientName: ing.name,
@@ -1855,6 +1897,10 @@ export async function adminRoutes(app: FastifyInstance) {
         trackingType: ing.trackingType,
         storeStock: mainCafe ? (byKey.get(`${ing.id}:${mainCafe.id}`) ?? 0) : 0,
         warehouseStock: warehouse ? (byKey.get(`${ing.id}:${warehouse.id}`) ?? 0) : 0,
+        storeAdded: roll.storeAdded,
+        warehouseAdded: roll.warehouseAdded,
+        pulledOut: roll.pulledOut,
+        waste: wasteAll.get(ing.id) ?? 0,
         stocksByLocation,
         lastMovementAt: lastMap.get(ing.id) ?? null,
       };
@@ -3663,19 +3709,17 @@ export async function adminRoutes(app: FastifyInstance) {
 
     let totalSales = 0;
     let totalDiscounts = 0;
-    const byMethod: Record<string, number> = {};
     for (const t of txs) {
-      totalSales += t.totalCents;
+      totalSales += netSalesCentsForSyncedTransaction(t.totalCents, t.refundAmountCents);
       totalDiscounts += t.discountCents;
-      try {
-        const payments = JSON.parse(t.paymentsJson) as { method: string; amountCents: number }[];
-        for (const p of payments) {
-          byMethod[p.method] = (byMethod[p.method] ?? 0) + p.amountCents;
-        }
-      } catch {
-        // ignore
-      }
     }
+    const { byMethod } = foldPaymentsFromSyncedTransactions(
+      txs.map((t) => ({
+        paymentsJson: t.paymentsJson,
+        totalCents: t.totalCents,
+        refundAmountCents: t.refundAmountCents,
+      }))
+    );
     const itemsCount = txs.reduce((s, t) => s + t.itemsCount, 0);
 
     return {
@@ -3702,19 +3746,17 @@ export async function adminRoutes(app: FastifyInstance) {
 
     let totalSales = 0;
     let totalDiscounts = 0;
-    const byMethod: Record<string, number> = {};
     for (const t of txs) {
-      totalSales += t.totalCents;
+      totalSales += netSalesCentsForSyncedTransaction(t.totalCents, t.refundAmountCents);
       totalDiscounts += t.discountCents;
-      try {
-        const payments = JSON.parse(t.paymentsJson) as { method: string; amountCents: number }[];
-        for (const p of payments) {
-          byMethod[p.method] = (byMethod[p.method] ?? 0) + p.amountCents;
-        }
-      } catch {
-        // ignore
-      }
     }
+    const { byMethod } = foldPaymentsFromSyncedTransactions(
+      txs.map((t) => ({
+        paymentsJson: t.paymentsJson,
+        totalCents: t.totalCents,
+        refundAmountCents: t.refundAmountCents,
+      }))
+    );
     const itemsCount = txs.reduce((s, t) => s + t.itemsCount, 0);
 
     return {
@@ -3815,13 +3857,55 @@ export async function adminRoutes(app: FastifyInstance) {
     return { rows, total, page, pageSize };
   });
 
-  /** Unified audit feed (4am business-day grouping in payload). Filter: all | attendance | inventory | waste | sop | shifts | violations */
-  app.get("/work-log", async (req: FastifyRequest<{ Querystring: { filter?: string } }>) => {
+  /** Today's staff business date (YYYY-MM-DD) using StoreSetting work hours From + STAFF_AUDIT_TZ — for Work Log UI default filter. */
+  app.get("/work-log/today-business-date", async () => {
+    const rollover = await getWorkDayRolloverMinutesFromDb(app.prisma);
+    const businessDate = staffBusinessDateKeyWithRollover(new Date(), rollover);
+    return { businessDate };
+  });
+
+  /** Unified audit feed (work-day boundary from StoreSetting). Filter includes stock_movements (staff-attributed ledger adds). */
+  app.get("/work-log", async (req: FastifyRequest<{ Querystring: { filter?: string; businessDate?: string } }>) => {
     const f = String(req.query.filter ?? "all") as WorkLogKind;
-    const allowed: WorkLogKind[] = ["all", "attendance", "inventory", "waste", "sop", "shifts", "violations"];
+    const allowed: WorkLogKind[] = [
+      "all",
+      "attendance",
+      "inventory",
+      "waste",
+      "sop",
+      "shifts",
+      "violations",
+      "stock_movements",
+    ];
     const filter = allowed.includes(f) ? f : "all";
-    const entries = await buildWorkLogFeed(app.prisma, filter);
+    const businessDate = req.query.businessDate?.trim() || null;
+    const entries = await buildWorkLogFeed(app.prisma, filter, 400, { businessDate });
     return { entries };
+  });
+
+  /** Sum of |staff count − system store snapshot at submit| per line for Beginning / End sessions on a business date. */
+  app.get("/work-log/inventory-summary", async (req: FastifyRequest<{ Querystring: { businessDate?: string; storeId?: string } }>, reply: FastifyReply) => {
+    const businessDate = req.query.businessDate?.trim();
+    if (!businessDate) {
+      reply.code(400);
+      return { error: "MISSING_BUSINESS_DATE", message: "businessDate (YYYY-MM-DD) is required" };
+    }
+    const storeId = (req.query.storeId || "store_1") as string;
+    const totals = await getInventoryVarianceTotalsForDay(app.prisma, storeId, businessDate);
+    return totals;
+  });
+
+  /** Per-ingredient comparison for one manual count session (effective Beginning or End for that day). */
+  app.get("/work-log/inventory-compare", async (req: FastifyRequest<{ Querystring: { businessDate?: string; shiftType?: string; storeId?: string } }>, reply: FastifyReply) => {
+    const businessDate = req.query.businessDate?.trim();
+    if (!businessDate) {
+      reply.code(400);
+      return { error: "MISSING_BUSINESS_DATE", message: "businessDate (YYYY-MM-DD) is required" };
+    }
+    const storeId = (req.query.storeId || "store_1") as string;
+    const shiftType = String(req.query.shiftType ?? "Beginning");
+    const rows = await buildWorkLogInventoryCompare(app.prisma, storeId, businessDate, shiftType);
+    return { rows };
   });
 
   app.get("/staff-ops/attendance", async () => {

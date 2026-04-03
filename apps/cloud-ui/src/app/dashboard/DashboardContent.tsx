@@ -19,13 +19,10 @@ import { SalesByDateChart } from "./SalesByDateChart";
 import { PaymentTypesCard } from "./PaymentTypesCard";
 import { DonutChartCard, salesByPaymentColor } from "./DonutChartCard";
 import { ItemsSoldTable } from "./ItemsSoldTable";
+import { getDefaultBusinessDateString } from "@/lib/localDate";
 
 function getDefaultDates(): { startDate: string; endDate: string } {
-  const n = new Date();
-  const y = n.getFullYear();
-  const m = String(n.getMonth() + 1).padStart(2, "0");
-  const d = String(n.getDate()).padStart(2, "0");
-  const date = `${y}-${m}-${d}`;
+  const date = getDefaultBusinessDateString();
   return { startDate: date, endDate: date };
 }
 

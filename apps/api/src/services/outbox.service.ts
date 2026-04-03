@@ -1,4 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
+import type { Decimal } from "decimal.js";
+import { finalizePaidTransactionInventory } from "./posTxnInventory.service.js";
 import {
   buildCloudSyncListsFromTransaction,
   type LineItemRecord,
@@ -99,14 +101,18 @@ export async function backfillTransactionSyncOutbox(prisma: PrismaClient): Promi
  */
 export async function processOutboxForTopic(
   prisma: PrismaClient,
-  inventoryService: { consumeForSale: (params: {
-    storeId: string;
-    transactionId: string;
-    lineItems: Array<{ itemId: string; qty: number }>;
-    createdByStaffId?: string;
-  }) => Promise<unknown[]> },
+  inventoryService: {
+    applyPosCloudSaleDeductions: (params: {
+      storeId: string;
+      transactionId: string;
+      consumptionByCloudIngredient: Map<string, Decimal>;
+      createdByStaffId?: string;
+      inventoryWarn?: (meta: Record<string, unknown>, msg: string) => void;
+    }) => Promise<void>;
+  },
   topic: string,
-  maxItems = 10
+  maxItems = 10,
+  inventoryWarn?: (meta: Record<string, unknown>, msg: string) => void
 ) {
   if (!prisma.localOutbox) {
     throw new Error(
@@ -125,16 +131,28 @@ export async function processOutboxForTopic(
       const payload = JSON.parse(item.payloadJson) as Record<string, unknown>;
       if (topic === "inventory.consume.sale") {
         const transactionId = payload.transactionId;
-        const lineItems = payload.lineItems;
         const createdByStaffId = payload.createdByStaffId;
-        if (typeof transactionId !== "string" || !Array.isArray(lineItems)) {
-          throw new Error("Invalid payload: missing transactionId or lineItems");
+        if (typeof transactionId !== "string") {
+          throw new Error("Invalid payload: missing transactionId");
         }
-        await inventoryService.consumeForSale({
-          storeId: item.storeId,
-          transactionId,
-          lineItems,
+        const txRow = await prisma.transaction.findUnique({
+          where: { id: transactionId },
+          include: { lineItems: { include: { item: { select: { cloudId: true } } } } },
+        });
+        if (!txRow) throw new Error(`Transaction not found: ${transactionId}`);
+        await finalizePaidTransactionInventory({
+          prisma,
+          storeId: txRow.storeId,
+          transactionId: txRow.id,
+          lineItems: txRow.lineItems.map((l) => ({
+            id: l.id,
+            qty: l.qty,
+            optionsJson: l.optionsJson,
+            item: l.item,
+          })),
           createdByStaffId: typeof createdByStaffId === "string" ? createdByStaffId : undefined,
+          inventoryWarn,
+          inventory: inventoryService,
         });
       } else {
         throw new Error(`Unknown topic: ${topic}`);

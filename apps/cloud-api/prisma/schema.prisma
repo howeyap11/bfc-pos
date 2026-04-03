@@ -518,8 +518,15 @@ model ShotPricingRule {
   priceCentsPerBundle Int     @default(4000)
   isActive           Boolean  @default(true)
   sortOrder          Int      @default(0)
+  /** Extra-shot inventory: ingredient deducted per shot above included count (optional). */
+  extraShotIngredientId String?
+  qtyPerExtraShot       Decimal? @db.Decimal(20, 10)
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
+
+  extraShotIngredient Ingredient? @relation("ShotRuleExtraIngredient", fields: [extraShotIngredientId], references: [id], onDelete: SetNull)
+
+  @@index([extraShotIngredientId])
 }
 
 model TransactionTypeSetting {
@@ -542,6 +549,10 @@ model StoreSetting {
   reportRecipientEmail      String?
   /** Local time HH:mm (store / Asia–Manila operational day). Default 00:30 = after midnight close. */
   dailySalesEmailTimeLocal    String   @default("00:30")
+  /** Work log / staff audit day rollover (HH:mm, 24h). Business date ticks after this local time. */
+  workDayFromTimeLocal        String   @default("04:00")
+  /** Display / paired end of work window (HH:mm); same as From means next-day same clock. */
+  workDayToTimeLocal          String   @default("04:00")
   inventoryEmailEnabled     Boolean  @default(false)
   inventoryReportType       String   @default("Ingredients Input Based")
   /** Fixed service charge percent shown on POS when locked (e.g. 10 = 10%). */
@@ -815,6 +826,7 @@ model Ingredient {
   stockMovements        StockMovement[]
   stockTransferLines      StockTransferLine[]
   reconciliationLines     InventoryReconciliationLine[]
+  shotRulesAsExtraIngredient ShotPricingRule[] @relation("ShotRuleExtraIngredient")
 
   @@index([version])
   @@index([categoryId, sortOrder])
@@ -1060,6 +1072,10 @@ model SyncedInventoryCountSession {
   shiftType               String?
   businessDate            String?
   countedAt               DateTime
+  /** JSON map ingredientCloudId -> { storeStock, warehouseStock } at cloud ingest time */
+  snapshotJson            String?
+  /** Increments when same storeId+businessDate+shiftType is resubmitted */
+  revision                Int      @default(1)
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
   lines                   SyncedInventoryCountLine[]
@@ -1067,6 +1083,7 @@ model SyncedInventoryCountSession {
   @@unique([storeId, sourceLocalId])
   @@index([storeId, countedAt])
   @@index([storeId, businessDate])
+  @@index([storeId, businessDate, shiftType])
 }
 
 model SyncedInventoryCountLine {

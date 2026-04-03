@@ -1,16 +1,26 @@
 "use client";
+
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api";
+import { AdminPageLayout } from "@/components/AdminPageLayout";
 
 export default function InventoryCountsPage() {
-  const [rows, setRows] = useState<any[]>([]);
+  const [rows, setRows] = useState<unknown[]>([]);
   useEffect(() => {
-    apiFetch("/admin/staff-ops/inventory-count-sessions").then((d) => setRows(Array.isArray(d) ? d : [])).catch(() => setRows([]));
+    apiFetch("/admin/staff-ops/inventory-count-sessions")
+      .then((d) => setRows(Array.isArray(d) ? d : []))
+      .catch(() => setRows([]));
   }, []);
   return (
-    <div>
-      <h1 className="mb-3 text-xl font-semibold text-white">Inventory Counts</h1>
-      <pre className="overflow-auto rounded-lg border border-white/10 bg-white/5 p-3 text-xs text-white/90">{JSON.stringify(rows, null, 2)}</pre>
-    </div>
+    <AdminPageLayout maxWidthClassName="max-w-4xl">
+      <Link href="/staff-ops" className="mb-4 inline-block text-sm font-medium text-teal-800/80 hover:text-teal-950">
+        ← Staff operations
+      </Link>
+      <h1 className="mb-3 text-xl font-semibold text-teal-950">Inventory Counts</h1>
+      <pre className="overflow-auto rounded-2xl border border-teal-100/80 bg-white p-4 text-xs text-teal-950 shadow-sm ring-1 ring-black/5">
+        {JSON.stringify(rows, null, 2)}
+      </pre>
+    </AdminPageLayout>
   );
 }

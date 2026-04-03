@@ -4,6 +4,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import * as XLSX from "xlsx";
 import { api, type SyncedTransactionRow, type DailyReport, type MonthlyReport } from "@/lib/api";
+import { getDefaultBusinessDateString } from "@/lib/localDate";
 import { COLORS, getPaymentBadgeColor } from "@/lib/theme";
 
 const TABS = ["Transactions", "Hourly", "Daily", "Monthly"] as const;
@@ -26,12 +27,17 @@ export function TransactionsContent() {
   const tabParam = searchParams.get("tab") || "Transactions";
   const activeTab = TABS.includes(tabParam as TabId) ? (tabParam as TabId) : "Transactions";
 
-  const todayStr = () => new Date().toISOString().slice(0, 10);
-  const [from, setFrom] = useState(todayStr);
-  const [to, setTo] = useState(todayStr);
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
-  const [year, setYear] = useState(new Date().getFullYear());
-  const [month, setMonth] = useState(new Date().getMonth() + 1);
+  const [from, setFrom] = useState(() => getDefaultBusinessDateString());
+  const [to, setTo] = useState(() => getDefaultBusinessDateString());
+  const [date, setDate] = useState(() => getDefaultBusinessDateString());
+  const [year, setYear] = useState(() => {
+    const [y] = getDefaultBusinessDateString().split("-").map(Number);
+    return y;
+  });
+  const [month, setMonth] = useState(() => {
+    const [, m] = getDefaultBusinessDateString().split("-").map(Number);
+    return m;
+  });
 
   const [transactions, setTransactions] = useState<SyncedTransactionRow[]>([]);
   const [dailyReport, setDailyReport] = useState<DailyReport | null>(null);
@@ -215,7 +221,12 @@ export function TransactionsContent() {
                 <input
                   type="number"
                   value={year}
-                  onChange={(e) => setYear(parseInt(e.target.value, 10) || new Date().getFullYear())}
+                  onChange={(e) =>
+                    setYear(
+                      parseInt(e.target.value, 10) ||
+                        parseInt(getDefaultBusinessDateString().split("-")[0]!, 10)
+                    )
+                  }
                   className="w-24 rounded border px-3 py-2 text-sm"
                   style={{ background: COLORS.bgPanel, borderColor: COLORS.borderLight, color: "#fff" }}
                 />
@@ -504,7 +515,7 @@ export function TransactionsContent() {
                     <td className="py-2 text-right">{dailyReport.itemsCount}</td>
                   </tr>
                   <tr style={{ borderBottom: `1px solid ${COLORS.borderLight}` }}>
-                    <td className="py-2 text-white/70">Total Sales</td>
+                    <td className="py-2 text-white/70">Total sales (net)</td>
                     <td className="py-2 text-right font-semibold text-green-400">{formatPesos(dailyReport.totalSales)}</td>
                   </tr>
                   <tr style={{ borderBottom: `1px solid ${COLORS.borderLight}` }}>
@@ -539,7 +550,7 @@ export function TransactionsContent() {
                     <td className="py-2 text-right">{monthlyReport.itemsCount}</td>
                   </tr>
                   <tr style={{ borderBottom: `1px solid ${COLORS.borderLight}` }}>
-                    <td className="py-2 text-white/70">Total Sales</td>
+                    <td className="py-2 text-white/70">Total sales (net)</td>
                     <td className="py-2 text-right font-semibold text-green-400">{formatPesos(monthlyReport.totalSales)}</td>
                   </tr>
                   <tr style={{ borderBottom: `1px solid ${COLORS.borderLight}` }}>

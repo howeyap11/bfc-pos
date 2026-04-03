@@ -499,6 +499,7 @@ export default function StaffHomeClient() {
         <h2 className={sectionHeadingClass}>OTHERS</h2>
         <div className="flex flex-col gap-4">
           <StaffActionTileLink href="/staff/waste" icon={Trash2} label="Report waste" className="w-full" />
+          <StaffActionTileLink href="/staff/stock" icon={ClipboardList} label="Stock movements" className="w-full" />
         </div>
       </section>
 

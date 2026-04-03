@@ -104,8 +104,8 @@ export class InventoryService {
   }
 
   /**
-   * Post sale deductions (theoretical usage). Idempotent by sourceType=SALE_DEDUCTION + sourceId.
-   * Call when a sale is finalized. Each (ingredientId, locationId) gets one movement per sale.
+   * Post sale deductions. Idempotent by sourceType=SALE_DEDUCTION + sourceId (= POS sourceTransactionId).
+   * When POS sends frozen per-line consumption, cloud applies those quantities here without recomputing recipes.
    */
   async postSaleDeductions(params: {
     locationId: string;
@@ -120,6 +120,28 @@ export class InventoryService {
       where: { sourceType, sourceId },
     });
     if (existing) return;
+
+    if (deductions.length === 0) {
+      const anchor = await this.prisma.ingredient.findFirst({
+        where: { isActive: true },
+        orderBy: { id: "asc" },
+        select: { id: true },
+      });
+      if (!anchor) return;
+      await this.prisma.stockMovement.create({
+        data: {
+          ingredientId: anchor.id,
+          locationId,
+          movementType: "SALE_DEDUCTION",
+          quantityDeltaBaseUnit: 0,
+          sourceType,
+          sourceId,
+          actorStaffId: actorStaffId ?? null,
+          notes: "SALE_DEDUCTION anchor (zero consumption; refund/void can key off sale processed)",
+        },
+      });
+      return;
+    }
 
     await this.prisma.$transaction(
       deductions.map((d) =>
@@ -173,6 +195,42 @@ export class InventoryService {
         })
       )
     );
+  }
+
+  /**
+   * Idempotent 0-qty row so refund/void paths that compute zero restore still mark sourceType+sourceId as processed.
+   */
+  async postIdempotentLedgerAnchorForZeroLines(params: {
+    locationId: string;
+    sourceType: string;
+    sourceId: string;
+    movementType: StockMovementType;
+    actorStaffId?: string | null;
+    notes?: string | null;
+  }) {
+    const { locationId, sourceType, sourceId, movementType, actorStaffId, notes } = params;
+    const existing = await this.prisma.stockMovement.findFirst({
+      where: { sourceType, sourceId },
+    });
+    if (existing) return;
+    const anchor = await this.prisma.ingredient.findFirst({
+      where: { isActive: true },
+      orderBy: { id: "asc" },
+      select: { id: true },
+    });
+    if (!anchor) return;
+    await this.prisma.stockMovement.create({
+      data: {
+        ingredientId: anchor.id,
+        locationId,
+        movementType,
+        quantityDeltaBaseUnit: 0,
+        sourceType,
+        sourceId,
+        actorStaffId: actorStaffId ?? null,
+        notes: notes ?? "Ledger anchor (zero-qty reversal)",
+      },
+    });
   }
 
   /**

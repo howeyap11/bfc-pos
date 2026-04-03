@@ -34,13 +34,14 @@ function getPageTitle(pathname: string): string {
   if (pathname === "/transactions") return "Transactions";
   if (pathname === "/items" || pathname.startsWith("/items/")) return "Items";
   if (pathname === "/inventory" || pathname.startsWith("/inventory/")) return "Inventory";
-  if (pathname === "/staff-ops" || pathname === "/staff-ops/work-log") return "Work Log";
+  if (pathname === "/staff-ops") return "Staff ops";
+  if (pathname === "/staff-ops/work-log") return "Work log";
   if (pathname.startsWith("/staff-ops/attendance")) return "Attendance";
   if (pathname.startsWith("/staff-ops/waste-reports")) return "Waste Reports";
   if (pathname.startsWith("/staff-ops/inventory-counts")) return "Inventory Counts";
   if (pathname.startsWith("/staff-ops/sop-submissions")) return "SOP Submissions";
   if (pathname.startsWith("/staff-ops/groups")) return "Groups";
-  if (pathname.startsWith("/staff-ops/")) return "Work Log";
+  if (pathname.startsWith("/staff-ops/")) return "Staff ops";
   if (pathname === "/ingredients" || pathname.startsWith("/ingredients/")) return "Ingredients";
   if (pathname === "/menu" || pathname.startsWith("/menu/")) return "Menu";
   if (pathname.startsWith("/menu-settings")) return "Menu Settings";

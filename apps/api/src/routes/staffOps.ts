@@ -1,11 +1,18 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { PrismaClient } from "@prisma/client";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { enqueueOutbox } from "../services/outbox.service";
-import { canAuditStaffOps, canManageStaffOps } from "../lib/staffRoles";
-import { staffBusinessDateKey } from "../lib/staffBusinessDate";
+import { canAuditStaffOps, canManageStaffOps, canRecordWarehousePullout } from "../lib/staffRoles";
+import {
+  DEFAULT_WORK_DAY_CUTOVER_MINUTES,
+  parseWorkDayCutoverMinutes,
+  staffBusinessDateKeyWithCutover,
+} from "../lib/staffBusinessDate";
+import Decimal from "decimal.js";
 import { resolveManualInventoryShiftType } from "../lib/manualInventoryShiftType";
+import { buildManualInventorySubmitSnapshot } from "../lib/manualInventorySnapshot";
 import { decodeBase64Image, saveStaffMedia, toRelativeStaffMediaPath } from "../services/localStaffMedia.service";
 import { requireStaffHook } from "../plugins/staffGuard";
 
@@ -21,6 +28,13 @@ function requireManagerOrAuditor(req: StaffReq, reply: FastifyReply): boolean {
   const role = req.staff?.role ?? "";
   if (canManageStaffOps(role) || canAuditStaffOps(role)) return true;
   reply.code(403).send({ error: "FORBIDDEN", message: "Manager/auditor permission required." });
+  return false;
+}
+
+function requireWarehousePulloutRole(req: StaffReq, reply: FastifyReply): boolean {
+  const role = req.staff?.role ?? "";
+  if (canRecordWarehousePullout(role)) return true;
+  reply.code(403).send({ error: "FORBIDDEN", message: "Warehouse pullout is not allowed for this role." });
   return false;
 }
 
@@ -245,6 +259,19 @@ export async function staffOpsRoutes(app: FastifyInstance) {
         happenedAt: parsed.data.happenedAt ? new Date(parsed.data.happenedAt) : new Date(),
       },
     });
+    if (parsed.data.itemType === "INVENTORY_ITEM" && inventoryItemCloudId) {
+      try {
+        await app.inventoryService.applyWasteReportDeduction({
+          storeId,
+          wasteReportId: row.id,
+          inventoryItemCloudId,
+          quantityStr: parsed.data.quantity,
+          createdByStaffId: staff.id,
+        });
+      } catch (err) {
+        app.log.warn({ err, wasteReportId: row.id }, "[INVENTORY] Waste deduction skipped or failed");
+      }
+    }
     await enqueueOutbox(app.prisma, {
       storeId: row.storeId,
       topic: "staffops.waste.sync",
@@ -275,11 +302,9 @@ export async function staffOpsRoutes(app: FastifyInstance) {
 
   /**
    * Manual inventory count (staff phone / POS):
-   * - Web: StaffFullInventoryCount + InventoryCountForm POST JSON to /staff/inventory-count-sessions (rewritten from Next /api/*).
-   * - Persisted: StaffInventoryCountSession + lines in local SQLite; session notes removed — only line-level notes remain on lines.
-   * - Outbox: topic staffops.inventory-count.sync → staffOpsSync.uploadInventoryCount → POST cloud /sync/staff-ops/inventory-count-sessions.
-   * - Cloud: SyncedInventoryCountSession (+ lines); ingest schema in cloud-api routes/sync.ts.
-   * - shiftType + businessDate: computed here (see manualInventoryShiftType.ts, staffBusinessDate.ts).
+   * - snapshotJson frozen locally at submit (see manualInventorySnapshot.ts); not computed from cloud.
+   * - Effective slot: one non-superseded row per storeId + businessDate + shiftType; resubmit marks prior superseded (revision chain).
+   * - Outbox: staffops.inventory-count.sync → cloud receives same frozen snapshotJson.
    */
   app.post("/staff/inventory-count-sessions", async (req, reply) => {
     const staff = ensureStaff(req as StaffReq, reply);
@@ -307,7 +332,13 @@ export async function staffOpsRoutes(app: FastifyInstance) {
 
     const storeId = getStoreId(req as StaffReq);
     const countedAt = parsed.data.countedAt ? new Date(parsed.data.countedAt) : new Date();
-    const businessDate = staffBusinessDateKey(countedAt);
+    const setting = await app.prisma.cloudStoreSetting.findUnique({ where: { id: "1" } });
+    const cutoverMinutes =
+      parseWorkDayCutoverMinutes(setting?.workDayFromTimeLocal) ?? DEFAULT_WORK_DAY_CUTOVER_MINUTES;
+    const toMinutes = parseWorkDayCutoverMinutes(setting?.workDayToTimeLocal);
+    const workEndMinutesFromMidnight =
+      toMinutes != null && toMinutes > cutoverMinutes && toMinutes <= 1440 ? toMinutes : undefined;
+    const businessDate = staffBusinessDateKeyWithCutover(countedAt, cutoverMinutes);
 
     const assignments =
       staff.cloudId != null && staff.cloudId !== ""
@@ -319,45 +350,134 @@ export async function staffOpsRoutes(app: FastifyInstance) {
           })
         : [];
 
-    const shiftType = resolveManualInventoryShiftType({ submittedAt: countedAt, assignments });
-
-    const session = await app.prisma.staffInventoryCountSession.create({
-      data: {
-        storeId,
-        submittedByStaffCloudId: staff.cloudId,
-        submittedByLocalStaffId: staff.id,
-        submittedByStaffName: staff.name,
-        source: parsed.data.source,
-        notes: null,
-        shiftType,
-        businessDate,
-        countedAt,
-        lines: {
-          create: parsed.data.lines.map((l) => ({
-            inventoryItemCloudId: l.inventoryItemCloudId,
-            inventoryItemName: l.inventoryItemName,
-            expectedQuantity: l.expectedQuantity ?? null,
-            actualQuantity: l.actualQuantity,
-            varianceQuantity: l.varianceQuantity ?? null,
-            unit: l.unit ?? null,
-            notes: l.notes ?? null,
-          })),
-        },
-      },
-      include: { lines: true },
+    const shiftType = resolveManualInventoryShiftType({
+      submittedAt: countedAt,
+      assignments,
+      cutoverMinutesFromMidnight: cutoverMinutes,
+      workEndMinutesFromMidnight,
     });
+
+    let replacedSessionId: string | null = null;
+    const session = await app.prisma.$transaction(async (tx) => {
+      const previousEffective = await tx.staffInventoryCountSession.findFirst({
+        where: { storeId, businessDate, shiftType, supersededAt: null },
+        orderBy: { countedAt: "desc" },
+      });
+      replacedSessionId = previousEffective?.id ?? null;
+
+      const { snapshotJson, expectedStoreByCloudId } = await buildManualInventorySubmitSnapshot(
+        tx,
+        storeId,
+        parsed.data.lines.map((l) => ({
+          inventoryItemCloudId: l.inventoryItemCloudId,
+          actualQuantity: l.actualQuantity,
+        })),
+        {
+          submittedAtIso: countedAt.toISOString(),
+          businessDate,
+          shiftType,
+          submittedByStaffCloudId: staff.cloudId,
+          submittedByLocalStaffId: staff.id,
+          submittedByStaffName: staff.name,
+          replacesSessionId: replacedSessionId,
+        },
+        { snapshotWarn: (meta, msg) => app.log.warn(meta, msg) }
+      );
+
+      const lineRows = parsed.data.lines.map((l) => {
+        const cid = l.inventoryItemCloudId.trim();
+        const frozenExpected = cid ? expectedStoreByCloudId.get(cid) : undefined;
+        const expectedQuantity = frozenExpected ?? null;
+        if (cid && frozenExpected === undefined) {
+          app.log.warn(
+            { event: "MANUAL_COUNT_SNAPSHOT_KEY_MISS", storeId, inventoryItemCloudId: cid, businessDate, shiftType },
+            "[INVENTORY] Count line cloud id missing from frozen snapshot map"
+          );
+        }
+        let varianceQuantity: string | null = l.varianceQuantity ?? null;
+        if (expectedQuantity != null) {
+          try {
+            varianceQuantity = new Decimal(l.actualQuantity).minus(new Decimal(expectedQuantity)).toString();
+          } catch {
+            /* keep client variance if any */
+          }
+        }
+        return {
+          inventoryItemCloudId: l.inventoryItemCloudId,
+          inventoryItemName: l.inventoryItemName,
+          expectedQuantity,
+          actualQuantity: l.actualQuantity,
+          varianceQuantity,
+          unit: l.unit ?? null,
+          notes: l.notes ?? null,
+        };
+      });
+
+      const created = await tx.staffInventoryCountSession.create({
+        data: {
+          storeId,
+          submittedByStaffCloudId: staff.cloudId,
+          submittedByLocalStaffId: staff.id,
+          submittedByStaffName: staff.name,
+          source: parsed.data.source,
+          notes: null,
+          shiftType,
+          businessDate,
+          countedAt,
+          snapshotJson,
+          replacesSessionId: replacedSessionId,
+          lines: { create: lineRows },
+        },
+        include: { lines: true },
+      });
+
+      if (previousEffective) {
+        await tx.staffInventoryCountSession.update({
+          where: { id: previousEffective.id },
+          data: { supersededAt: countedAt, supersededBySessionId: created.id },
+        });
+        const pending = await tx.localOutbox.findMany({
+          where: { storeId, topic: "staffops.inventory-count.sync", status: "PENDING" },
+        });
+        for (const ob of pending) {
+          try {
+            const p = JSON.parse(ob.payloadJson) as { localId?: string };
+            if (p.localId === previousEffective.id) {
+              await tx.localOutbox.delete({ where: { id: ob.id } });
+            }
+          } catch {
+            /* ignore malformed */
+          }
+        }
+      }
+
+      return created;
+    });
+
     await enqueueOutbox(app.prisma, {
       storeId: session.storeId,
       topic: "staffops.inventory-count.sync",
       payload: { localId: session.id },
     });
-    return { ok: true, session };
+
+    return {
+      ok: true,
+      session,
+      /** Explicit overwrite model: revision chain — prior effective row is superseded, not deleted. */
+      overwriteMode: replacedSessionId ? ("superseded_previous_effective" as const) : ("new_effective" as const),
+      replacedSessionId,
+    };
   });
 
   app.get("/staff/inventory-count-sessions", async (req, reply) => {
     if (!requireManagerOrAuditor(req as StaffReq, reply)) return;
+    const q = req.query as { effectiveOnly?: string };
+    const effectiveOnly = q.effectiveOnly === "1" || q.effectiveOnly === "true";
     return app.prisma.staffInventoryCountSession.findMany({
-      where: { storeId: getStoreId(req as StaffReq) },
+      where: {
+        storeId: getStoreId(req as StaffReq),
+        ...(effectiveOnly ? { supersededAt: null } : {}),
+      },
       orderBy: { countedAt: "desc" },
       include: { lines: true },
       take: 100,
@@ -512,5 +632,92 @@ export async function staffOpsRoutes(app: FastifyInstance) {
       recentInventoryCounts: recentCounts,
       recentSopSubmissions: recentSop,
     };
+  });
+
+  /** Store/warehouse adds: manager or auditor. Warehouse→store pullout: operational roles (see canRecordWarehousePullout). */
+  app.post("/staff/inventory/stock-movements", async (req, reply) => {
+    const staff = ensureStaff(req as StaffReq, reply);
+    if (!staff) return;
+    const parsed = z
+      .object({
+        kind: z.enum(["STORE_ADD", "WAREHOUSE_ADD", "WAREHOUSE_PULLOUT"]),
+        ingredientCloudId: z.string().min(1),
+        quantity: z.string().min(1),
+        notes: z.string().optional(),
+      })
+      .safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: "INVALID_BODY", details: parsed.error.flatten() });
+    if (parsed.data.kind === "WAREHOUSE_PULLOUT") {
+      if (!requireWarehousePulloutRole(req as StaffReq, reply)) return;
+    } else if (!requireManagerOrAuditor(req as StaffReq, reply)) {
+      return;
+    }
+    const storeId = getStoreId(req as StaffReq);
+    let qty: Decimal;
+    try {
+      qty = new Decimal(parsed.data.quantity);
+    } catch {
+      return reply.code(400).send({ error: "INVALID_QUANTITY" });
+    }
+    if (!qty.isFinite() || qty.lte(0)) {
+      return reply.code(400).send({ error: "INVALID_QUANTITY", message: "Quantity must be positive" });
+    }
+    const cloudIng = await app.prisma.cloudIngredient.findFirst({
+      where: { storeId, cloudId: parsed.data.ingredientCloudId, deletedAt: null, isActive: true },
+    });
+    if (!cloudIng) {
+      return reply.code(400).send({ error: "UNKNOWN_INGREDIENT", message: "Ingredient not in synced catalog." });
+    }
+    const row = await app.prisma.staffStockMovementLocal.create({
+      data: {
+        storeId,
+        movementKind: parsed.data.kind,
+        ingredientCloudId: parsed.data.ingredientCloudId,
+        quantityBase: qty.toString(),
+        notes: parsed.data.notes ?? null,
+        submittedByStaffCloudId: staff.cloudId,
+        submittedByLocalStaffId: staff.id,
+        submittedByStaffName: staff.name,
+      },
+    });
+    try {
+      if (parsed.data.kind === "STORE_ADD") {
+        await app.inventoryService.staffStoreAdd({
+          storeId,
+          ingredientCloudId: parsed.data.ingredientCloudId,
+          quantityBase: qty,
+          refId: row.id,
+          notes: parsed.data.notes,
+          createdByStaffId: staff.id,
+        });
+      } else if (parsed.data.kind === "WAREHOUSE_ADD") {
+        await app.inventoryService.staffWarehouseAdd({
+          storeId,
+          ingredientCloudId: parsed.data.ingredientCloudId,
+          quantityBase: qty,
+          refId: row.id,
+          createdByStaffId: staff.id,
+        });
+      } else {
+        await app.inventoryService.staffWarehousePulloutToStore({
+          storeId,
+          ingredientCloudId: parsed.data.ingredientCloudId,
+          quantityBase: qty,
+          refId: row.id,
+          notes: parsed.data.notes,
+          createdByStaffId: staff.id,
+        });
+      }
+    } catch (err) {
+      await app.prisma.staffStockMovementLocal.delete({ where: { id: row.id } }).catch(() => {});
+      const msg = err instanceof Error ? err.message : String(err);
+      return reply.code(400).send({ error: "STOCK_UPDATE_FAILED", message: msg });
+    }
+    await enqueueOutbox(app.prisma, {
+      storeId,
+      topic: "staffops.stock-movement.sync",
+      payload: { localId: row.id },
+    });
+    return { ok: true, movement: row };
   });
 }

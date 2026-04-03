@@ -1,11 +1,16 @@
 /**
- * Derives cloud inventory (StockMovement ledger) from synced POS transaction payloads.
- * - PAID: SALE_DEDUCTION (idempotent per sourceTransactionId)
- * - REFUND: REVERSAL per refund id + line-level qty (idempotent per refund id)
- * - VOID: REVERSAL for remaining consumption after refunds (idempotent per sourceTransactionId)
+ * Cloud inventory ledger from synced POS payloads (audit/reporting — not operational truth).
  *
- * Limitation: uses current cloud recipes at apply time (not historical). Extra shot volume
- * from `{ type: "shots" }` is not mapped unless those shots appear as normal option ids with recipe lines.
+ * **Local-frozen consumption (preferred):** When every menu line (`menuItemId` set) includes
+ * `consumptionPerUnitByIngredientJson` (string, including `"{}"` for zero), cloud **does not** call
+ * `computeConsumptionForLine` / current recipes. Aggregates use POS-computed maps only.
+ *
+ * **Legacy fallback:** If any such line is missing that field, cloud recomputes from **current** DB
+ * recipes (historical drift possible). Avoid mixed payloads.
+ *
+ * - PAID: SALE_DEDUCTION (idempotent per sourceType+sourceId = SALE_DEDUCTION + sourceTransactionId)
+ * - REFUND: REVERSAL per refund id + line-level qty (idempotent per refund id)
+ * - VOID: REVERSAL for net remaining after refunds (idempotent per sourceTransactionId)
  */
 import type { PrismaClient } from "@prisma/client";
 import { Prisma } from "@prisma/client";
@@ -21,6 +26,8 @@ export type SyncedLineItemInput = {
   /** Cloud MenuItem.id (same as POS Item.cloudId) */
   menuItemId?: string | null;
   optionsJson?: string | null;
+  /** JSON map ingredientId (cloud) -> qty per 1 line item — when present on all menu lines, cloud skips recipe recompute */
+  consumptionPerUnitByIngredientJson?: string | null;
 };
 
 export type SyncedRefundItemInput = {
@@ -313,6 +320,10 @@ function parseLineItemsJson(json: string | null | undefined): SyncedLineItemInpu
         sourceLineItemId: typeof x.sourceLineItemId === "string" ? x.sourceLineItemId : undefined,
         menuItemId: typeof x.menuItemId === "string" ? x.menuItemId : null,
         optionsJson: typeof x.optionsJson === "string" ? x.optionsJson : null,
+        consumptionPerUnitByIngredientJson:
+          typeof x.consumptionPerUnitByIngredientJson === "string"
+            ? x.consumptionPerUnitByIngredientJson
+            : null,
       }));
   } catch {
     return [];
@@ -356,6 +367,70 @@ function buildLineBySourceId(
     if (l.sourceLineItemId) m.set(l.sourceLineItemId, l);
   }
   return m;
+}
+
+/**
+ * True only when every menu-attached line carries a string consumption map from POS (offline truth).
+ * Lines without `menuItemId` (fees, etc.) are ignored. Partial frozen data is rejected → full cloud recompute.
+ */
+function usesFrozenLineConsumption(lines: SyncedLineItemInput[]): boolean {
+  const menuLines = lines.filter((l) => l.menuItemId?.trim());
+  if (menuLines.length === 0) return false;
+  return menuLines.every((l) => typeof l.consumptionPerUnitByIngredientJson === "string");
+}
+
+function parsePerUnitConsumptionMap(json: string): Map<string, Prisma.Decimal> {
+  const m = new Map<string, Prisma.Decimal>();
+  try {
+    const o = JSON.parse(json) as Record<string, unknown>;
+    if (!o || typeof o !== "object") return m;
+    for (const [k, v] of Object.entries(o)) {
+      m.set(k, new Prisma.Decimal(String(v)));
+    }
+  } catch {
+    return m;
+  }
+  return m;
+}
+
+function aggregateSaleFromFrozenLines(lines: SyncedLineItemInput[]): Agg {
+  const total: Agg = new Map();
+  for (const line of lines) {
+    if (!line.menuItemId?.trim()) continue;
+    const raw = line.consumptionPerUnitByIngredientJson;
+    if (typeof raw !== "string") continue;
+    const q = Math.max(0, Math.trunc(line.qty));
+    if (q === 0) continue;
+    const perUnit = parsePerUnitConsumptionMap(raw);
+    for (const [ingId, per] of perUnit) {
+      addAgg(total, ingId, per.times(q));
+    }
+  }
+  return total;
+}
+
+function computeRefundConsumptionFromFrozen(
+  allLines: SyncedLineItemInput[],
+  refund: SyncedRefundInput
+): Agg {
+  const total: Agg = new Map();
+  const byId = buildLineBySourceId(allLines);
+  const items = refund.items ?? [];
+  if (items.length === 0) return total;
+
+  for (const ri of items) {
+    const base = byId.get(ri.sourceLineItemId);
+    if (!base?.menuItemId?.trim()) continue;
+    const raw = base.consumptionPerUnitByIngredientJson;
+    if (typeof raw !== "string") continue;
+    const q = Math.max(0, Math.trunc(ri.qtyRefunded));
+    if (q === 0) continue;
+    const perUnit = parsePerUnitConsumptionMap(raw);
+    for (const [ingId, per] of perUnit) {
+      addAgg(total, ingId, per.times(q));
+    }
+  }
+  return total;
 }
 
 async function computeRefundConsumption(
@@ -422,6 +497,7 @@ export async function applyInventoryFromSyncedTransactionRow(params: {
 
   const saleSourceId = sourceTransactionId;
 
+  /** Includes zero-qty SALE_DEDUCTION anchor rows (see InventoryService.postSaleDeductions) so refund/void are not skipped after zero-recipe frozen sales. */
   async function hasSaleDeductionRows(): Promise<boolean> {
     const n = await prisma.stockMovement.count({
       where: { sourceType: "SALE_DEDUCTION", sourceId: saleSourceId },
@@ -429,24 +505,53 @@ export async function applyInventoryFromSyncedTransactionRow(params: {
     return n > 0;
   }
 
+  const frozen = usesFrozenLineConsumption(lines);
+  const menuLinesForFrozenCheck = lines.filter((l) => l.menuItemId?.trim());
+  const partialFrozenPayload =
+    menuLinesForFrozenCheck.length > 0 &&
+    menuLinesForFrozenCheck.some((l) => typeof l.consumptionPerUnitByIngredientJson === "string") &&
+    !menuLinesForFrozenCheck.every((l) => typeof l.consumptionPerUnitByIngredientJson === "string");
+  if (partialFrozenPayload) {
+    log.warn(
+      {
+        sourceTransactionId,
+        status,
+        menuLineCount: menuLinesForFrozenCheck.length,
+      },
+      "[SyncInventory] Partial frozen consumption on menu lines — using CLOUD_RECOMPUTE for entire sale (POS should send maps on all menu lines)"
+    );
+  }
+  if (lines.some((l) => l.menuItemId?.trim())) {
+    log.info(
+      {
+        sourceTransactionId,
+        status,
+        inventorySource: frozen ? "LOCAL_FROZEN" : "CLOUD_RECOMPUTE",
+        menuLineCount: lines.filter((l) => l.menuItemId?.trim()).length,
+      },
+      "[SyncInventory] Consumption source for synced transaction"
+    );
+  }
+
   if (status === "PAID") {
-    const saleAgg = await computeConsumptionForLines(prisma, lines, (l) => l.qty);
+    const saleAgg = frozen
+      ? aggregateSaleFromFrozenLines(lines)
+      : await computeConsumptionForLines(prisma, lines, (l) => l.qty);
     const deductions = aggToDeductions(saleAgg);
-    if (deductions.length > 0) {
-      try {
-        await inventory.postSaleDeductions({
-          locationId,
-          sourceId: saleSourceId,
-          deductions,
-        });
-      } catch (err) {
-        log.error({ err, sourceTransactionId }, "[SyncInventory] postSaleDeductions failed");
-        throw err;
-      }
-    } else if (lines.some((l) => l.menuItemId)) {
+    try {
+      await inventory.postSaleDeductions({
+        locationId,
+        sourceId: saleSourceId,
+        deductions,
+      });
+    } catch (err) {
+      log.error({ err, sourceTransactionId }, "[SyncInventory] postSaleDeductions failed");
+      throw err;
+    }
+    if (deductions.length === 0 && menuLinesForFrozenCheck.length > 0) {
       log.info(
-        { sourceTransactionId },
-        "[SyncInventory] PAID tx: no recipe deductions computed (check recipes / line payload)"
+        { sourceTransactionId, frozen },
+        "[SyncInventory] PAID tx: zero deduction rows; SALE_DEDUCTION anchor recorded if applicable"
       );
     }
   }
@@ -461,27 +566,49 @@ export async function applyInventoryFromSyncedTransactionRow(params: {
       );
       continue;
     }
-    if (!(await hasSaleDeductionRows())) {
+    const saleLedger = await hasSaleDeductionRows();
+    const allowRefundInventory = saleLedger || frozen;
+    if (!allowRefundInventory) {
       log.warn(
-        { sourceTransactionId, refundId: r.id },
-        "[SyncInventory] Skip refund reversal: no SALE_DEDUCTION rows for this transaction yet"
+        { sourceTransactionId, refundId: r.id, frozen, saleLedger },
+        "[SyncInventory] Skip refund reversal: no SALE_DEDUCTION anchor and not fully frozen — cannot trust POS restore amounts"
       );
       continue;
     }
-    const refAgg = await computeRefundConsumption(prisma, lines, r);
+    const refAgg = frozen
+      ? computeRefundConsumptionFromFrozen(lines, r)
+      : await computeRefundConsumption(prisma, lines, r);
     const restores = aggToDeductions(refAgg);
-    if (restores.length === 0) continue;
-    try {
-      await inventory.postIdempotentPositiveMovements({
-        locationId,
-        sourceType: refundSourceType,
-        sourceId: refundSourceId,
-        movementType: "REVERSAL",
-        lines: restores,
-      });
-    } catch (err) {
-      log.error({ err, sourceTransactionId, refundId: r.id }, "[SyncInventory] refund reversal failed");
-      throw err;
+    if (restores.length > 0) {
+      try {
+        await inventory.postIdempotentPositiveMovements({
+          locationId,
+          sourceType: refundSourceType,
+          sourceId: refundSourceId,
+          movementType: "REVERSAL",
+          lines: restores,
+        });
+      } catch (err) {
+        log.error({ err, sourceTransactionId, refundId: r.id }, "[SyncInventory] refund reversal failed");
+        throw err;
+      }
+    } else {
+      log.info(
+        { sourceTransactionId, refundId: r.id, frozen, restoreLineCount: restores.length },
+        "[SyncInventory] Refund reversal: zero restore qty; writing anchor if missing"
+      );
+      try {
+        await inventory.postIdempotentLedgerAnchorForZeroLines({
+          locationId,
+          sourceType: refundSourceType,
+          sourceId: refundSourceId,
+          movementType: "REVERSAL",
+          notes: "REFUND_REVERSAL anchor (zero qty)",
+        });
+      } catch (err) {
+        log.error({ err, sourceTransactionId, refundId: r.id }, "[SyncInventory] refund reversal anchor failed");
+        throw err;
+      }
     }
   }
 
@@ -490,19 +617,25 @@ export async function applyInventoryFromSyncedTransactionRow(params: {
     const voidSourceType = "VOID_REVERSAL";
     const voidSourceId = sourceTransactionId;
 
-    if (!(await hasSaleDeductionRows())) {
+    const saleLedger = await hasSaleDeductionRows();
+    const allowVoidInventory = saleLedger || frozen;
+    if (!allowVoidInventory) {
       log.warn(
-        { sourceTransactionId },
-        "[SyncInventory] Skip void reversal: no SALE_DEDUCTION rows (never deducted or zero-recipe sale)"
+        { sourceTransactionId, frozen, saleLedger },
+        "[SyncInventory] Skip void reversal: no SALE_DEDUCTION anchor and not fully frozen"
       );
       return;
     }
 
-    const saleAgg = await computeConsumptionForLines(prisma, lines, (l) => l.qty);
+    const saleAgg = frozen
+      ? aggregateSaleFromFrozenLines(lines)
+      : await computeConsumptionForLines(prisma, lines, (l) => l.qty);
     let refundedTotal: Agg = new Map();
-    for (const r of refunds) {
-      if (!r.items?.length) continue;
-      const part = await computeRefundConsumption(prisma, lines, r);
+    for (const rf of refunds) {
+      if (!rf.items?.length) continue;
+      const part = frozen
+        ? computeRefundConsumptionFromFrozen(lines, rf)
+        : await computeRefundConsumption(prisma, lines, rf);
       await mergeMaps(refundedTotal, part);
     }
     const remaining = subtractAgg(saleAgg, refundedTotal);
@@ -518,6 +651,23 @@ export async function applyInventoryFromSyncedTransactionRow(params: {
         });
       } catch (err) {
         log.error({ err, sourceTransactionId }, "[SyncInventory] void reversal failed");
+        throw err;
+      }
+    } else {
+      log.info(
+        { sourceTransactionId, frozen, voidRestoreLineCount: voidRestores.length },
+        "[SyncInventory] Void reversal: zero net restore; writing anchor if missing"
+      );
+      try {
+        await inventory.postIdempotentLedgerAnchorForZeroLines({
+          locationId,
+          sourceType: voidSourceType,
+          sourceId: voidSourceId,
+          movementType: "REVERSAL",
+          notes: "VOID_REVERSAL anchor (zero qty)",
+        });
+      } catch (err) {
+        log.error({ err, sourceTransactionId }, "[SyncInventory] void reversal anchor failed");
         throw err;
       }
     }

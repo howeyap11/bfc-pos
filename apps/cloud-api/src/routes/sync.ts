@@ -1,7 +1,12 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { z } from "zod";
 import { verifyPassword } from "../lib/password.js";
+import {
+  DEFAULT_WORK_DAY_FROM_TIME_LOCAL,
+  DEFAULT_WORK_DAY_TO_TIME_LOCAL,
+} from "../lib/workDayDefaults.js";
 import { applyInventoryFromSyncedTransactionRow } from "../services/syncTransactionInventory.service.js";
+import { upsertSyncedInventoryCountSession } from "../services/inventoryCountSync.service.js";
 import { uploadImage } from "../services/r2.service.js";
 
 const syncSecret = process.env.STORE_SYNC_SECRET ?? "";
@@ -22,6 +27,7 @@ const transactionImportSchema = z.object({
     method: z.string(),
     amountCents: z.number().int(),
   })),
+  /** When every menu line includes consumptionPerUnitByIngredientJson, cloud skips recipe recompute (offline-first). */
   lineItems: z.array(z.object({
     name: z.string(),
     qty: z.number().int(),
@@ -29,6 +35,7 @@ const transactionImportSchema = z.object({
     sourceLineItemId: z.string().optional(),
     menuItemId: z.string().nullable().optional(),
     optionsJson: z.string().nullable().optional(),
+    consumptionPerUnitByIngredientJson: z.string().nullable().optional(),
   })).optional(),
   createdAt: z.string(), // ISO date
   voidedAt: z.string().nullable().optional(),
@@ -78,6 +85,8 @@ const wasteIngestSchema = z.object({
 const inventoryCountIngestSchema = z.object({
   storeId: z.string().min(1),
   sourceSessionId: z.string().min(1),
+  /** POS-frozen snapshot; when set, cloud stores as-is (no ledger recompute at ingest). */
+  snapshotJson: z.string().optional(),
   submittedByStaffCloudId: z.string().nullable().optional(),
   submittedByLocalStaffId: z.string().nullable().optional(),
   submittedByStaffName: z.string().min(1),
@@ -89,6 +98,18 @@ const inventoryCountIngestSchema = z.object({
   auditSource: z.string().optional(),
   countedAt: z.string(),
   lines: z.array(z.record(z.string(), z.any())).min(1),
+});
+
+const staffStockMovementIngestSchema = z.object({
+  sourceLocalId: z.string().min(1),
+  storeId: z.string().min(1),
+  movementKind: z.enum(["STORE_ADD", "WAREHOUSE_ADD", "WAREHOUSE_PULLOUT"]),
+  ingredientId: z.string().min(1),
+  quantityBase: z.string().min(1),
+  notes: z.string().nullable().optional(),
+  submittedByStaffCloudId: z.string().nullable().optional(),
+  submittedByStaffName: z.string().min(1),
+  happenedAt: z.string(),
 });
 
 const sopSubmissionIngestSchema = z.object({
@@ -173,6 +194,8 @@ export async function syncRoutes(app: FastifyInstance) {
         shotPricingRules,
         storeSetting,
         staffList,
+        optionChoiceRecipeLines,
+        legacyAddOns,
       ] = await Promise.all([
         app.prisma.catalogVersion.findUnique({ where: { id: 1 } }),
         app.prisma.menuItem.findMany({
@@ -222,6 +245,12 @@ export async function syncRoutes(app: FastifyInstance) {
             isActive: true,
             updatedAt: true,
           },
+        }),
+        app.prisma.optionChoiceRecipeLine.findMany({ include: { ingredient: true } }),
+        app.prisma.addOn.findMany({
+          where: { isActive: true },
+          include: { recipeLines: { include: { ingredient: true } } },
+          orderBy: { sortOrder: "asc" },
         }),
       ]);
 
@@ -350,11 +379,35 @@ export async function syncRoutes(app: FastifyInstance) {
           priceCentsPerBundle: s.priceCentsPerBundle,
           isActive: s.isActive,
           sortOrder: s.sortOrder,
+          extraShotIngredientId: s.extraShotIngredientId ?? null,
+          qtyPerExtraShot:
+            s.qtyPerExtraShot != null && s.qtyPerExtraShot !== undefined
+              ? s.qtyPerExtraShot.toString()
+              : null,
         })),
-        storeSettings: storeSetting ? {
-          adminPinHash: storeSetting.adminPinHash ?? null,
-          ownerPasswordHash: storeSetting.ownerPasswordHash ?? null,
-        } : undefined,
+        storeSettings: storeSetting
+          ? {
+              adminPinHash: storeSetting.adminPinHash ?? null,
+              ownerPasswordHash: storeSetting.ownerPasswordHash ?? null,
+              workDayFromTimeLocal: storeSetting.workDayFromTimeLocal ?? DEFAULT_WORK_DAY_FROM_TIME_LOCAL,
+              workDayToTimeLocal: storeSetting.workDayToTimeLocal ?? DEFAULT_WORK_DAY_TO_TIME_LOCAL,
+            }
+          : undefined,
+        optionChoiceRecipeLines: optionChoiceRecipeLines.map((r) => ({
+          id: r.id,
+          optionId: r.optionId,
+          ingredientId: r.ingredientId,
+          qtyPerItem: r.qtyPerItem.toString(),
+          unitCode: r.unitCode,
+        })),
+        legacyAddOns: legacyAddOns.map((a) => ({
+          id: a.id,
+          recipeLines: a.recipeLines.map((r) => ({
+            ingredientId: r.ingredientId,
+            qtyPerItem: r.qtyPerItem.toString(),
+            unitCode: r.unitCode,
+          })),
+        })),
         staff: staffList.map((s) => ({
           id: s.id,
           name: s.name,
@@ -624,53 +677,11 @@ export async function syncRoutes(app: FastifyInstance) {
     const parsed = inventoryCountIngestSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: "INVALID_BODY", details: parsed.error.flatten() });
     const d = parsed.data;
-    let row = await app.prisma.syncedInventoryCountSession.findUnique({
-      where: { storeId_sourceLocalId: { storeId: d.storeId, sourceLocalId: d.sourceSessionId } },
+    const { id } = await upsertSyncedInventoryCountSession(app, {
+      ...d,
+      lines: d.lines as Array<Record<string, unknown>>,
     });
-    if (!row) {
-      row = await app.prisma.syncedInventoryCountSession.create({
-        data: {
-          sourceLocalId: d.sourceSessionId,
-          storeId: d.storeId,
-          submittedByStaffCloudId: d.submittedByStaffCloudId ?? null,
-          submittedByLocalStaffId: d.submittedByLocalStaffId ?? null,
-          submittedByStaffName: d.submittedByStaffName,
-          source: d.source,
-          notes: d.notes ?? null,
-          shiftType: d.shiftType ?? null,
-          businessDate: d.businessDate ?? null,
-          countedAt: new Date(d.countedAt),
-        },
-      });
-    } else {
-      row = await app.prisma.syncedInventoryCountSession.update({
-        where: { id: row.id },
-        data: {
-          submittedByStaffCloudId: d.submittedByStaffCloudId ?? null,
-          submittedByLocalStaffId: d.submittedByLocalStaffId ?? null,
-          submittedByStaffName: d.submittedByStaffName,
-          source: d.source,
-          notes: d.notes ?? null,
-          shiftType: d.shiftType ?? null,
-          businessDate: d.businessDate ?? null,
-          countedAt: new Date(d.countedAt),
-        },
-      });
-    }
-    await app.prisma.syncedInventoryCountLine.deleteMany({ where: { sessionId: row.id } });
-    await app.prisma.syncedInventoryCountLine.createMany({
-      data: d.lines.map((line: any) => ({
-        sessionId: row.id,
-        inventoryItemCloudId: String(line.inventoryItemCloudId ?? ""),
-        inventoryItemName: String(line.inventoryItemName ?? "Unknown"),
-        expectedQuantity: line.expectedQuantity != null ? String(line.expectedQuantity) : null,
-        actualQuantity: String(line.actualQuantity ?? "0"),
-        varianceQuantity: line.varianceQuantity != null ? String(line.varianceQuantity) : null,
-        unit: line.unit != null ? String(line.unit) : null,
-        notes: line.notes != null ? String(line.notes) : null,
-      })),
-    });
-    return { ok: true, id: row.id };
+    return { ok: true, id };
   });
 
   app.post("/staff/sop-submissions", async (req, reply) => {
@@ -814,43 +825,93 @@ export async function syncRoutes(app: FastifyInstance) {
     });
     if (!parsed.success) return reply.code(400).send({ error: "INVALID_BODY", details: parsed.error.flatten() });
     const d = parsed.data;
-    let countRow = await app.prisma.syncedInventoryCountSession.findUnique({
-      where: { storeId_sourceLocalId: { storeId: d.storeId, sourceLocalId: d.sourceSessionId } },
+    await upsertSyncedInventoryCountSession(app, {
+      ...d,
+      lines: d.lines as Array<Record<string, unknown>>,
     });
-    if (!countRow) {
-      countRow = await app.prisma.syncedInventoryCountSession.create({
-        data: {
-          sourceLocalId: d.sourceSessionId,
-          storeId: d.storeId,
-          submittedByStaffCloudId: d.submittedByStaffCloudId ?? null,
-          submittedByLocalStaffId: d.submittedByLocalStaffId ?? null,
-          submittedByStaffName: d.submittedByStaffName,
-          source: d.source,
-          notes: d.notes ?? null,
-          shiftType: d.shiftType ?? null,
-          businessDate: d.businessDate ?? null,
-          countedAt: new Date(d.countedAt),
-        },
-      });
-    } else {
-      countRow = await app.prisma.syncedInventoryCountSession.update({
-        where: { id: countRow.id },
-        data: {
-          submittedByStaffCloudId: d.submittedByStaffCloudId ?? null,
-          submittedByLocalStaffId: d.submittedByLocalStaffId ?? null,
-          submittedByStaffName: d.submittedByStaffName,
-          source: d.source,
-          notes: d.notes ?? null,
-          shiftType: d.shiftType ?? null,
-          businessDate: d.businessDate ?? null,
-          countedAt: new Date(d.countedAt),
-        },
-      });
+    return { ok: true };
+  });
+
+  app.post("/staff-ops/stock-movements", async (req, reply) => {
+    if (syncSecret) {
+      const key = (req.headers["x-store-sync-key"] as string) || "";
+      if (key !== syncSecret) return reply.code(401).send({ error: "UNAUTHORIZED" });
     }
-    await app.prisma.syncedInventoryCountLine.deleteMany({ where: { sessionId: countRow.id } });
-    await app.prisma.syncedInventoryCountLine.createMany({
-      data: d.lines.map((line: any) => ({ sessionId: countRow.id, inventoryItemCloudId: String(line.inventoryItemCloudId ?? ""), inventoryItemName: String(line.inventoryItemName ?? "Unknown"), expectedQuantity: line.expectedQuantity != null ? String(line.expectedQuantity) : null, actualQuantity: String(line.actualQuantity ?? "0"), varianceQuantity: line.varianceQuantity != null ? String(line.varianceQuantity) : null, unit: line.unit != null ? String(line.unit) : null, notes: line.notes != null ? String(line.notes) : null })),
+    const parsed = staffStockMovementIngestSchema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: "INVALID_BODY", details: parsed.error.flatten() });
+    const d = parsed.data;
+    const qty = Number(d.quantityBase);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      return reply.code(400).send({ error: "INVALID_QUANTITY" });
+    }
+
+    const ing = await app.prisma.ingredient.findFirst({
+      where: { id: d.ingredientId, deletedAt: null, isActive: true },
     });
+    if (!ing) {
+      return reply.code(400).send({ error: "UNKNOWN_INGREDIENT" });
+    }
+
+    const locations = await app.prisma.inventoryLocation.findMany({
+      where: { isActive: true },
+      select: { id: true, code: true },
+    });
+    const mainCafe = locations.find((l) => l.code === "MAIN_CAFE");
+    const warehouse = locations.find((l) => l.code === "WAREHOUSE");
+    if (!mainCafe) {
+      return reply.code(503).send({ error: "NO_STORE_LOCATION" });
+    }
+    if (d.movementKind !== "STORE_ADD" && !warehouse) {
+      return reply.code(503).send({ error: "NO_WAREHOUSE_LOCATION" });
+    }
+
+    try {
+      if (d.movementKind === "WAREHOUSE_PULLOUT") {
+        const dupTransfer = await app.prisma.stockMovement.findFirst({
+          where: { sourceType: "TRANSFER", sourceId: d.sourceLocalId },
+        });
+        if (dupTransfer) return { ok: true, skipped: true };
+        await app.inventoryService.postTransfer({
+          lines: [{ ingredientId: ing.id, quantityBase: qty }],
+          fromLocationId: warehouse!.id,
+          toLocationId: mainCafe.id,
+          sourceId: d.sourceLocalId,
+        });
+      } else {
+        const sourceType = `STAFF_POS_${d.movementKind}`;
+        const existing = await app.prisma.stockMovement.findFirst({
+          where: { sourceType, sourceId: d.sourceLocalId },
+        });
+        if (existing) return { ok: true, skipped: true };
+        if (d.movementKind === "STORE_ADD") {
+          await app.inventoryService.postMovement({
+            ingredientId: ing.id,
+            locationId: mainCafe.id,
+            movementType: "MANUAL_ADJUSTMENT",
+            quantityDeltaBaseUnit: qty,
+            sourceType,
+            sourceId: d.sourceLocalId,
+            actorStaffId: d.submittedByStaffCloudId?.trim() || null,
+            notes: d.notes ?? `Staff store add (${d.submittedByStaffName})`,
+          });
+        } else {
+          await app.inventoryService.postMovement({
+            ingredientId: ing.id,
+            locationId: warehouse!.id,
+            movementType: "MANUAL_ADJUSTMENT",
+            quantityDeltaBaseUnit: qty,
+            sourceType,
+            sourceId: d.sourceLocalId,
+            actorStaffId: d.submittedByStaffCloudId?.trim() || null,
+            notes: d.notes ?? `Staff warehouse add (${d.submittedByStaffName})`,
+          });
+        }
+      }
+    } catch (err) {
+      app.log.error({ err, sourceLocalId: d.sourceLocalId }, "[Sync] staff stock movement failed");
+      reply.code(500);
+      return { error: "STOCK_MOVEMENT_FAILED" };
+    }
     return { ok: true };
   });
 

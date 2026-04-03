@@ -101,6 +101,7 @@ async function uploadInventoryCount(prisma: PrismaClient, localId: string): Prom
     timeSubmitted: toIso(row.countedAt),
     auditSource: "staff_manual_inventory",
     countedAt: toIso(row.countedAt),
+    snapshotJson: row.snapshotJson ?? undefined,
     lines: row.lines.map((l) => ({
       inventoryItemCloudId: l.inventoryItemCloudId,
       inventoryItemName: l.inventoryItemName,
@@ -110,6 +111,22 @@ async function uploadInventoryCount(prisma: PrismaClient, localId: string): Prom
       unit: l.unit,
       notes: l.notes,
     })),
+  });
+}
+
+async function uploadStockMovement(prisma: PrismaClient, localId: string): Promise<UploadResult> {
+  const row = await prisma.staffStockMovementLocal.findUnique({ where: { id: localId } });
+  if (!row) return { ok: false, error: `stock movement ${localId} not found` };
+  return postToCloud("/sync/staff-ops/stock-movements", {
+    sourceLocalId: row.id,
+    storeId: row.storeId,
+    movementKind: row.movementKind,
+    ingredientId: row.ingredientCloudId,
+    quantityBase: row.quantityBase,
+    notes: row.notes,
+    submittedByStaffCloudId: row.submittedByStaffCloudId,
+    submittedByStaffName: row.submittedByStaffName,
+    happenedAt: toIso(row.happenedAt),
   });
 }
 
@@ -159,6 +176,8 @@ export async function processStaffOpsOutbox(
         result = await uploadWaste(prisma, localId);
       } else if (row.topic === "staffops.inventory-count.sync") {
         result = await uploadInventoryCount(prisma, localId);
+      } else if (row.topic === "staffops.stock-movement.sync") {
+        result = await uploadStockMovement(prisma, localId);
       } else if (row.topic === "staffops.sop.sync") {
         result = await uploadSopSubmission(prisma, localId);
       } else {

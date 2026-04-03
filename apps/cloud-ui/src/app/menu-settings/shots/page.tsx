@@ -9,6 +9,8 @@ type ShotRule = {
   shotsPerBundle: number;
   priceCentsPerBundle: number;
   isActive: boolean;
+  extraShotIngredientId?: string | null;
+  qtyPerExtraShot?: unknown;
 };
 
 export default function ShotsPage() {
@@ -21,13 +23,20 @@ export default function ShotsPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editShotsPerBundle, setEditShotsPerBundle] = useState("");
   const [editPriceCentsPerBundle, setEditPriceCentsPerBundle] = useState("");
+  const [ingredients, setIngredients] = useState<{ id: string; name: string }[]>([]);
+  const [editExtraIngredientId, setEditExtraIngredientId] = useState("");
+  const [editQtyPerExtraShot, setEditQtyPerExtraShot] = useState("");
 
   function refresh() {
     setLoading(true);
-    api.getShotPricingRules().then((r) => {
-      setRules(r.rules ?? []);
-      setActiveRule(r.activeRule ?? null);
-    }).catch((e) => setError(e instanceof Error ? e.message : "Failed to load")).finally(() => setLoading(false));
+    Promise.all([api.getShotPricingRules(), api.getIngredients().catch(() => [])])
+      .then(([r, ings]) => {
+        setRules(r.rules ?? []);
+        setActiveRule(r.activeRule ?? null);
+        setIngredients((ings as { id: string; name: string; isActive?: boolean }[]).filter((i) => i.isActive !== false));
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load"))
+      .finally(() => setLoading(false));
   }
 
   useEffect(() => {
@@ -38,12 +47,23 @@ export default function ShotsPage() {
     setEditingId(rule.id);
     setEditShotsPerBundle(String(rule.shotsPerBundle));
     setEditPriceCentsPerBundle(String((rule.priceCentsPerBundle / 100).toFixed(2)));
+    setEditExtraIngredientId(rule.extraShotIngredientId ?? "");
+    const qx = rule.qtyPerExtraShot;
+    setEditQtyPerExtraShot(
+      qx == null || qx === ""
+        ? ""
+        : typeof qx === "object" && qx !== null && "toString" in qx
+          ? String((qx as { toString(): string }).toString())
+          : String(qx)
+    );
   }
 
   function cancelEdit() {
     setEditingId(null);
     setEditShotsPerBundle("");
     setEditPriceCentsPerBundle("");
+    setEditExtraIngredientId("");
+    setEditQtyPerExtraShot("");
   }
 
   async function handleSave() {
@@ -57,7 +77,12 @@ export default function ShotsPage() {
     setSaving(true);
     setError("");
     try {
-      await api.patchShotPricingRule(editingId, { shotsPerBundle: shots, priceCentsPerBundle: price });
+      await api.patchShotPricingRule(editingId, {
+        shotsPerBundle: shots,
+        priceCentsPerBundle: price,
+        extraShotIngredientId: editExtraIngredientId.trim() || null,
+        qtyPerExtraShot: editQtyPerExtraShot.trim() || null,
+      });
       setSuccess("Saved");
       cancelEdit();
       refresh();
@@ -128,6 +153,33 @@ export default function ShotsPage() {
                       onChange={(e) => setEditPriceCentsPerBundle(e.target.value)}
                       className="w-28 rounded border border-gray-300 px-2 py-1.5 text-sm"
                     />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-gray-600">
+                      Extra-shot inventory (optional)
+                    </label>
+                    <select
+                      value={editExtraIngredientId}
+                      onChange={(e) => setEditExtraIngredientId(e.target.value)}
+                      className="mb-2 w-full max-w-md rounded border border-gray-300 px-2 py-1.5 text-sm"
+                    >
+                      <option value="">— None —</option>
+                      {ingredients.map((i) => (
+                        <option key={i.id} value={i.id}>
+                          {i.name}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="text"
+                      placeholder="Qty per extra shot (base unit)"
+                      value={editQtyPerExtraShot}
+                      onChange={(e) => setEditQtyPerExtraShot(e.target.value)}
+                      className="w-full max-w-md rounded border border-gray-300 px-2 py-1.5 text-sm"
+                    />
+                    <p className="mt-1 text-xs text-gray-500">
+                      Applied only to shots above the line item&apos;s included count; syncs to POS for offline deductions.
+                    </p>
                   </div>
                   <div className="flex gap-2">
                     <button

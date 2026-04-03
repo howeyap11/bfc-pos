@@ -373,6 +373,14 @@ export type InventoryStockRow = {
   trackingType?: string | null;
   storeStock: number;
   warehouseStock: number;
+  /** Lifetime ledger: PURCHASE_ADD + TRANSFER_IN + positive MANUAL_ADJUSTMENT at store. */
+  storeAdded: number;
+  /** Lifetime ledger: PURCHASE_ADD + positive MANUAL_ADJUSTMENT at warehouse. */
+  warehouseAdded: number;
+  /** Lifetime TRANSFER_OUT at warehouse (pull to store). */
+  pulledOut: number;
+  /** Total quantity from synced waste reports (ingredient cloud id). */
+  waste: number;
   stocksByLocation?: Record<string, number>;
   lastMovementAt: string | null;
 };
@@ -418,6 +426,7 @@ export type DailyReport = {
   storeId: string;
   transactionCount: number;
   itemsCount: number;
+  /** Net sales (gross − refunds), aligned with dashboard KPIs; payment rows are net-allocated per method. */
   totalSales: number;
   totalDiscounts: number;
   byPaymentMethod: Record<string, number>;
@@ -875,8 +884,25 @@ export const api = {
     });
   },
   getShotPricingRules(): Promise<{
-    rules: { id: string; name: string; shotsPerBundle: number; priceCentsPerBundle: number; isActive: boolean; sortOrder: number }[];
-    activeRule: { id: string; name: string; shotsPerBundle: number; priceCentsPerBundle: number; isActive: boolean } | null;
+    rules: {
+      id: string;
+      name: string;
+      shotsPerBundle: number;
+      priceCentsPerBundle: number;
+      isActive: boolean;
+      sortOrder: number;
+      extraShotIngredientId?: string | null;
+      qtyPerExtraShot?: unknown;
+    }[];
+    activeRule: {
+      id: string;
+      name: string;
+      shotsPerBundle: number;
+      priceCentsPerBundle: number;
+      isActive: boolean;
+      extraShotIngredientId?: string | null;
+      qtyPerExtraShot?: unknown;
+    } | null;
   }> {
     return apiFetch("/admin/menu-settings/shots");
   },
@@ -885,6 +911,8 @@ export const api = {
     shotsPerBundle: number;
     priceCentsPerBundle: number;
     isActive?: boolean;
+    extraShotIngredientId?: string | null;
+    qtyPerExtraShot?: number | string | null;
   }): Promise<{ id: string; name: string; shotsPerBundle: number; priceCentsPerBundle: number; isActive: boolean }> {
     return apiFetch("/admin/menu-settings/shots", {
       method: "POST",
@@ -893,7 +921,14 @@ export const api = {
   },
   patchShotPricingRule(
     id: string,
-    body: { name?: string; shotsPerBundle?: number; priceCentsPerBundle?: number; isActive?: boolean }
+    body: {
+      name?: string;
+      shotsPerBundle?: number;
+      priceCentsPerBundle?: number;
+      isActive?: boolean;
+      extraShotIngredientId?: string | null;
+      qtyPerExtraShot?: number | string | null;
+    }
   ): Promise<{ id: string; name: string; shotsPerBundle: number; priceCentsPerBundle: number; isActive: boolean }> {
     return apiFetch(`/admin/menu-settings/shots/${id}`, {
       method: "PATCH",
@@ -1111,6 +1146,8 @@ export const api = {
     inventoryReportType: string;
     fixedServiceChargePercent: number;
     fixedServiceChargeLocked: boolean;
+    workDayFromTimeLocal: string;
+    workDayToTimeLocal: string;
   }> {
     return apiFetch("/admin/settings/sales-inventory");
   },
@@ -1120,6 +1157,8 @@ export const api = {
     inventoryEmailEnabled?: boolean;
     inventoryReportType?: string;
     fixedServiceChargePercent?: number;
+    workDayFromTimeLocal?: string;
+    workDayToTimeLocal?: string;
   }): Promise<{
     reportRecipientEmail: string | null;
     dailySalesEmailTimeLocal: string;
@@ -1127,11 +1166,58 @@ export const api = {
     inventoryReportType: string;
     fixedServiceChargePercent: number;
     fixedServiceChargeLocked: boolean;
+    workDayFromTimeLocal: string;
+    workDayToTimeLocal: string;
   }> {
     return apiFetch("/admin/settings/sales-inventory", {
       method: "PUT",
       body: JSON.stringify(body),
     });
+  },
+
+  /** Staff business date for "now" (matches work hours From + server audit TZ). */
+  getWorkLogTodayBusinessDate(): Promise<{ businessDate: string }> {
+    return apiFetch("/admin/work-log/today-business-date");
+  },
+
+  getWorkLogInventorySummary(params: { businessDate: string; storeId?: string }): Promise<{
+    beginningTotalAbsVariance: number;
+    endTotalAbsVariance: number;
+  }> {
+    const q = new URLSearchParams();
+    q.set("businessDate", params.businessDate);
+    if (params.storeId) q.set("storeId", params.storeId);
+    return apiFetch(`/admin/work-log/inventory-summary?${q}`);
+  },
+
+  getWorkLogInventoryCompare(params: {
+    businessDate: string;
+    shiftType?: string;
+    storeId?: string;
+  }): Promise<{
+    rows: Array<{
+      ingredientId: string;
+      ingredientName: string;
+      imageUrl: string | null;
+      categoryName: string | null;
+      unitCode: string;
+      staffCount: number;
+      shiftType: string;
+      systemStoreStockAtSubmit: number;
+      variance: number;
+      storeStockCurrent: number;
+      storeAdded: number;
+      waste: number;
+      warehouseStockCurrent: number;
+      warehouseAdded: number;
+      pulledOut: number;
+    }>;
+  }> {
+    const q = new URLSearchParams();
+    q.set("businessDate", params.businessDate);
+    if (params.shiftType) q.set("shiftType", params.shiftType);
+    if (params.storeId) q.set("storeId", params.storeId);
+    return apiFetch(`/admin/work-log/inventory-compare?${q}`);
   },
 
   /** Store config (receipt header: business name & address). Use same API as POS (store-config). */

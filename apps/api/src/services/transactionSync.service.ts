@@ -28,6 +28,7 @@ export type LineItemRecord = {
   sourceLineItemId?: string;
   menuItemId?: string | null;
   optionsJson?: string | null;
+  consumptionPerUnitByIngredientJson?: string | null;
 };
 
 export type RefundRecord = {
@@ -64,6 +65,7 @@ export type TransactionForCloudSync = {
     qty: number;
     lineTotal: number;
     optionsJson: string | null;
+    consumptionPerUnitByIngredientJson: string | null;
     item: { cloudId: string | null } | null;
   }>;
   refunds: Array<{
@@ -92,6 +94,7 @@ export function buildCloudSyncListsFromTransaction(transaction: TransactionForCl
     sourceLineItemId: l.id,
     menuItemId: l.item?.cloudId ?? null,
     optionsJson: l.optionsJson ?? null,
+    consumptionPerUnitByIngredientJson: l.consumptionPerUnitByIngredientJson ?? null,
   }));
 
   let refundAmountCents = 0;

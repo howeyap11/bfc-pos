@@ -17,6 +17,7 @@ model Store {
   categories             Category[]
   ingredients            Ingredient[]
   ingredientStocks       IngredientStock[]
+  ingredientWarehouseStocks IngredientWarehouseStock[]
   inventoryCountSessions InventoryCountSession[]
   inventoryMovements     InventoryMovement[]
   inventoryUnits         InventoryUnit[]
@@ -42,6 +43,7 @@ model Store {
   sopChecklistSubmissions SopChecklistSubmission[]
   staffShiftLocals       StaffShiftLocal[]
   staffIncentiveLedgerLocals StaffIncentiveLedgerLocal[]
+  staffStockMovementLocals StaffStockMovementLocal[]
   zones                  Zone[]
 }
 
@@ -418,6 +420,8 @@ model TransactionLineItem {
   isDrink              Boolean?
   serveVessel         String?
   optionsJson          String?
+  /// JSON map ingredientCloudId -> qty consumed per 1 unit of this line (frozen at finalize for cloud sync)
+  consumptionPerUnitByIngredientJson String?
   categoryName         String?                 // Snapshot at sell time for receipt/display (e.g. "BFC MENU")
   subCategoryName      String?                 // Snapshot at sell time for receipt/display (e.g. "BREWED")
   item                 Item?                   @relation(fields: [itemId], references: [id])
@@ -550,22 +554,25 @@ model InventoryUnit {
 }
 
 model Ingredient {
-  id                  String               @id @default(cuid())
-  storeId             String               @default("store_1")
-  sku                 String?
-  name                String
-  unitId              String
-  reorderLevel        String?
-  isActive            Boolean              @default(true)
-  createdAt           DateTime             @default(now())
-  updatedAt           DateTime             @updatedAt
-  unit                InventoryUnit        @relation(fields: [unitId], references: [id])
-  store               Store                @relation(fields: [storeId], references: [id])
-  stocks              IngredientStock?
-  inventoryCountLines InventoryCountLine[]
-  inventoryMovements  InventoryMovement[]
-  menuItemRecipes     MenuItemRecipe[]
-  menuItemRecipeSizes MenuItemRecipeSize[]
+  id                       String                  @id @default(cuid())
+  storeId                  String                  @default("store_1")
+  sku                      String?
+  name                     String
+  unitId                   String
+  reorderLevel             String?
+  isActive                 Boolean                 @default(true)
+  /// Matches CloudIngredient.cloudId for POS recipe consumption + staff stock actions
+  cloudIngredientCloudId   String?                 @unique
+  createdAt                DateTime                @default(now())
+  updatedAt                DateTime                @updatedAt
+  unit                     InventoryUnit           @relation(fields: [unitId], references: [id])
+  store                    Store                   @relation(fields: [storeId], references: [id])
+  stocks                   IngredientStock?
+  warehouseStock           IngredientWarehouseStock?
+  inventoryCountLines      InventoryCountLine[]
+  inventoryMovements       InventoryMovement[]
+  menuItemRecipes          MenuItemRecipe[]
+  menuItemRecipeSizes      MenuItemRecipeSize[]
 
   @@unique([storeId, name])
   @@index([storeId])
@@ -581,6 +588,20 @@ model IngredientStock {
   updatedAt    DateTime   @updatedAt
   ingredient   Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
   store        Store      @relation(fields: [storeId], references: [id])
+
+  @@unique([storeId, ingredientId])
+  @@index([storeId])
+}
+
+/// Main cafe / floor stock mirror (WAREHOUSE is IngredientWarehouseStock)
+model IngredientWarehouseStock {
+  id             String     @id @default(cuid())
+  storeId        String     @default("store_1")
+  ingredientId   String     @unique
+  onHandQty      String     @default("0")
+  updatedAt      DateTime   @updatedAt
+  ingredient     Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+  store          Store      @relation(fields: [storeId], references: [id])
 
   @@unique([storeId, ingredientId])
   @@index([storeId])
@@ -635,6 +656,10 @@ model InventoryMovement {
   type             InventoryMovementType
   qtyDelta         String
   unitId           String
+  /// STORE = IngredientStock (floor/main cafe); WAREHOUSE = IngredientWarehouseStock. Null treated as STORE for legacy rows.
+  locationCode     String?
+  /// TRANSACTION_CONSUMPTION | TRANSACTION_REVERSAL | WASTE_REPORT | STORE_ADD | WAREHOUSE_ADD | WH_PULLOUT_TO_STORE
+  eventKind        String?
   refType          String?
   refId            String?
   notes            String?
@@ -647,6 +672,7 @@ model InventoryMovement {
   @@index([storeId])
   @@index([storeId, ingredientId, createdAt])
   @@index([refType, refId])
+  @@index([storeId, locationCode])
 }
 
 model InventoryCountSession {
@@ -762,7 +788,7 @@ model StaffInventoryCountSession {
   notes                   String?
   /// Beginning | End — derived from shift assignment + time window; see manualInventoryShiftType.ts
   shiftType               String
-  /// YYYY-MM-DD staff audit business day (4am cutover); see staffBusinessDate.ts
+  /// YYYY-MM-DD staff business day (rollover = Settings work hours From, synced CloudStoreSetting); see staffBusinessDate.ts
   businessDate            String
   countedAt               DateTime
   syncStatus              StaffSyncStatus       @default(PENDING)
@@ -772,8 +798,38 @@ model StaffInventoryCountSession {
   updatedAt               DateTime              @updatedAt
   lines                   StaffInventoryCountLine[]
   store                   Store                 @relation(fields: [storeId], references: [id])
+  /// Frozen expected store/warehouse qty per ingredient cloud id at submit (for cloud compare without recomputing)
+  snapshotJson            String?
+  /// When set, this session was replaced by a newer submit for the same store + businessDate + shiftType (audit chain).
+  supersededAt            DateTime?
+  supersededBySessionId   String?
+  /// Set on the newer session to point at the prior effective row (optional audit back-link).
+  replacesSessionId       String?
 
   @@index([storeId, countedAt])
+  @@index([syncStatus])
+  @@index([storeId, businessDate, shiftType])
+}
+
+model StaffStockMovementLocal {
+  id                        String          @id @default(cuid())
+  storeId                   String          @default("store_1")
+  movementKind              String
+  ingredientCloudId         String
+  quantityBase              String
+  notes                     String?
+  submittedByStaffCloudId   String?
+  submittedByLocalStaffId   String?
+  submittedByStaffName      String
+  happenedAt                DateTime        @default(now())
+  syncStatus                StaffSyncStatus @default(PENDING)
+  syncedAt                  DateTime?
+  lastSyncError             String?
+  createdAt                 DateTime        @default(now())
+  updatedAt                 DateTime        @updatedAt
+  store                     Store           @relation(fields: [storeId], references: [id])
+
+  @@index([storeId, happenedAt])
   @@index([syncStatus])
 }
 
@@ -1160,16 +1216,18 @@ model CloudTransactionType {
 }
 
 model CloudShotPricingRule {
-  id                  String   @id @default(cuid())
-  cloudId             String   @unique
-  storeId             String   @default("store_1")
-  name                String   @default("Standard")
-  shotsPerBundle      Int      @default(2)
-  priceCentsPerBundle Int      @default(4000)
-  isActive            Boolean  @default(true)
-  sortOrder           Int      @default(0)
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  id                          String   @id @default(cuid())
+  cloudId                     String   @unique
+  storeId                     String   @default("store_1")
+  name                        String   @default("Standard")
+  shotsPerBundle              Int      @default(2)
+  priceCentsPerBundle         Int      @default(4000)
+  isActive                    Boolean  @default(true)
+  sortOrder                   Int      @default(0)
+  extraShotIngredientCloudId  String?
+  qtyPerExtraShot             String?
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
 
   @@index([storeId])
 }
@@ -1278,10 +1336,37 @@ model SyncState {
 }
 
 model CloudStoreSetting {
-  id                String   @id @default("1")
-  adminPinHash      String?
-  ownerPasswordHash String?  // Synced from cloud for offline owner tools verification
-  updatedAt         DateTime @updatedAt
+  id                    String   @id @default("1")
+  adminPinHash          String?
+  ownerPasswordHash     String?  // Synced from cloud for offline owner tools verification
+  /// Synced from cloud StoreSetting; staff businessDate rollover (HH:mm). Fallback: apps/api staffBusinessDate defaults.
+  workDayFromTimeLocal  String   @default("04:00")
+  /// Paired end-of-work display / Beginning–End window hint (HH:mm). Rollover uses From only.
+  workDayToTimeLocal    String   @default("04:00")
+  updatedAt             DateTime @updatedAt
+}
+
+enum CloudOptionRecipeSourceKind {
+  CHOICE
+  ADDON_OPT
+  ADDON
+  SUB_OPT
+}
+
+model CloudOptionRecipeLine {
+  id                  String                       @id @default(cuid())
+  storeId             String                       @default("store_1")
+  sourceKind          CloudOptionRecipeSourceKind
+  entityCloudId       String
+  ingredientCloudId   String
+  qtyPerItem          String
+  unitCode            String
+  createdAt           DateTime                     @default(now())
+  updatedAt           DateTime                     @updatedAt
+
+  @@unique([storeId, sourceKind, entityCloudId, ingredientCloudId])
+  @@index([storeId, entityCloudId])
+  @@index([storeId])
 }
 
 enum PrepArea {

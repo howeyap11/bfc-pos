@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { api, type CloudStaffGroupRow, type CloudStaffRow, STAFF_ROLE_LABELS } from "@/lib/api";
+import { AdminPageLayout } from "@/components/AdminPageLayout";
 import { COLORS } from "@/lib/theme";
 
 export default function StaffOpsGroupsPage() {
@@ -90,23 +91,23 @@ export default function StaffOpsGroupsPage() {
   const inputBg = { background: COLORS.bgPanel, borderColor: COLORS.borderLight };
 
   return (
-    <div className="max-w-3xl">
+    <AdminPageLayout maxWidthClassName="max-w-3xl">
       <div className="mb-6">
-        <Link href="/staff-ops" className="text-sm text-white/55 hover:text-white">
-          ← Work Log
+        <Link href="/staff-ops" className="text-sm font-medium text-teal-800/80 hover:text-teal-950">
+          ← Staff operations
         </Link>
       </div>
-      <h1 className="mb-1 text-2xl font-semibold text-white">Groups</h1>
-      <p className="mb-6 text-sm text-white/60">
+      <h1 className="mb-1 text-2xl font-semibold text-teal-950">Groups</h1>
+      <p className="mb-6 text-sm text-teal-900/70">
         Groups help organize staff for SOP and schedule assignment. Each person can be in one group for now.
       </p>
 
       {error && (
-        <div className="mb-4 rounded border border-red-500/50 bg-red-500/10 p-3 text-sm text-red-400">{error}</div>
+        <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-800">{error}</div>
       )}
 
       {loading ? (
-        <p className="text-sm text-white/50">Loading…</p>
+        <p className="text-sm text-teal-800/70">Loading…</p>
       ) : (
         <>
           <section
@@ -231,6 +232,6 @@ export default function StaffOpsGroupsPage() {
           </section>
         </>
       )}
-    </div>
+    </AdminPageLayout>
   );
 }

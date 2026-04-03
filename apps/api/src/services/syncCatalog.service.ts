@@ -1,8 +1,61 @@
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { randomBytes } from "crypto";
+import {
+  DEFAULT_WORK_DAY_FROM_TIME_LOCAL,
+  DEFAULT_WORK_DAY_TO_TIME_LOCAL,
+} from "../lib/staffBusinessDate";
 
 const CLOUD_URL = process.env.CLOUD_URL ?? "";
 const ADMIN_ROLES = ["ADMIN", "OIC", "AUDITOR", "MANAGER"];
+
+async function ensureLocalIngredientFromCloud(
+  tx: Prisma.TransactionClient,
+  storeId: string,
+  cloudIng: { id: string; name: string; unitCode: string }
+) {
+  const code = cloudIng.unitCode.trim() || "UNIT";
+  const unit = await tx.inventoryUnit.upsert({
+    where: { storeId_code: { storeId, code } },
+    create: { storeId, code, name: code },
+    update: {},
+  });
+  const byCloud = await tx.ingredient.findFirst({
+    where: { cloudIngredientCloudId: cloudIng.id },
+  });
+  if (byCloud) {
+    await tx.ingredient.update({
+      where: { id: byCloud.id },
+      data: { name: cloudIng.name.trim() || byCloud.name, unitId: unit.id },
+    });
+    return;
+  }
+  const baseName = cloudIng.name.trim() || cloudIng.id;
+  const byName = await tx.ingredient.findFirst({
+    where: { storeId, name: baseName },
+  });
+  if (byName && !byName.cloudIngredientCloudId) {
+    await tx.ingredient.update({
+      where: { id: byName.id },
+      data: { cloudIngredientCloudId: cloudIng.id, unitId: unit.id },
+    });
+    return;
+  }
+  let name = baseName;
+  let n = 0;
+  while (await tx.ingredient.findFirst({ where: { storeId, name } })) {
+    n++;
+    name = `${baseName} (${n})`;
+  }
+  await tx.ingredient.create({
+    data: {
+      storeId,
+      name,
+      unitId: unit.id,
+      cloudIngredientCloudId: cloudIng.id,
+      isActive: true,
+    },
+  });
+}
 
 type CloudItem = {
   id: string;
@@ -100,6 +153,8 @@ type CloudShotPricingRule = {
   priceCentsPerBundle: number;
   isActive: boolean;
   sortOrder: number;
+  extraShotIngredientId?: string | null;
+  qtyPerExtraShot?: string | null;
 };
 
 type CloudMenuOption = {
@@ -220,7 +275,23 @@ type SyncResponse = {
   menuItemAddOnGroups?: { itemId: string; groupId: string }[];
   menuItemSubstituteGroups?: { itemId: string; groupId: string }[];
   menuItemSubstitutes?: { itemId: string; substituteId: string }[];
-  storeSettings?: { adminPinHash: string | null; ownerPasswordHash?: string | null };
+  optionChoiceRecipeLines?: Array<{
+    id: string;
+    optionId: string;
+    ingredientId: string;
+    qtyPerItem: string;
+    unitCode: string;
+  }>;
+  legacyAddOns?: Array<{
+    id: string;
+    recipeLines: Array<{ ingredientId: string; qtyPerItem: string; unitCode: string }>;
+  }>;
+  storeSettings?: {
+    adminPinHash: string | null;
+    ownerPasswordHash?: string | null;
+    workDayFromTimeLocal?: string;
+    workDayToTimeLocal?: string;
+  };
   staff?: Array<{
     id: string;
     name: string;
@@ -389,6 +460,8 @@ export async function syncCatalogFromCloud(
       recipeLineSizesReceived: (data.recipeLineSizes ?? []).length,
       transactionTypesReceived: (data.transactionTypes ?? []).length,
       shotPricingRulesReceived: (data.shotPricingRules ?? []).length,
+      optionChoiceRecipeLinesReceived: (data.optionChoiceRecipeLines ?? []).length,
+      legacyAddOnsReceived: (data.legacyAddOns ?? []).length,
       addOnGroupsReceived: (data.addOnGroups ?? []).length,
       substituteGroupsReceived: (data.substituteGroups ?? []).length,
       substitutesReceived: (data.substitutes ?? []).length,
@@ -707,6 +780,8 @@ export async function syncCatalogFromCloud(
             priceCentsPerBundle: sr.priceCentsPerBundle ?? 4000,
             isActive: sr.isActive !== false,
             sortOrder: sr.sortOrder ?? 0,
+            extraShotIngredientCloudId: sr.extraShotIngredientId ?? null,
+            qtyPerExtraShot: sr.qtyPerExtraShot ?? null,
           },
           update: {
             name: sr.name ?? "Standard",
@@ -714,10 +789,77 @@ export async function syncCatalogFromCloud(
             priceCentsPerBundle: sr.priceCentsPerBundle ?? 4000,
             isActive: sr.isActive !== false,
             sortOrder: sr.sortOrder ?? 0,
+            extraShotIngredientCloudId: sr.extraShotIngredientId ?? null,
+            qtyPerExtraShot: sr.qtyPerExtraShot ?? null,
           },
         });
         shotPricingRulesUpserted++;
       }
+
+      /**
+       * Offline consumption (localConsumption.service): mirrors cloud option resolution into CloudOptionRecipeLine.
+       * Cloud /sync/catalog always sends full rows for these (not version-delta); we replace per store each sync.
+       * - CHOICE: MenuOption ids from optionChoiceRecipeLines (plain { id } rows in optionsJson)
+       * - ADDON_OPT: AddOnOption ids + recipeLines from addOnGroups.options
+       * - ADDON: legacy AddOn ids + recipeLines from legacyAddOns
+       * - SUB_OPT: SubstituteOption ids + recipeLines from substituteGroups.options (before SubstituteRecipeConsumption fallback)
+       */
+      await tx.cloudOptionRecipeLine.deleteMany({ where: { storeId } });
+      const optionRecipeRows: Prisma.CloudOptionRecipeLineCreateManyInput[] = [];
+      for (const r of data.optionChoiceRecipeLines ?? []) {
+        optionRecipeRows.push({
+          storeId,
+          sourceKind: "CHOICE",
+          entityCloudId: r.optionId,
+          ingredientCloudId: r.ingredientId,
+          qtyPerItem: r.qtyPerItem,
+          unitCode: r.unitCode,
+        });
+      }
+      for (const g of data.addOnGroups ?? []) {
+        for (const o of g.options ?? []) {
+          for (const rl of o.recipeLines ?? []) {
+            optionRecipeRows.push({
+              storeId,
+              sourceKind: "ADDON_OPT",
+              entityCloudId: o.id,
+              ingredientCloudId: rl.ingredientId,
+              qtyPerItem: rl.qtyPerItem,
+              unitCode: rl.unitCode,
+            });
+          }
+        }
+      }
+      for (const a of data.legacyAddOns ?? []) {
+        for (const rl of a.recipeLines ?? []) {
+          optionRecipeRows.push({
+            storeId,
+            sourceKind: "ADDON",
+            entityCloudId: a.id,
+            ingredientCloudId: rl.ingredientId,
+            qtyPerItem: rl.qtyPerItem,
+            unitCode: rl.unitCode,
+          });
+        }
+      }
+      for (const g of data.substituteGroups ?? []) {
+        for (const o of g.options ?? []) {
+          for (const rl of o.recipeLines ?? []) {
+            optionRecipeRows.push({
+              storeId,
+              sourceKind: "SUB_OPT",
+              entityCloudId: o.id,
+              ingredientCloudId: rl.ingredientId,
+              qtyPerItem: rl.qtyPerItem,
+              unitCode: rl.unitCode,
+            });
+          }
+        }
+      }
+      if (optionRecipeRows.length > 0) {
+        await tx.cloudOptionRecipeLine.createMany({ data: optionRecipeRows });
+      }
+      console.log("[SyncCatalog] CloudOptionRecipeLine rows persisted:", optionRecipeRows.length);
 
       // Sync add-ons from groups (flatten options to CloudAddOn for POS consumption)
       const addOnGroups = data.addOnGroups ?? [];
@@ -771,6 +913,10 @@ export async function syncCatalogFromCloud(
       // Sync substitutes: prefer flat substitutes over groups
       const flatSubstitutes = data.substitutes ?? [];
       const substituteGroups = data.substituteGroups ?? [];
+
+      // Flat SubstituteRecipeConsumption rows reference flat Substitute ids only. Clear every sync so group-only
+      // catalogs do not leave stale legacy consumption rows from a previous flat-substitute menu.
+      await tx.cloudSubstituteRecipeConsumption.deleteMany({ where: { storeId } });
 
       if (flatSubstitutes.length > 0) {
         for (const s of flatSubstitutes) {
@@ -830,7 +976,6 @@ export async function syncCatalogFromCloud(
             }
           }
         }
-        await tx.cloudSubstituteRecipeConsumption.deleteMany({ where: { storeId } });
         const recipeConsumptions = data.substituteRecipeConsumptions ?? [];
         const validRecipeRows = recipeConsumptions.filter(
           (r) => validSubstituteCloudIds.has(r.substituteId) && validSizeCloudIds.has(r.sizeId)
@@ -999,6 +1144,13 @@ export async function syncCatalogFromCloud(
             deletedAt: ing.deletedAt ? new Date(ing.deletedAt) : null,
           },
         });
+        if (ing.isActive && !ing.deletedAt) {
+          await ensureLocalIngredientFromCloud(tx, storeId, {
+            id: ing.id,
+            name: ing.name,
+            unitCode: ing.unitCode,
+          });
+        }
         ingredientsUpserted++;
       }
 
@@ -1027,10 +1179,9 @@ export async function syncCatalogFromCloud(
         recipeLinesUpserted++;
       }
 
-      // Sync per-size recipe consumption
-      await tx.cloudRecipeLineSize.deleteMany({ where: { storeId } });
+      // Per-size recipe overrides: upsert only — never delete-all (incremental /sync/catalog may omit unchanged rows;
+      // deleteMany would wipe local data needed for offline consumption).
       for (const rls of data.recipeLineSizes ?? []) {
-        if (rls.deletedAt) continue;
         await tx.cloudRecipeLineSize.upsert({
           where: {
             storeId_menuItemCloudId_ingredientCloudId_baseType_sizeCode: {
@@ -1054,6 +1205,7 @@ export async function syncCatalogFromCloud(
             deletedAt: rls.deletedAt ? new Date(rls.deletedAt) : null,
           },
           update: {
+            cloudId: rls.id,
             qtyPerItem: rls.qtyPerItem,
             unitCode: rls.unitCode,
             version: rls.version,
@@ -1071,10 +1223,14 @@ export async function syncCatalogFromCloud(
             id: "1",
             adminPinHash: data.storeSettings.adminPinHash ?? null,
             ownerPasswordHash: data.storeSettings.ownerPasswordHash ?? null,
+            workDayFromTimeLocal: data.storeSettings.workDayFromTimeLocal ?? DEFAULT_WORK_DAY_FROM_TIME_LOCAL,
+            workDayToTimeLocal: data.storeSettings.workDayToTimeLocal ?? DEFAULT_WORK_DAY_TO_TIME_LOCAL,
           },
           update: {
             adminPinHash: data.storeSettings.adminPinHash ?? null,
             ownerPasswordHash: data.storeSettings.ownerPasswordHash ?? null,
+            workDayFromTimeLocal: data.storeSettings.workDayFromTimeLocal ?? DEFAULT_WORK_DAY_FROM_TIME_LOCAL,
+            workDayToTimeLocal: data.storeSettings.workDayToTimeLocal ?? DEFAULT_WORK_DAY_TO_TIME_LOCAL,
           },
         });
       }

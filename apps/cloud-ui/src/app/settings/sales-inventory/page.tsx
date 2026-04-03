@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { STOREFALLBACK_WORK_HOURS_FROM, STOREFALLBACK_WORK_HOURS_TO } from "@/lib/workDayFormDefaults";
 import { COLORS } from "@/lib/theme";
 
 const INVENTORY_TYPES = ["Ingredients Input Based"] as const;
@@ -36,6 +37,8 @@ export default function SalesInventoryPage() {
   const [inventoryEmailEnabled, setInventoryEmailEnabled] = useState(false);
   const [inventoryReportType, setInventoryReportType] = useState("Ingredients Input Based");
   const [fixedServiceChargePercent, setFixedServiceChargePercent] = useState(10);
+  const [workDayFromTimeLocal, setWorkDayFromTimeLocal] = useState(STOREFALLBACK_WORK_HOURS_FROM);
+  const [workDayToTimeLocal, setWorkDayToTimeLocal] = useState(STOREFALLBACK_WORK_HOURS_TO);
 
   const load = useCallback(async () => {
     setError("");
@@ -45,6 +48,8 @@ export default function SalesInventoryPage() {
     setInventoryEmailEnabled(d.inventoryEmailEnabled);
     setInventoryReportType(d.inventoryReportType || "Ingredients Input Based");
     setFixedServiceChargePercent(d.fixedServiceChargePercent ?? 10);
+    setWorkDayFromTimeLocal(d.workDayFromTimeLocal || STOREFALLBACK_WORK_HOURS_FROM);
+    setWorkDayToTimeLocal(d.workDayToTimeLocal || STOREFALLBACK_WORK_HOURS_TO);
   }, []);
 
   useEffect(() => {
@@ -65,6 +70,8 @@ export default function SalesInventoryPage() {
         dailySalesEmailTimeLocal,
         inventoryEmailEnabled,
         inventoryReportType,
+        workDayFromTimeLocal,
+        workDayToTimeLocal,
       });
       await load();
       setSuccess("Saved.");
@@ -208,6 +215,40 @@ export default function SalesInventoryPage() {
               </div>
               <p className="mt-1 text-xs text-white/40">Manual resend is not wired yet; configuration is saved above.</p>
             </div>
+          </div>
+        </div>
+
+        <div className="rounded-lg border p-6" style={{ background: COLORS.bgPanel, borderColor: COLORS.borderLight }}>
+          <h2 className="mb-1 text-sm font-semibold text-white">Work hours (business day)</h2>
+          <p className="mb-4 text-xs text-white/55">
+            <strong className="text-white/80">From</strong> sets when the operational day rolls over for Work Log grouping and
+            staff business dates on the cloud (same clock as dashboard audit offset). <strong className="text-white/80">To</strong>{" "}
+            is stored for display and future scheduling; boundary logic uses <strong className="text-white/80">From</strong>{" "}
+            (e.g. 04:00 → 04:00 next day).
+          </p>
+          <div className="flex flex-wrap gap-6">
+            <label className="flex flex-col gap-1 text-sm text-white/80">
+              From (HH:mm)
+              <input
+                type="time"
+                step={60}
+                value={workDayFromTimeLocal}
+                onChange={(e) => setWorkDayFromTimeLocal(e.target.value)}
+                className={inputStyle + " max-w-[10rem]"}
+                style={inputBg}
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-sm text-white/80">
+              To (HH:mm)
+              <input
+                type="time"
+                step={60}
+                value={workDayToTimeLocal}
+                onChange={(e) => setWorkDayToTimeLocal(e.target.value)}
+                className={inputStyle + " max-w-[10rem]"}
+                style={inputBg}
+              />
+            </label>
           </div>
         </div>
 
