@@ -64,6 +64,10 @@ type InvLine = {
   expectedQuantity?: unknown;
   unit?: string;
   varianceQuantity?: unknown;
+  openedAmount?: unknown;
+  sealedUnitCount?: unknown;
+  sealedBoxCount?: unknown;
+  totalAmount?: unknown;
 };
 
 function parseChecklistJson(raw: unknown): unknown {
@@ -237,13 +241,16 @@ export function WorkLogEntryDetail({ entry }: { entry: WorkLogEntryLite }) {
                       <th className="px-2 py-2 text-right">Counted</th>
                       <th className="px-2 py-2 text-right">Expected</th>
                       <th className="px-2 py-2">Unit</th>
+                      <th className="px-2 py-2 text-right">Open / sealed</th>
                       <th className="px-2 py-2 text-right">Variance</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-teal-100/80 bg-white">
                     {lines.map((l, i) => {
                       const name = str(l.inventoryItemName) || "—";
-                      const actual = parseNum(l.actualQuantity);
+                      const totalField = parseNum(l.totalAmount);
+                      const actualLegacy = parseNum(l.actualQuantity);
+                      const actual = Number.isFinite(totalField) ? totalField : actualLegacy;
                       const exp = parseNum(l.expectedQuantity);
                       const varq = parseNum(l.varianceQuantity);
                       const variance = Number.isFinite(varq)
@@ -251,12 +258,22 @@ export function WorkLogEntryDetail({ entry }: { entry: WorkLogEntryLite }) {
                         : Number.isFinite(actual) && Number.isFinite(exp)
                           ? actual - exp
                           : NaN;
+                      const o = str(l.openedAmount);
+                      const su = str(l.sealedUnitCount);
+                      const sb = str(l.sealedBoxCount);
+                      const br =
+                        o || su || sb
+                          ? [o ? `opened ${o}` : null, su ? `units ${su}` : null, sb ? `boxes ${sb}` : null]
+                              .filter(Boolean)
+                              .join(" · ")
+                          : "—";
                       return (
                         <tr key={`${name}-${i}`}>
                           <td className="px-2 py-2 font-medium text-teal-950">{name}</td>
                           <td className="px-2 py-2 text-right tabular-nums">{formatQty(actual)}</td>
                           <td className="px-2 py-2 text-right tabular-nums">{formatQty(exp)}</td>
                           <td className="px-2 py-2 text-teal-900/70">{str(l.unit) || "—"}</td>
+                          <td className="px-2 py-2 text-right text-xs text-teal-900/80">{br}</td>
                           <td className="px-2 py-2 text-right tabular-nums text-teal-950">{formatQty(variance)}</td>
                         </tr>
                       );

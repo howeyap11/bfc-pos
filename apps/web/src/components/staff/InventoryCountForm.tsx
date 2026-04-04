@@ -2,6 +2,15 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { withStaffAuthHeaders } from "@/lib/staffAuth";
+import {
+  computeTotalAmount,
+  emptyBreakdown,
+  formatCountTotal,
+  lineHasAny,
+  normalizeInventoryIngredients,
+  type CountBreakdown,
+  type IngCountMeta,
+} from "@/lib/inventoryCountShared";
 
 type InventoryCountFormProps = {
   compact?: boolean;
@@ -12,12 +21,12 @@ type InventoryCountFormProps = {
   useIngredientPicker?: boolean;
 };
 
-type IngredientOption = { cloudId: string; name: string; unitCode: string };
-
 type CountLine = {
   inventoryItemCloudId: string;
   inventoryItemName: string;
+  /** Manual / POS mode: single quantity string (legacy). Picker mode uses breakdown + computed total. */
   actualQuantity: string;
+  breakdown: CountBreakdown;
   unit?: string;
   notes?: string;
 };
@@ -26,7 +35,37 @@ const emptyLine = (): CountLine => ({
   inventoryItemCloudId: "",
   inventoryItemName: "",
   actualQuantity: "",
+  breakdown: emptyBreakdown(),
 });
+
+function normalizeDraftLines(raw: unknown): CountLine[] {
+  if (!Array.isArray(raw) || raw.length === 0) return [emptyLine()];
+  return raw.map((x) => {
+    const r = x as Record<string, unknown>;
+    const cloudId = String(r.inventoryItemCloudId ?? "");
+    const name = String(r.inventoryItemName ?? "");
+    const aq = String(r.actualQuantity ?? "");
+    const br = r.breakdown as CountBreakdown | undefined;
+    const breakdown: CountBreakdown =
+      br && typeof br === "object"
+        ? {
+            openedAmount: String((br as CountBreakdown).openedAmount ?? ""),
+            sealedUnitCount: String((br as CountBreakdown).sealedUnitCount ?? ""),
+            sealedBoxCount: String((br as CountBreakdown).sealedBoxCount ?? ""),
+          }
+        : aq.trim()
+          ? { openedAmount: aq, sealedUnitCount: "", sealedBoxCount: "" }
+          : emptyBreakdown();
+    return {
+      inventoryItemCloudId: cloudId,
+      inventoryItemName: name,
+      actualQuantity: breakdown.openedAmount.trim() === "" ? aq : "",
+      breakdown,
+      unit: r.unit != null ? String(r.unit) : undefined,
+      notes: r.notes != null ? String(r.notes) : undefined,
+    };
+  });
+}
 
 export function InventoryCountForm({
   compact = false,
@@ -34,7 +73,7 @@ export function InventoryCountForm({
   draftStorageKey = null,
   useIngredientPicker = false,
 }: InventoryCountFormProps) {
-  const [ingredients, setIngredients] = useState<IngredientOption[]>([]);
+  const [ingredients, setIngredients] = useState<IngCountMeta[]>([]);
   const [lines, setLines] = useState<CountLine[]>([emptyLine()]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
@@ -48,7 +87,7 @@ export function InventoryCountForm({
       cache: "no-store",
     })
       .then((r) => r.json())
-      .then((d) => (Array.isArray(d) ? setIngredients(d) : setIngredients([])))
+      .then((d) => setIngredients(normalizeInventoryIngredients(d)))
       .catch(() => setIngredients([]));
   }, [useIngredientPicker]);
 
@@ -60,8 +99,10 @@ export function InventoryCountForm({
     try {
       const raw = localStorage.getItem(draftStorageKey);
       if (raw) {
-        const parsed = JSON.parse(raw) as { lines?: CountLine[] };
-        if (parsed.lines?.length) setLines(parsed.lines);
+        const parsed = JSON.parse(raw) as { lines?: unknown };
+        if (Array.isArray(parsed.lines) && parsed.lines.length > 0) {
+          setLines(normalizeDraftLines(parsed.lines));
+        }
       }
     } catch {
       /* ignore */
@@ -84,10 +125,16 @@ export function InventoryCountForm({
     };
   }, [draftStorageKey, draftLoaded, lines]);
 
-  const validLines = useMemo(
-    () => lines.filter((l) => l.inventoryItemCloudId.trim() && l.inventoryItemName.trim() && l.actualQuantity.trim()),
-    [lines]
-  );
+  const validLines = useMemo(() => {
+    if (useIngredientPicker) {
+      return lines.filter(
+        (l) => l.inventoryItemCloudId.trim() && l.inventoryItemName.trim() && lineHasAny(l.breakdown)
+      );
+    }
+    return lines.filter(
+      (l) => l.inventoryItemCloudId.trim() && l.inventoryItemName.trim() && l.actualQuantity.trim()
+    );
+  }, [lines, useIngredientPicker]);
 
   function updateLine(index: number, patch: Partial<CountLine>) {
     setLines((prev) => prev.map((l, i) => (i === index ? { ...l, ...patch } : l)));
@@ -107,19 +154,44 @@ export function InventoryCountForm({
       inventoryItemCloudId: cloudId,
       inventoryItemName: ing?.name ?? "",
       unit: ing?.unitCode ?? "",
+      breakdown: emptyBreakdown(),
+      actualQuantity: "",
     });
+  }
+
+  function lineMeta(cloudId: string): IngCountMeta | undefined {
+    return ingredients.find((i) => i.cloudId === cloudId);
   }
 
   async function submit() {
     setBusy(true);
     setMsg("");
     try {
+      const payloadLines = useIngredientPicker
+        ? validLines.map((l) => {
+            const ing = lineMeta(l.inventoryItemCloudId);
+            if (!ing) throw new Error("Missing ingredient for line");
+            const b = l.breakdown;
+            const totalAmount = computeTotalAmount(ing, b);
+            return {
+              inventoryItemCloudId: l.inventoryItemCloudId,
+              inventoryItemName: l.inventoryItemName,
+              actualQuantity: String(totalAmount),
+              unit: l.unit ?? ing.unitCode,
+              notes: l.notes,
+              ...(b.openedAmount.trim() !== "" ? { openedAmount: b.openedAmount.trim() } : {}),
+              ...(b.sealedUnitCount.trim() !== "" ? { sealedUnitCount: b.sealedUnitCount.trim() } : {}),
+              ...(b.sealedBoxCount.trim() !== "" ? { sealedBoxCount: b.sealedBoxCount.trim() } : {}),
+              totalAmount,
+            };
+          })
+        : validLines;
       const res = await fetch("/api/staff/inventory-count-sessions", {
         method: "POST",
         headers: withStaffAuthHeaders(),
         body: JSON.stringify({
           source,
-          lines: validLines,
+          lines: payloadLines,
         }),
       });
       const text = await res.text();
@@ -178,12 +250,82 @@ export function InventoryCountForm({
                 />
               </>
             )}
-            <input
-              placeholder="Actual quantity"
-              value={l.actualQuantity}
-              onChange={(e) => updateLine(i, { actualQuantity: e.target.value })}
-              className="rounded-md border border-white/10 bg-black/20 px-3 py-2 text-white"
-            />
+            {useIngredientPicker && l.inventoryItemCloudId ? (
+              (() => {
+                const ing = lineMeta(l.inventoryItemCloudId);
+                if (!ing) return null;
+                const total = computeTotalAmount(ing, l.breakdown);
+                const b = l.breakdown;
+                const inp = "w-full rounded-md border border-white/10 bg-black/20 px-3 py-2 text-white";
+                return (
+                  <div className="space-y-2 md:col-span-2">
+                    <div className="rounded-lg border border-emerald-500/40 bg-emerald-950/30 px-3 py-2">
+                      <div className="text-xs uppercase tracking-wide text-emerald-200/80">totalAmount</div>
+                      <div className="text-xl font-semibold tabular-nums text-white">
+                        {formatCountTotal(total)} <span className="text-sm font-normal text-white/60">{ing.unitCode}</span>
+                      </div>
+                    </div>
+                    <label className="block">
+                      <span className="mb-1 block text-xs text-white/50">openedAmount</span>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        autoComplete="off"
+                        placeholder="0"
+                        value={b.openedAmount}
+                        onChange={(e) =>
+                          updateLine(i, { breakdown: { ...b, openedAmount: e.target.value } })
+                        }
+                        className={inp}
+                      />
+                    </label>
+                    {ing.hasSealedUnits ? (
+                      <label className="block">
+                        <span className="mb-1 block text-xs text-white/50">
+                          sealedUnitCount ({ing.sealedUnitAmount} {ing.unitCode}/unit)
+                        </span>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          autoComplete="off"
+                          placeholder="0"
+                          value={b.sealedUnitCount}
+                          onChange={(e) =>
+                            updateLine(i, { breakdown: { ...b, sealedUnitCount: e.target.value } })
+                          }
+                          className={inp}
+                        />
+                      </label>
+                    ) : null}
+                    {ing.hasSealedBoxes ? (
+                      <label className="block">
+                        <span className="mb-1 block text-xs text-white/50">
+                          sealedBoxCount ({ing.sealedBoxAmount} {ing.unitCode}/box)
+                        </span>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          autoComplete="off"
+                          placeholder="0"
+                          value={b.sealedBoxCount}
+                          onChange={(e) =>
+                            updateLine(i, { breakdown: { ...b, sealedBoxCount: e.target.value } })
+                          }
+                          className={inp}
+                        />
+                      </label>
+                    ) : null}
+                  </div>
+                );
+              })()
+            ) : (
+              <input
+                placeholder="Actual quantity"
+                value={l.actualQuantity}
+                onChange={(e) => updateLine(i, { actualQuantity: e.target.value })}
+                className="rounded-md border border-white/10 bg-black/20 px-3 py-2 text-white"
+              />
+            )}
             {!useIngredientPicker && (
               <input
                 placeholder="Unit (optional)"

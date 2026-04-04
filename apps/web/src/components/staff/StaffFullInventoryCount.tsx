@@ -2,16 +2,22 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { withStaffAuthHeaders } from "@/lib/staffAuth";
+import {
+  type CountBreakdown,
+  type IngCountMeta,
+  emptyBreakdown,
+  computeTotalAmount,
+  lineHasAny,
+  formatCountTotal,
+  normalizeInventoryIngredients,
+} from "@/lib/inventoryCountShared";
 
-type Ing = { cloudId: string; name: string; unitCode: string; imageUrl?: string | null };
+type Ing = IngCountMeta;
 
-type DraftPayload = {
-  v: 2 | 3;
-  quantities: Record<string, string>;
-  notes?: string;
-};
+type DraftV4 = { v: 4; breakdown: Record<string, CountBreakdown> };
+type DraftLegacy = { v: 2 | 3; quantities: Record<string, string> };
 
-const DRAFT_VERSION = 3 as const;
+const DRAFT_VERSION = 4 as const;
 
 function IngredientThumb({ ing, variant = "row" }: { ing: Ing; variant?: "row" | "guided" }) {
   const src = ing.imageUrl?.trim();
@@ -47,9 +53,84 @@ function IngredientThumb({ ing, variant = "row" }: { ing: Ing; variant?: "row" |
   );
 }
 
+function CountFieldGroup({
+  ing,
+  b,
+  onPatch,
+  inputRef,
+  compact,
+}: {
+  ing: Ing;
+  b: CountBreakdown;
+  onPatch: (patch: Partial<CountBreakdown>) => void;
+  inputRef?: React.Ref<HTMLInputElement>;
+  compact?: boolean;
+}) {
+  const total = computeTotalAmount(ing, b);
+  const showSealedU = ing.hasSealedUnits;
+  const showSealedB = ing.hasSealedBoxes;
+  const inp =
+    "w-full rounded-xl border border-zinc-600 bg-black/30 px-3 py-3 text-center text-lg font-semibold tabular-nums text-white placeholder:text-white/25";
+
+  return (
+    <div className={`space-y-3 ${compact ? "" : "mt-4"}`}>
+      <div className="rounded-xl border border-emerald-500/30 bg-emerald-950/20 px-3 py-2 text-center">
+        <div className="text-xs font-medium uppercase tracking-wide text-emerald-200/80">totalAmount</div>
+        <div className="text-2xl font-bold tabular-nums text-emerald-100">{formatCountTotal(total)}</div>
+        <div className="text-xs text-white/40">{ing.unitCode}</div>
+      </div>
+      <label className="block">
+        <span className="mb-1 block text-left text-xs text-white/50">openedAmount</span>
+        <input
+          ref={inputRef}
+          type="text"
+          inputMode="decimal"
+          autoComplete="off"
+          placeholder="0"
+          value={b.openedAmount}
+          onChange={(e) => onPatch({ openedAmount: e.target.value })}
+          className={inp}
+        />
+      </label>
+      {showSealedU ? (
+        <label className="block">
+          <span className="mb-1 block text-left text-xs text-white/50">
+            sealedUnitCount ({ing.sealedUnitAmount} {ing.unitCode}/unit)
+          </span>
+          <input
+            type="text"
+            inputMode="numeric"
+            autoComplete="off"
+            placeholder="0"
+            value={b.sealedUnitCount}
+            onChange={(e) => onPatch({ sealedUnitCount: e.target.value.replace(/\D/g, "") })}
+            className={inp}
+          />
+        </label>
+      ) : null}
+      {showSealedB ? (
+        <label className="block">
+          <span className="mb-1 block text-left text-xs text-white/50">
+            sealedBoxCount ({ing.sealedBoxAmount} {ing.unitCode}/box)
+          </span>
+          <input
+            type="text"
+            inputMode="numeric"
+            autoComplete="off"
+            placeholder="0"
+            value={b.sealedBoxCount}
+            onChange={(e) => onPatch({ sealedBoxCount: e.target.value.replace(/\D/g, "") })}
+            className={inp}
+          />
+        </label>
+      ) : null}
+    </div>
+  );
+}
+
 export function StaffFullInventoryCount({ draftStorageKey }: { draftStorageKey: string }) {
   const [ingredients, setIngredients] = useState<Ing[]>([]);
-  const [quantities, setQuantities] = useState<Record<string, string>>({});
+  const [breakdown, setBreakdown] = useState<Record<string, CountBreakdown>>({});
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
@@ -57,7 +138,7 @@ export function StaffFullInventoryCount({ draftStorageKey }: { draftStorageKey: 
   const [guidedMode, setGuidedMode] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const guidedQtyInputRef = useRef<HTMLInputElement>(null);
+  const guidedOpenedRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetch("/api/staff/inventory/ingredients", {
@@ -65,7 +146,7 @@ export function StaffFullInventoryCount({ draftStorageKey }: { draftStorageKey: 
       cache: "no-store",
     })
       .then((r) => r.json())
-      .then((d) => (Array.isArray(d) ? setIngredients(d) : setIngredients([])))
+      .then((d) => setIngredients(normalizeInventoryIngredients(d)))
       .catch(() => setIngredients([]));
   }, []);
 
@@ -74,14 +155,20 @@ export function StaffFullInventoryCount({ draftStorageKey }: { draftStorageKey: 
     try {
       const raw = localStorage.getItem(draftStorageKey);
       if (raw) {
-        const parsed = JSON.parse(raw) as DraftPayload | { lines?: unknown };
-        if (
+        const parsed = JSON.parse(raw) as DraftV4 | DraftLegacy | { lines?: unknown };
+        if ("v" in parsed && parsed.v === 4 && parsed.breakdown && typeof parsed.breakdown === "object") {
+          setBreakdown(parsed.breakdown);
+        } else if (
           "v" in parsed &&
           (parsed.v === 2 || parsed.v === 3) &&
           parsed.quantities &&
           typeof parsed.quantities === "object"
         ) {
-          setQuantities(parsed.quantities);
+          const next: Record<string, CountBreakdown> = {};
+          for (const [k, v] of Object.entries(parsed.quantities)) {
+            next[k] = { openedAmount: String(v ?? ""), sealedUnitCount: "", sealedBoxCount: "" };
+          }
+          setBreakdown(next);
         }
       }
     } catch {
@@ -95,7 +182,7 @@ export function StaffFullInventoryCount({ draftStorageKey }: { draftStorageKey: 
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       try {
-        const payload: DraftPayload = { v: DRAFT_VERSION, quantities };
+        const payload: DraftV4 = { v: DRAFT_VERSION, breakdown };
         localStorage.setItem(draftStorageKey, JSON.stringify(payload));
       } catch {
         /* quota */
@@ -104,7 +191,7 @@ export function StaffFullInventoryCount({ draftStorageKey }: { draftStorageKey: 
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
-  }, [draftStorageKey, draftLoaded, quantities]);
+  }, [draftStorageKey, draftLoaded, breakdown]);
 
   useEffect(() => {
     if (!guidedMode || ingredients.length === 0) return;
@@ -117,9 +204,18 @@ export function StaffFullInventoryCount({ draftStorageKey }: { draftStorageKey: 
 
   useEffect(() => {
     if (!guidedMode) return;
-    const t = window.setTimeout(() => guidedQtyInputRef.current?.focus(), 50);
+    const t = window.setTimeout(() => guidedOpenedRef.current?.focus(), 50);
     return () => window.clearTimeout(t);
   }, [guidedMode, currentIndex]);
+
+  const getB = (cloudId: string): CountBreakdown => breakdown[cloudId] ?? emptyBreakdown();
+
+  function patchLine(cloudId: string, patch: Partial<CountBreakdown>) {
+    setBreakdown((prev) => {
+      const cur = prev[cloudId] ?? emptyBreakdown();
+      return { ...prev, [cloudId]: { ...cur, ...patch } };
+    });
+  }
 
   const filtered = useMemo(() => {
     const s = search.trim().toLowerCase();
@@ -128,24 +224,33 @@ export function StaffFullInventoryCount({ draftStorageKey }: { draftStorageKey: 
   }, [ingredients, search]);
 
   const linesForSubmit = useMemo(() => {
-    return ingredients
-      .map((ing) => {
-        const q = (quantities[ing.cloudId] ?? "").trim();
-        if (!q) return null;
-        return {
-          inventoryItemCloudId: ing.cloudId,
-          inventoryItemName: ing.name,
-          actualQuantity: q,
-          unit: ing.unitCode,
-        };
-      })
-      .filter(Boolean) as Array<{
+    const out: Array<{
       inventoryItemCloudId: string;
       inventoryItemName: string;
       actualQuantity: string;
       unit: string;
-    }>;
-  }, [ingredients, quantities]);
+      openedAmount?: string;
+      sealedUnitCount?: string;
+      sealedBoxCount?: string;
+      totalAmount: number;
+    }> = [];
+    for (const ing of ingredients) {
+      const b = getB(ing.cloudId);
+      if (!lineHasAny(b)) continue;
+      const totalAmount = computeTotalAmount(ing, b);
+      out.push({
+        inventoryItemCloudId: ing.cloudId,
+        inventoryItemName: ing.name,
+        actualQuantity: String(totalAmount),
+        unit: ing.unitCode,
+        ...(b.openedAmount.trim() !== "" ? { openedAmount: b.openedAmount.trim() } : {}),
+        ...(b.sealedUnitCount.trim() !== "" ? { sealedUnitCount: b.sealedUnitCount.trim() } : {}),
+        ...(b.sealedBoxCount.trim() !== "" ? { sealedBoxCount: b.sealedBoxCount.trim() } : {}),
+        totalAmount,
+      });
+    }
+    return out;
+  }, [ingredients, breakdown]);
 
   async function submit() {
     if (linesForSubmit.length === 0) {
@@ -166,7 +271,7 @@ export function StaffFullInventoryCount({ draftStorageKey }: { draftStorageKey: 
       const text = await res.text();
       if (!res.ok) throw new Error(text || `HTTP ${res.status}`);
       setMsg("Saved locally and queued for sync.");
-      setQuantities({});
+      setBreakdown({});
       try {
         localStorage.removeItem(draftStorageKey);
       } catch {
@@ -177,10 +282,6 @@ export function StaffFullInventoryCount({ draftStorageKey }: { draftStorageKey: 
     } finally {
       setBusy(false);
     }
-  }
-
-  function setQty(cloudId: string, value: string) {
-    setQuantities((prev) => ({ ...prev, [cloudId]: value }));
   }
 
   const currentIng = ingredients[currentIndex];
@@ -222,19 +323,12 @@ export function StaffFullInventoryCount({ draftStorageKey }: { draftStorageKey: 
             <IngredientThumb ing={currentIng} variant="guided" />
             <h3 className="mt-5 text-center text-xl font-semibold leading-snug text-white sm:text-2xl">{currentIng.name}</h3>
             <p className="mt-2 text-center text-base text-white/50">{currentIng.unitCode}</p>
-            <label className="mt-6 block">
-              <span className="sr-only">Quantity for {currentIng.name}</span>
-              <input
-                ref={guidedQtyInputRef}
-                type="text"
-                inputMode="decimal"
-                autoComplete="off"
-                placeholder="0"
-                value={quantities[currentIng.cloudId] ?? ""}
-                onChange={(e) => setQty(currentIng.cloudId, e.target.value)}
-                className="w-full rounded-2xl border border-zinc-600 bg-black/30 px-4 py-5 text-center text-3xl font-bold tabular-nums text-white placeholder:text-white/25"
-              />
-            </label>
+            <CountFieldGroup
+              ing={currentIng}
+              b={getB(currentIng.cloudId)}
+              onPatch={(p) => patchLine(currentIng.cloudId, p)}
+              inputRef={guidedOpenedRef}
+            />
           </div>
 
           <div className="flex gap-3">
@@ -270,27 +364,33 @@ export function StaffFullInventoryCount({ draftStorageKey }: { draftStorageKey: 
             onChange={(e) => setSearch(e.target.value)}
             className="w-full rounded-2xl border border-white/15 bg-zinc-900/80 px-5 py-4 text-lg text-white shadow-inner placeholder:text-white/35"
           />
-          <div className="max-h-[min(58vh,28rem)] space-y-2 overflow-y-auto rounded-2xl border border-white/12 bg-black/25 p-3 sm:p-4">
-            {filtered.map((ing) => (
-              <div
-                key={ing.cloudId}
-                className="flex items-center gap-3 border-b border-white/10 py-4 last:border-0 sm:gap-4"
-              >
-                <IngredientThumb ing={ing} />
-                <div className="min-w-0 flex-1">
-                  <p className="text-lg font-semibold leading-snug text-white">{ing.name}</p>
-                  <p className="mt-0.5 text-sm text-white/45">{ing.unitCode}</p>
+          <div className="max-h-[min(58vh,28rem)] space-y-3 overflow-y-auto rounded-2xl border border-white/12 bg-black/25 p-3 sm:p-4">
+            {filtered.map((ing) => {
+              const b = getB(ing.cloudId);
+              const total = computeTotalAmount(ing, b);
+              return (
+                <div
+                  key={ing.cloudId}
+                  className="space-y-2 border-b border-white/10 py-4 last:border-0"
+                >
+                  <div className="flex items-start gap-3 sm:gap-4">
+                    <IngredientThumb ing={ing} />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-lg font-semibold leading-snug text-white">{ing.name}</p>
+                      <p className="mt-0.5 text-sm text-white/45">
+                        {ing.unitCode} · totalAmount {formatCountTotal(total)}
+                      </p>
+                    </div>
+                  </div>
+                  <CountFieldGroup
+                    ing={ing}
+                    b={b}
+                    onPatch={(p) => patchLine(ing.cloudId, p)}
+                    compact
+                  />
                 </div>
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  placeholder="Qty"
-                  value={quantities[ing.cloudId] ?? ""}
-                  onChange={(e) => setQty(ing.cloudId, e.target.value)}
-                  className="w-[5.5rem] shrink-0 rounded-xl border border-white/20 bg-zinc-900 px-3 py-3 text-right text-lg font-semibold tabular-nums text-white placeholder:text-white/30"
-                />
-              </div>
-            ))}
+              );
+            })}
             {filtered.length === 0 && (
               <p className="p-6 text-center text-base text-white/45">No ingredients match.</p>
             )}

@@ -563,6 +563,10 @@ model Ingredient {
   isActive                 Boolean                 @default(true)
   /// Matches CloudIngredient.cloudId for POS recipe consumption + staff stock actions
   cloudIngredientCloudId   String?                 @unique
+  hasSealedUnits           Boolean                 @default(false)
+  hasSealedBoxes           Boolean                 @default(false)
+  sealedUnitAmount         Int                     @default(0)
+  sealedBoxAmount          Int                     @default(0)
   createdAt                DateTime                @default(now())
   updatedAt                DateTime                @updatedAt
   unit                     InventoryUnit           @relation(fields: [unitId], references: [id])
@@ -843,6 +847,12 @@ model StaffInventoryCountLine {
   varianceQuantity     String?
   unit                 String?
   notes                String?
+  /// Local operational Ingredient.id at submit (optional audit)
+  localIngredientId    String?
+  openedAmount         String?
+  sealedUnitCount      String?
+  sealedBoxCount       String?
+  totalAmount          String?
   createdAt            DateTime                   @default(now())
   updatedAt            DateTime                   @updatedAt
   session              StaffInventoryCountSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
@@ -1284,10 +1294,17 @@ model CloudIngredient {
   version   Int
   imageUrl  String?
   deletedAt DateTime?
+  /// Mirrors cloud Ingredient.sortOrder for consistent POS count ordering
+  sortOrder Int       @default(0)
+  hasSealedUnits   Boolean @default(false)
+  hasSealedBoxes   Boolean @default(false)
+  sealedUnitAmount Int     @default(0)
+  sealedBoxAmount  Int     @default(0)
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
   @@index([storeId])
+  @@index([storeId, sortOrder])
 }
 
 model CloudRecipeLine {

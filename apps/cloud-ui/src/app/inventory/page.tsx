@@ -5,6 +5,7 @@ import { api, type InventoryStockRow, type InventoryLocation } from "@/lib/api";
 import { isCloudAdminRole } from "@/lib/cloudAdminRole";
 import { canUseDangerousDevTools } from "@/lib/devMode";
 import { AdminPageLayout } from "@/components/AdminPageLayout";
+import { InventoryManualCountReporting } from "@/components/InventoryManualCountReporting";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
@@ -88,6 +89,8 @@ export default function InventoryPage() {
         <span className="font-medium text-red-700">pulled out</span> match synced operational data (no live recomputation from
         sales here).
       </p>
+
+      <InventoryManualCountReporting />
 
       {showDevManualSet && (
         <div className="mb-6 rounded-2xl border border-amber-200/90 bg-amber-50/90 p-4 text-sm shadow-sm ring-1 ring-amber-100">

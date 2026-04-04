@@ -8,7 +8,7 @@ export default function StaffOpsPage() {
     {
       href: "/staff-ops/work-log",
       label: "Work log",
-      hint: "Audit feed, inventory variance, and count comparison for a business day",
+      hint: "Audit feed and activity filters; manual inventory variance is on Inventory",
     },
     { href: "/staff-ops/attendance", label: "Attendance", hint: "Synced clock-ins from POS" },
     { href: "/staff-ops/waste-reports", label: "Waste Reports", hint: "" },

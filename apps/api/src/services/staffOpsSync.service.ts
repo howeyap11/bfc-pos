@@ -110,6 +110,11 @@ async function uploadInventoryCount(prisma: PrismaClient, localId: string): Prom
       varianceQuantity: l.varianceQuantity,
       unit: l.unit,
       notes: l.notes,
+      ingredientId: l.localIngredientId,
+      openedAmount: l.openedAmount,
+      sealedUnitCount: l.sealedUnitCount,
+      sealedBoxCount: l.sealedBoxCount,
+      totalAmount: l.totalAmount,
     })),
   });
 }

@@ -7,7 +7,14 @@ import Decimal from "decimal.js";
 
 export type ManualCountLineInput = {
   inventoryItemCloudId: string;
+  /** Normalized total in ingredient base UOM (authoritative for variance vs expected). */
   actualQuantity: string;
+  /** Local Ingredient.id when known */
+  ingredientId?: string | null;
+  openedAmount?: number | null;
+  sealedUnitCount?: number | null;
+  sealedBoxCount?: number | null;
+  totalAmount?: number | null;
 };
 
 /** Embedded in snapshotJson as `_meta` for a self-describing audit blob. */
@@ -28,6 +35,21 @@ export type ManualSnapshotBuildResult = {
 };
 
 type Db = PrismaClient | Prisma.TransactionClient;
+
+function safeDecimalQty(s: string | number | null | undefined): Decimal {
+  try {
+    if (s == null || s === "") return new Decimal(0);
+    return new Decimal(String(s).trim());
+  } catch {
+    return new Decimal(0);
+  }
+}
+
+function safeInt(n: number | string | null | undefined): number {
+  if (n == null || n === "") return 0;
+  const x = typeof n === "number" ? Math.trunc(n) : parseInt(String(n).trim(), 10);
+  return Number.isFinite(x) ? x : 0;
+}
 
 /**
  * Builds snapshotJson: `_meta` + one entry per counted line with staffCount and expected stocks from local DB at submit instant.
@@ -52,6 +74,11 @@ export async function buildManualInventorySubmitSnapshot(
       storeStock: number;
       warehouseStock: number;
       localIngredientMapped: boolean;
+      ingredientId?: string;
+      openedAmount: number;
+      sealedUnitCount: number;
+      sealedBoxCount: number;
+      totalAmount: number;
     }
   > = {};
   const expectedStoreByCloudId = new Map<string, string>();
@@ -59,22 +86,39 @@ export async function buildManualInventorySubmitSnapshot(
   for (const l of lines) {
     const cid = l.inventoryItemCloudId.trim();
     if (!cid) continue;
-    let staffCount: number;
-    try {
-      staffCount = new Decimal(String(l.actualQuantity).trim()).toNumber();
-      if (!Number.isFinite(staffCount)) staffCount = 0;
-    } catch {
-      staffCount = 0;
-    }
+
+    const totalFromField =
+      l.totalAmount != null && Number.isFinite(l.totalAmount)
+        ? l.totalAmount
+        : safeDecimalQty(l.actualQuantity).toNumber();
+    const staffCount = Number.isFinite(totalFromField) ? totalFromField : 0;
+
+    const hasExplicitBreakdown =
+      l.openedAmount != null ||
+      (l.sealedUnitCount != null && safeInt(l.sealedUnitCount) !== 0) ||
+      (l.sealedBoxCount != null && safeInt(l.sealedBoxCount) !== 0);
+
+    const openedAmountNum = hasExplicitBreakdown
+      ? l.openedAmount != null && Number.isFinite(Number(l.openedAmount))
+        ? Number(l.openedAmount)
+        : 0
+      : staffCount;
+
+    const sealedUnitCountNum = hasExplicitBreakdown ? safeInt(l.sealedUnitCount) : 0;
+    const sealedBoxCountNum = hasExplicitBreakdown ? safeInt(l.sealedBoxCount) : 0;
+    const totalAmountNum = staffCount;
 
     const ing = await db.ingredient.findFirst({
       where: { storeId, cloudIngredientCloudId: cid },
       select: {
+        id: true,
         stocks: { select: { onHandQty: true } },
         warehouseStock: { select: { onHandQty: true } },
       },
     });
     const mapped = !!ing;
+    const resolvedIngredientId = (l.ingredientId?.trim() || ing?.id) ?? undefined;
+
     if (!mapped && staffCount !== 0 && options?.snapshotWarn) {
       options.snapshotWarn(
         {
@@ -91,14 +135,20 @@ export async function buildManualInventorySubmitSnapshot(
     const storeQty = ing?.stocks ? new Decimal(ing.stocks.onHandQty).toNumber() : 0;
     const whQty = ing?.warehouseStock ? new Decimal(ing.warehouseStock.onHandQty).toNumber() : 0;
 
-    ingredients[cid] = {
+    const entry: (typeof ingredients)[string] = {
       staffCount,
       expectedStoreStockAtSubmission: storeQty,
       expectedWarehouseStockAtSubmission: whQty,
       storeStock: storeQty,
       warehouseStock: whQty,
       localIngredientMapped: mapped,
+      openedAmount: openedAmountNum,
+      sealedUnitCount: sealedUnitCountNum,
+      sealedBoxCount: sealedBoxCountNum,
+      totalAmount: totalAmountNum,
     };
+    if (resolvedIngredientId) entry.ingredientId = resolvedIngredientId;
+    ingredients[cid] = entry;
     expectedStoreByCloudId.set(cid, new Decimal(storeQty).toString());
   }
 

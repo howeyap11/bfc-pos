@@ -42,6 +42,23 @@ function getStoreId(req: StaffReq): string {
   return req.staff?.storeId ?? STORE_ID;
 }
 
+function optNumberFromBody(v: unknown): number | null {
+  if (v == null || v === "") return null;
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const t = v.trim();
+    if (!t) return null;
+    const n = parseFloat(t);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function optionalNumericStringForDb(v: unknown): string | null {
+  const n = optNumberFromBody(v);
+  return n == null ? null : String(n);
+}
+
 function ensureStaff(req: StaffReq, reply: FastifyReply): { id: string; cloudId: string | null; name: string; role: string } | null {
   if (!req.staff) {
     reply.code(401).send({ error: "UNAUTHORIZED" });
@@ -65,14 +82,29 @@ export async function staffOpsRoutes(app: FastifyInstance) {
     const storeId = getStoreId(req as StaffReq);
     const rows = await app.prisma.cloudIngredient.findMany({
       where: { storeId, isActive: true, deletedAt: null },
-      orderBy: { name: "asc" },
-      select: { cloudId: true, name: true, unitCode: true, imageUrl: true },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: {
+        cloudId: true,
+        name: true,
+        unitCode: true,
+        imageUrl: true,
+        sortOrder: true,
+        hasSealedUnits: true,
+        hasSealedBoxes: true,
+        sealedUnitAmount: true,
+        sealedBoxAmount: true,
+      },
     });
     return rows.map((r) => ({
       cloudId: r.cloudId,
       name: r.name,
       unitCode: r.unitCode,
       imageUrl: r.imageUrl ?? null,
+      sortOrder: r.sortOrder,
+      hasSealedUnits: r.hasSealedUnits,
+      hasSealedBoxes: r.hasSealedBoxes,
+      sealedUnitAmount: r.sealedUnitAmount,
+      sealedBoxAmount: r.sealedBoxAmount,
     }));
   });
 
@@ -323,6 +355,11 @@ export async function staffOpsRoutes(app: FastifyInstance) {
               varianceQuantity: z.string().optional(),
               unit: z.string().optional(),
               notes: z.string().optional(),
+              ingredientId: z.string().optional().nullable(),
+              openedAmount: z.union([z.string(), z.number()]).optional().nullable(),
+              sealedUnitCount: z.union([z.string(), z.number()]).optional().nullable(),
+              sealedBoxCount: z.union([z.string(), z.number()]).optional().nullable(),
+              totalAmount: z.union([z.string(), z.number()]).optional().nullable(),
             })
           )
           .min(1),
@@ -365,12 +402,32 @@ export async function staffOpsRoutes(app: FastifyInstance) {
       });
       replacedSessionId = previousEffective?.id ?? null;
 
+      const resolvedLines = await Promise.all(
+        parsed.data.lines.map(async (l) => {
+          const cid = l.inventoryItemCloudId.trim();
+          const rowIng =
+            !l.ingredientId?.trim() && cid
+              ? await tx.ingredient.findFirst({
+                  where: { storeId, cloudIngredientCloudId: cid },
+                  select: { id: true },
+                })
+              : null;
+          const localIngredientId = l.ingredientId?.trim() || rowIng?.id || null;
+          return { raw: l, localIngredientId };
+        })
+      );
+
       const { snapshotJson, expectedStoreByCloudId } = await buildManualInventorySubmitSnapshot(
         tx,
         storeId,
-        parsed.data.lines.map((l) => ({
+        resolvedLines.map(({ raw: l, localIngredientId }) => ({
           inventoryItemCloudId: l.inventoryItemCloudId,
           actualQuantity: l.actualQuantity,
+          ingredientId: localIngredientId,
+          openedAmount: optNumberFromBody(l.openedAmount),
+          sealedUnitCount: optNumberFromBody(l.sealedUnitCount),
+          sealedBoxCount: optNumberFromBody(l.sealedBoxCount),
+          totalAmount: optNumberFromBody(l.totalAmount),
         })),
         {
           submittedAtIso: countedAt.toISOString(),
@@ -384,7 +441,7 @@ export async function staffOpsRoutes(app: FastifyInstance) {
         { snapshotWarn: (meta, msg) => app.log.warn(meta, msg) }
       );
 
-      const lineRows = parsed.data.lines.map((l) => {
+      const lineRows = resolvedLines.map(({ raw: l, localIngredientId }) => {
         const cid = l.inventoryItemCloudId.trim();
         const frozenExpected = cid ? expectedStoreByCloudId.get(cid) : undefined;
         const expectedQuantity = frozenExpected ?? null;
@@ -402,6 +459,7 @@ export async function staffOpsRoutes(app: FastifyInstance) {
             /* keep client variance if any */
           }
         }
+        const totalNum = optNumberFromBody(l.totalAmount);
         return {
           inventoryItemCloudId: l.inventoryItemCloudId,
           inventoryItemName: l.inventoryItemName,
@@ -410,6 +468,11 @@ export async function staffOpsRoutes(app: FastifyInstance) {
           varianceQuantity,
           unit: l.unit ?? null,
           notes: l.notes ?? null,
+          localIngredientId,
+          openedAmount: optionalNumericStringForDb(l.openedAmount),
+          sealedUnitCount: optionalNumericStringForDb(l.sealedUnitCount),
+          sealedBoxCount: optionalNumericStringForDb(l.sealedBoxCount),
+          totalAmount: totalNum != null ? String(totalNum) : l.actualQuantity,
         };
       });
 

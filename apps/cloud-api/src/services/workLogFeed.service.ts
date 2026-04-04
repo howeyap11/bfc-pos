@@ -117,6 +117,11 @@ export async function buildWorkLogFeed(
   }
 
   if (want("inventory")) {
+    const ingOrd = await prisma.ingredient.findMany({
+      where: { deletedAt: null },
+      select: { id: true, sortOrder: true },
+    });
+    const ord = new Map(ingOrd.map((i) => [i.id, i.sortOrder ?? 0]));
     const rows = await prisma.syncedInventoryCountSession.findMany({
       where: bdFilter
         ? {
@@ -133,6 +138,12 @@ export async function buildWorkLogFeed(
     for (const r of rows) {
       const iso = r.countedAt.toISOString();
       const bd = r.businessDate?.trim() || bdKey(r.countedAt);
+      const sorted = [...r.lines].sort((a, b) => {
+        const da = ord.get(a.inventoryItemCloudId) ?? 0;
+        const db = ord.get(b.inventoryItemCloudId) ?? 0;
+        if (da !== db) return da - db;
+        return a.inventoryItemName.localeCompare(b.inventoryItemName);
+      });
       entries.push({
         id: `inv-${r.id}`,
         storeId: r.storeId,
@@ -154,13 +165,17 @@ export async function buildWorkLogFeed(
           businessDate: bd,
           source: r.source,
           auditSource: "staff_manual_inventory",
-          lines: r.lines.map((l) => ({
+          lines: sorted.map((l) => ({
             inventoryItemName: l.inventoryItemName,
             inventoryItemCloudId: l.inventoryItemCloudId,
             actualQuantity: l.actualQuantity,
             unit: l.unit,
             expectedQuantity: l.expectedQuantity,
             varianceQuantity: l.varianceQuantity,
+            openedAmount: l.openedAmount,
+            sealedUnitCount: l.sealedUnitCount,
+            sealedBoxCount: l.sealedBoxCount,
+            totalAmount: l.totalAmount,
           })),
         },
       });

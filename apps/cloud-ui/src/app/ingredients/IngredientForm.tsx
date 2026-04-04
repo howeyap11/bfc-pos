@@ -24,6 +24,10 @@ export function IngredientForm({
   const [unitCode, setUnitCode] = useState("");
   const [isActive, setIsActive] = useState(true);
   const [categoryId, setCategoryId] = useState<string>("");
+  const [hasSealedUnits, setHasSealedUnits] = useState(false);
+  const [hasSealedBoxes, setHasSealedBoxes] = useState(false);
+  const [sealedUnitAmount, setSealedUnitAmount] = useState(0);
+  const [sealedBoxAmount, setSealedBoxAmount] = useState(0);
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [error, setError] = useState("");
@@ -35,8 +39,16 @@ export function IngredientForm({
       setUnitCode(ingredient.unitCode);
       setIsActive(ingredient.isActive);
       setCategoryId(ingredient.categoryId ?? ingredient.category?.id ?? "");
+      setHasSealedUnits(ingredient.hasSealedUnits ?? false);
+      setHasSealedBoxes(ingredient.hasSealedBoxes ?? false);
+      setSealedUnitAmount(ingredient.sealedUnitAmount ?? 0);
+      setSealedBoxAmount(ingredient.sealedBoxAmount ?? 0);
     } else {
       setCategoryId("");
+      setHasSealedUnits(false);
+      setHasSealedBoxes(false);
+      setSealedUnitAmount(0);
+      setSealedBoxAmount(0);
     }
   }, [ingredient]);
 
@@ -60,6 +72,10 @@ export function IngredientForm({
         unitCode,
         isActive,
         categoryId: categoryId.trim() || null,
+        hasSealedUnits,
+        hasSealedBoxes,
+        sealedUnitAmount: Math.max(0, Math.floor(sealedUnitAmount)),
+        sealedBoxAmount: Math.max(0, Math.floor(sealedBoxAmount)),
       };
       if (mode === "create") {
         const created = await api.createIngredient(payload);
@@ -155,6 +171,61 @@ export function IngredientForm({
           className="rounded border-gray-300"
         />
         <label htmlFor="ingActive" className="text-sm text-gray-700">Active</label>
+      </div>
+
+      <div className="rounded-lg border border-gray-200 bg-gray-50/80 p-3">
+        <p className="mb-2 text-sm font-medium text-gray-800">Staff count — sealed packaging (optional)</p>
+        <p className="mb-3 text-xs text-gray-600">
+          When enabled, POS staff enter <span className="font-mono text-gray-800">openedAmount</span>, plus sealed unit/box
+          counts; <span className="font-mono text-gray-800">totalAmount</span> = opened + (sealedUnitCount × sealedUnitAmount) +
+          (sealedBoxCount × sealedBoxAmount) in base UOM.
+        </p>
+        <div className="flex flex-wrap gap-4">
+          <label className="flex items-center gap-2 text-sm text-gray-700">
+            <input
+              type="checkbox"
+              checked={hasSealedUnits}
+              onChange={(e) => setHasSealedUnits(e.target.checked)}
+              className="rounded border-gray-300"
+            />
+            hasSealedUnits
+          </label>
+          <label className="flex items-center gap-2 text-sm text-gray-700">
+            <input
+              type="checkbox"
+              checked={hasSealedBoxes}
+              onChange={(e) => setHasSealedBoxes(e.target.checked)}
+              className="rounded border-gray-300"
+            />
+            hasSealedBoxes
+          </label>
+        </div>
+        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <label className="block text-sm text-gray-700">
+            sealedUnitAmount (base units per sealed unit)
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={sealedUnitAmount}
+              onChange={(e) => setSealedUnitAmount(parseInt(e.target.value, 10) || 0)}
+              disabled={!hasSealedUnits}
+              className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 disabled:bg-gray-100"
+            />
+          </label>
+          <label className="block text-sm text-gray-700">
+            sealedBoxAmount (base units per box)
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={sealedBoxAmount}
+              onChange={(e) => setSealedBoxAmount(parseInt(e.target.value, 10) || 0)}
+              disabled={!hasSealedBoxes}
+              className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 disabled:bg-gray-100"
+            />
+          </label>
+        </div>
       </div>
 
       {error && <p className="text-sm text-red-600">{error}</p>}

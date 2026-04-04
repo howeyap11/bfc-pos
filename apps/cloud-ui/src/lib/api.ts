@@ -354,6 +354,10 @@ export type Ingredient = {
   sortOrder?: number;
   imageUrl?: string | null;
   department?: "BAR" | "KITCHEN" | "PASTRY" | "SHARED" | null;
+  hasSealedUnits?: boolean;
+  hasSealedBoxes?: boolean;
+  sealedUnitAmount?: number;
+  sealedBoxAmount?: number;
 };
 
 export type IngredientCategory = {
@@ -1018,6 +1022,10 @@ export const api = {
     unitCode: string;
     isActive?: boolean;
     categoryId?: string | null;
+    hasSealedUnits?: boolean;
+    hasSealedBoxes?: boolean;
+    sealedUnitAmount?: number;
+    sealedBoxAmount?: number;
   }): Promise<Ingredient> {
     return apiFetch("/admin/ingredients", {
       method: "POST",
@@ -1027,7 +1035,16 @@ export const api = {
 
   patchIngredient(
     id: string,
-    body: { name?: string; unitCode?: string; isActive?: boolean; categoryId?: string | null }
+    body: {
+      name?: string;
+      unitCode?: string;
+      isActive?: boolean;
+      categoryId?: string | null;
+      hasSealedUnits?: boolean;
+      hasSealedBoxes?: boolean;
+      sealedUnitAmount?: number;
+      sealedBoxAmount?: number;
+    }
   ): Promise<Ingredient> {
     return apiFetch(`/admin/ingredients/${id}`, {
       method: "PATCH",
@@ -1211,6 +1228,10 @@ export const api = {
       warehouseStockCurrent: number;
       warehouseAdded: number;
       pulledOut: number;
+      openedAmount?: number | null;
+      sealedUnitCount?: number | null;
+      sealedBoxCount?: number | null;
+      totalAmount?: number | null;
     }>;
   }> {
     const q = new URLSearchParams();

@@ -80,6 +80,12 @@ export async function upsertSyncedInventoryCountSession(
       varianceQuantity: l.varianceQuantity != null ? String(l.varianceQuantity) : null,
       unit: l.unit != null ? String(l.unit) : null,
       notes: l.notes != null ? String(l.notes) : null,
+      openedAmount: l.openedAmount != null && String(l.openedAmount).trim() !== "" ? String(l.openedAmount) : null,
+      sealedUnitCount:
+        l.sealedUnitCount != null && String(l.sealedUnitCount).trim() !== "" ? String(l.sealedUnitCount) : null,
+      sealedBoxCount:
+        l.sealedBoxCount != null && String(l.sealedBoxCount).trim() !== "" ? String(l.sealedBoxCount) : null,
+      totalAmount: l.totalAmount != null && String(l.totalAmount).trim() !== "" ? String(l.totalAmount) : null,
     };
   });
 

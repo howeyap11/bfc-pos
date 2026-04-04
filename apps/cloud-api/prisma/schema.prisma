@@ -807,6 +807,13 @@ model Ingredient {
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
+  /// Staff count: sealed bottle/unit multiplier (base units per sealed unit)
+  hasSealedUnits        Boolean   @default(false)
+  /// Staff count: sealed case/box multiplier
+  hasSealedBoxes        Boolean   @default(false)
+  sealedUnitAmount      Int       @default(0)
+  sealedBoxAmount       Int       @default(0)
+
   // Inventory metadata (optional for backward compat)
   department            InventoryDepartment?
   trackingType          InventoryTrackingType? @default(EXACT)
@@ -1096,6 +1103,11 @@ model SyncedInventoryCountLine {
   varianceQuantity        String?
   unit                    String?
   notes                   String?
+  /// Frozen breakdown from POS (optional)
+  openedAmount            String?
+  sealedUnitCount         String?
+  sealedBoxCount          String?
+  totalAmount             String?
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
   session                 SyncedInventoryCountSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)

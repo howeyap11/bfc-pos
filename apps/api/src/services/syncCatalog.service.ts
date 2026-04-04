@@ -11,7 +11,15 @@ const ADMIN_ROLES = ["ADMIN", "OIC", "AUDITOR", "MANAGER"];
 async function ensureLocalIngredientFromCloud(
   tx: Prisma.TransactionClient,
   storeId: string,
-  cloudIng: { id: string; name: string; unitCode: string }
+  cloudIng: {
+    id: string;
+    name: string;
+    unitCode: string;
+    hasSealedUnits?: boolean;
+    hasSealedBoxes?: boolean;
+    sealedUnitAmount?: number;
+    sealedBoxAmount?: number;
+  }
 ) {
   const code = cloudIng.unitCode.trim() || "UNIT";
   const unit = await tx.inventoryUnit.upsert({
@@ -19,13 +27,23 @@ async function ensureLocalIngredientFromCloud(
     create: { storeId, code, name: code },
     update: {},
   });
+  const sealedPatch = {
+    hasSealedUnits: cloudIng.hasSealedUnits ?? false,
+    hasSealedBoxes: cloudIng.hasSealedBoxes ?? false,
+    sealedUnitAmount: cloudIng.sealedUnitAmount ?? 0,
+    sealedBoxAmount: cloudIng.sealedBoxAmount ?? 0,
+  };
   const byCloud = await tx.ingredient.findFirst({
     where: { cloudIngredientCloudId: cloudIng.id },
   });
   if (byCloud) {
     await tx.ingredient.update({
       where: { id: byCloud.id },
-      data: { name: cloudIng.name.trim() || byCloud.name, unitId: unit.id },
+      data: {
+        name: cloudIng.name.trim() || byCloud.name,
+        unitId: unit.id,
+        ...sealedPatch,
+      },
     });
     return;
   }
@@ -36,7 +54,7 @@ async function ensureLocalIngredientFromCloud(
   if (byName && !byName.cloudIngredientCloudId) {
     await tx.ingredient.update({
       where: { id: byName.id },
-      data: { cloudIngredientCloudId: cloudIng.id, unitId: unit.id },
+      data: { cloudIngredientCloudId: cloudIng.id, unitId: unit.id, ...sealedPatch },
     });
     return;
   }
@@ -53,6 +71,7 @@ async function ensureLocalIngredientFromCloud(
       unitId: unit.id,
       cloudIngredientCloudId: cloudIng.id,
       isActive: true,
+      ...sealedPatch,
     },
   });
 }
@@ -177,6 +196,11 @@ type CloudIngredient = {
   deletedAt: string | null;
   version: number;
   imageUrl?: string | null;
+  sortOrder?: number;
+  hasSealedUnits?: boolean;
+  hasSealedBoxes?: boolean;
+  sealedUnitAmount?: number;
+  sealedBoxAmount?: number;
 };
 
 type CloudRecipeLine = {
@@ -1134,6 +1158,11 @@ export async function syncCatalogFromCloud(
             version: ing.version,
             imageUrl: ing.imageUrl ?? null,
             deletedAt: ing.deletedAt ? new Date(ing.deletedAt) : null,
+            sortOrder: ing.sortOrder ?? 0,
+            hasSealedUnits: ing.hasSealedUnits ?? false,
+            hasSealedBoxes: ing.hasSealedBoxes ?? false,
+            sealedUnitAmount: ing.sealedUnitAmount ?? 0,
+            sealedBoxAmount: ing.sealedBoxAmount ?? 0,
           },
           update: {
             name: ing.name,
@@ -1142,6 +1171,11 @@ export async function syncCatalogFromCloud(
             version: ing.version,
             imageUrl: ing.imageUrl ?? null,
             deletedAt: ing.deletedAt ? new Date(ing.deletedAt) : null,
+            sortOrder: ing.sortOrder ?? 0,
+            hasSealedUnits: ing.hasSealedUnits ?? false,
+            hasSealedBoxes: ing.hasSealedBoxes ?? false,
+            sealedUnitAmount: ing.sealedUnitAmount ?? 0,
+            sealedBoxAmount: ing.sealedBoxAmount ?? 0,
           },
         });
         if (ing.isActive && !ing.deletedAt) {
@@ -1149,6 +1183,10 @@ export async function syncCatalogFromCloud(
             id: ing.id,
             name: ing.name,
             unitCode: ing.unitCode,
+            hasSealedUnits: ing.hasSealedUnits,
+            hasSealedBoxes: ing.hasSealedBoxes,
+            sealedUnitAmount: ing.sealedUnitAmount,
+            sealedBoxAmount: ing.sealedBoxAmount,
           });
         }
         ingredientsUpserted++;

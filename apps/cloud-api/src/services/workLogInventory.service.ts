@@ -63,7 +63,7 @@ export async function getInventoryVarianceTotalsForDay(
     let sum = 0;
     for (const line of session.lines) {
       const ingId = line.inventoryItemCloudId;
-      const staff = parseQty(line.actualQuantity);
+      const staff = parseQty(line.totalAmount ?? line.actualQuantity);
       const systemAtSubmit = snap[ingId]?.storeStock ?? parseQty(line.expectedQuantity);
       sum += Math.abs(staff - systemAtSubmit);
     }
@@ -89,6 +89,11 @@ export type WorkLogInventoryCompareRow = {
   warehouseStockCurrent: number;
   warehouseAdded: number;
   pulledOut: number;
+  /** Frozen POS breakdown when present */
+  openedAmount?: number | null;
+  sealedUnitCount?: number | null;
+  sealedBoxCount?: number | null;
+  totalAmount?: number | null;
 };
 
 function normalizeInventoryShiftType(shiftType: string): "Beginning" | "End" {
@@ -123,11 +128,13 @@ export async function buildWorkLogInventoryCompare(
         name: true,
         imageUrl: true,
         unitCode: true,
+        sortOrder: true,
         category: { select: { name: true } },
       },
     }),
   ]);
   const ingMeta = new Map(byKey.map((i) => [i.id, i]));
+  const sortByIngredientId = new Map(byKey.map((i) => [i.id, i.sortOrder ?? 0]));
 
   const locations = await prisma.inventoryLocation.findMany({
     where: { isActive: true },
@@ -149,9 +156,13 @@ export async function buildWorkLogInventoryCompare(
   for (const line of session.lines) {
     const ingredientId = line.inventoryItemCloudId;
     const meta = ingMeta.get(ingredientId);
-    const staffCount = parseQty(line.actualQuantity);
+    const staffCount = parseQty(line.totalAmount ?? line.actualQuantity);
     const systemStoreStockAtSubmit = snap[ingredientId]?.storeStock ?? parseQty(line.expectedQuantity);
     const roll = moveDay.get(ingredientId) ?? { storeAdded: 0, warehouseAdded: 0, pulledOut: 0 };
+    const hasOpened = line.openedAmount != null && String(line.openedAmount).trim() !== "";
+    const hasSu = line.sealedUnitCount != null && String(line.sealedUnitCount).trim() !== "";
+    const hasSb = line.sealedBoxCount != null && String(line.sealedBoxCount).trim() !== "";
+    const hasTotal = line.totalAmount != null && String(line.totalAmount).trim() !== "";
     rows.push({
       ingredientId,
       ingredientName: meta?.name ?? line.inventoryItemName,
@@ -168,7 +179,17 @@ export async function buildWorkLogInventoryCompare(
       warehouseStockCurrent: whId ? (stockMap.get(`${ingredientId}:${whId}`) ?? 0) : Number.NaN,
       warehouseAdded: whId ? roll.warehouseAdded : Number.NaN,
       pulledOut: whId ? roll.pulledOut : Number.NaN,
+      ...(hasOpened ? { openedAmount: parseQty(line.openedAmount) } : {}),
+      ...(hasSu ? { sealedUnitCount: parseQty(line.sealedUnitCount) } : {}),
+      ...(hasSb ? { sealedBoxCount: parseQty(line.sealedBoxCount) } : {}),
+      ...(hasTotal ? { totalAmount: parseQty(line.totalAmount) } : {}),
     });
   }
+  rows.sort((a, b) => {
+    const sa = sortByIngredientId.get(a.ingredientId) ?? 0;
+    const sb = sortByIngredientId.get(b.ingredientId) ?? 0;
+    if (sa !== sb) return sa - sb;
+    return a.ingredientName.localeCompare(b.ingredientName);
+  });
   return rows;
 }
