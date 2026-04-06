@@ -133,7 +133,7 @@ async function main() {
   const password = process.env.ADMIN_PASSWORD ?? "Yapyap12";
 
   const passwordHash = await hashPassword(password);
-  await prisma.adminUser.upsert({
+  await prisma.cloudAdminUser.upsert({
     where: { email },
     update: { passwordHash },
     create: { email, passwordHash },

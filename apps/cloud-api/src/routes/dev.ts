@@ -33,7 +33,7 @@ export async function devRoutes(app: FastifyInstance) {
   const getAdminFromReq = async (req: FastifyRequest) => {
     const payload = await req.jwtVerify<{ sub: string; email: string }>();
     if (!payload?.sub) return null;
-    const admin = await app.prisma.adminUser.findUnique({
+    const admin = await app.prisma.cloudAdminUser.findUnique({
       where: { id: payload.sub },
       select: { id: true, email: true, passwordHash: true },
     });

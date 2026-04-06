@@ -83,7 +83,7 @@ export async function adminRoutes(app: FastifyInstance) {
   // Admin PIN (Settings > Password & PIN Codes)
   app.get("/settings/admin-pin", async (req: FastifyRequest, reply: FastifyReply) => {
     if (!requireCloudAdmin(req, reply)) return;
-    const row = await app.prisma.storeSetting.upsert({
+    const row = await app.prisma.cloudStoreSetting.upsert({
       where: { id: "1" },
       create: { id: "1", adminPinHash: null },
       update: {},
@@ -98,7 +98,7 @@ export async function adminRoutes(app: FastifyInstance) {
       return { error: "INVALID_PIN", message: parsed.error.issues.map((issue) => issue.message).join("; ") };
     }
     const hash = await hashPassword(parsed.data.pin);
-    await app.prisma.storeSetting.upsert({
+    await app.prisma.cloudStoreSetting.upsert({
       where: { id: "1" },
       create: { id: "1", adminPinHash: hash },
       update: { adminPinHash: hash },
@@ -109,7 +109,7 @@ export async function adminRoutes(app: FastifyInstance) {
   // Owner Password (Settings > Password & PIN Codes) – for POS owner/developer tools
   app.get("/settings/owner-password", async (req: FastifyRequest, reply: FastifyReply) => {
     if (!requireCloudAdmin(req, reply)) return;
-    const row = await app.prisma.storeSetting.upsert({
+    const row = await app.prisma.cloudStoreSetting.upsert({
       where: { id: "1" },
       create: { id: "1", adminPinHash: null, ownerPasswordHash: null },
       update: {},
@@ -126,7 +126,7 @@ export async function adminRoutes(app: FastifyInstance) {
       return { error: "INVALID_PASSWORD", message: parsed.error.issues.map((issue) => issue.message).join("; ") };
     }
     const hash = await hashPassword(parsed.data.password);
-    await app.prisma.storeSetting.upsert({
+    await app.prisma.cloudStoreSetting.upsert({
       where: { id: "1" },
       create: { id: "1", adminPinHash: null, ownerPasswordHash: hash },
       update: { ownerPasswordHash: hash },
@@ -143,7 +143,7 @@ export async function adminRoutes(app: FastifyInstance) {
 
   app.get("/settings/admin-accounts", async (req: FastifyRequest, reply: FastifyReply) => {
     if (!requireCloudAdmin(req, reply)) return;
-    const accounts = await app.prisma.adminUser.findMany({
+    const accounts = await app.prisma.cloudAdminUser.findMany({
       orderBy: { createdAt: "asc" },
       select: { id: true, email: true, role: true, createdAt: true, updatedAt: true },
     });
@@ -161,13 +161,13 @@ export async function adminRoutes(app: FastifyInstance) {
       };
     }
     const email = parsed.data.email.trim().toLowerCase();
-    const existing = await app.prisma.adminUser.findUnique({ where: { email } });
+    const existing = await app.prisma.cloudAdminUser.findUnique({ where: { email } });
     if (existing) {
       reply.code(409);
       return { error: "DUPLICATE_EMAIL", message: "An account with this email already exists." };
     }
     const passwordHash = await hashPassword(parsed.data.password);
-    const account = await app.prisma.adminUser.create({
+    const account = await app.prisma.cloudAdminUser.create({
       data: { email, passwordHash, role: parsed.data.role },
       select: { id: true, email: true, role: true, createdAt: true, updatedAt: true },
     });
@@ -180,7 +180,7 @@ export async function adminRoutes(app: FastifyInstance) {
     const auth = req.user as { sub?: string } | undefined;
     const requesterId = auth?.sub ?? null;
 
-    const target = await app.prisma.adminUser.findUnique({
+    const target = await app.prisma.cloudAdminUser.findUnique({
       where: { id },
       select: { id: true, role: true },
     });
@@ -193,7 +193,7 @@ export async function adminRoutes(app: FastifyInstance) {
       return { error: "CANNOT_DELETE_SELF", message: "You cannot delete your own account." };
     }
     if (target.role === "ADMIN") {
-      const adminCount = await app.prisma.adminUser.count({ where: { role: "ADMIN" } });
+      const adminCount = await app.prisma.cloudAdminUser.count({ where: { role: "ADMIN" } });
       if (adminCount <= 1) {
         reply.code(400);
         return {
@@ -203,7 +203,7 @@ export async function adminRoutes(app: FastifyInstance) {
         };
       }
     }
-    await app.prisma.adminUser.delete({ where: { id } });
+    await app.prisma.cloudAdminUser.delete({ where: { id } });
     return { ok: true };
   });
 
@@ -341,7 +341,7 @@ export async function adminRoutes(app: FastifyInstance) {
   // Daily sales / inventory mailers (when implemented) should load recipient + time from this row only — no duplicate keys.
   app.get("/settings/sales-inventory", async (req: FastifyRequest, reply: FastifyReply) => {
     if (!requireCloudAdmin(req, reply)) return;
-    const row = await app.prisma.storeSetting.upsert({
+    const row = await app.prisma.cloudStoreSetting.upsert({
       where: { id: STORE_SETTING_ID },
       create: { id: STORE_SETTING_ID },
       update: {},
@@ -397,7 +397,7 @@ export async function adminRoutes(app: FastifyInstance) {
     if (body.workDayFromTimeLocal !== undefined) data.workDayFromTimeLocal = body.workDayFromTimeLocal;
     if (body.workDayToTimeLocal !== undefined) data.workDayToTimeLocal = body.workDayToTimeLocal;
 
-    const row = await app.prisma.storeSetting.upsert({
+    const row = await app.prisma.cloudStoreSetting.upsert({
       where: { id: STORE_SETTING_ID },
       create: { id: STORE_SETTING_ID, ...data },
       update: data,
@@ -1001,7 +1001,7 @@ export async function adminRoutes(app: FastifyInstance) {
 
   // Menu Settings > Shots (extra-shot pricing)
   app.get("/menu-settings/shots", async () => {
-    const rules = await app.prisma.shotPricingRule.findMany({
+    const rules = await app.prisma.cloudShotPricingRule.findMany({
       orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
     });
     const active = rules.find((r) => r.isActive) ?? rules[0] ?? null;
@@ -1023,12 +1023,12 @@ export async function adminRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "INVALID_BODY", details: parsed.error.flatten() };
     }
-    const count = await app.prisma.shotPricingRule.count();
+    const count = await app.prisma.cloudShotPricingRule.count();
     const qExtra =
       parsed.data.qtyPerExtraShot != null && parsed.data.qtyPerExtraShot !== ""
         ? String(parsed.data.qtyPerExtraShot)
         : null;
-    return app.prisma.shotPricingRule.create({
+    return app.prisma.cloudShotPricingRule.create({
       data: {
         name: parsed.data.name ?? "Standard",
         shotsPerBundle: parsed.data.shotsPerBundle,
@@ -1058,7 +1058,7 @@ export async function adminRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "INVALID_BODY", details: parsed.error.flatten() };
     }
-    const existing = await app.prisma.shotPricingRule.findUnique({ where: { id } });
+    const existing = await app.prisma.cloudShotPricingRule.findUnique({ where: { id } });
     if (!existing) {
       reply.code(404);
       return { error: "NOT_FOUND" };
@@ -1071,7 +1071,7 @@ export async function adminRoutes(app: FastifyInstance) {
     if (parsed.data.extraShotIngredientId !== undefined) {
       data.extraShotIngredientId = parsed.data.extraShotIngredientId?.trim() || null;
     }
-    return app.prisma.shotPricingRule.update({ where: { id }, data: data as object });
+    return app.prisma.cloudShotPricingRule.update({ where: { id }, data: data as object });
   });
 
   // Menu Settings > Transaction Types (requires Prisma client with TransactionTypeSetting model)
@@ -1214,7 +1214,7 @@ export async function adminRoutes(app: FastifyInstance) {
 
   app.get("/items", async (req: FastifyRequest<{ Querystring: { includeDeleted?: string } }>) => {
     const includeDeleted = req.query?.includeDeleted === "1";
-    return app.prisma.menuItem.findMany({
+    return app.prisma.cloudMenuItem.findMany({
       where: includeDeleted ? {} : { deletedAt: null },
       orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
       include: {
@@ -1238,7 +1238,7 @@ export async function adminRoutes(app: FastifyInstance) {
       return { error: "INVALID_BODY", details: parsed.error.flatten(), message: "order array of { id, sortOrder } required" };
     }
     const ids = parsed.data.order.map((o) => o.id);
-    const existing = await app.prisma.menuItem.findMany({ where: { id: { in: ids } }, select: { id: true, subCategoryId: true } });
+    const existing = await app.prisma.cloudMenuItem.findMany({ where: { id: { in: ids } }, select: { id: true, subCategoryId: true } });
     const foundIds = new Set(existing.map((i) => i.id));
     const missing = ids.filter((id) => !foundIds.has(id));
     if (missing.length > 0) {
@@ -1253,10 +1253,10 @@ export async function adminRoutes(app: FastifyInstance) {
     const version = await bumpCatalogVersion(app.prisma);
     await app.prisma.$transaction([
       ...parsed.data.order.map(({ id, sortOrder }) =>
-        app.prisma.menuItem.update({ where: { id }, data: { sortOrder, version } })
+        app.prisma.cloudMenuItem.update({ where: { id }, data: { sortOrder, version } })
       ),
     ]);
-    const list = await app.prisma.menuItem.findMany({
+    const list = await app.prisma.cloudMenuItem.findMany({
       where: { id: { in: ids } },
       orderBy: { sortOrder: "asc" },
       include: { category: true, subCategory: true },
@@ -1291,7 +1291,7 @@ export async function adminRoutes(app: FastifyInstance) {
     // Place new item at the end of its subcategory unless sortOrder is explicitly provided
     let sortOrder = parsed.data.sortOrder;
     if (sortOrder === undefined) {
-      const maxOrder = await app.prisma.menuItem.aggregate({
+      const maxOrder = await app.prisma.cloudMenuItem.aggregate({
         _max: { sortOrder: true },
         where: { subCategoryId: parsed.data.subCategoryId },
       });
@@ -1305,7 +1305,7 @@ export async function adminRoutes(app: FastifyInstance) {
             shotsPerSizeEnabled: parsed.data.shotsPerSizeEnabled ?? false,
           }
         : { supportsShots: false, defaultShots: null, shotsPerSizeEnabled: false };
-    return app.prisma.menuItem.create({
+    return app.prisma.cloudMenuItem.create({
       data: {
         name: parsed.data.name,
         priceCents: parsed.data.priceCents,
@@ -1325,7 +1325,7 @@ export async function adminRoutes(app: FastifyInstance) {
   app.get("/items/:id", async (req: FastifyRequest<{ Params: { id: string }; Querystring: { includeDeleted?: string } }>, reply: FastifyReply) => {
     const { id } = req.params;
     const includeDeleted = req.query?.includeDeleted === "1";
-    const item = await app.prisma.menuItem.findUnique({
+    const item = await app.prisma.cloudMenuItem.findUnique({
       where: { id },
       include: {
         recipeLines: true,
@@ -1360,7 +1360,7 @@ export async function adminRoutes(app: FastifyInstance) {
   // POST /admin/items/:id/image - multipart upload
   app.post("/items/:id/image", async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
     const { id } = req.params;
-    const item = await app.prisma.menuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
+    const item = await app.prisma.cloudMenuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
     if (!item) {
       reply.code(404);
       return { error: "NOT_FOUND" };
@@ -1379,7 +1379,7 @@ export async function adminRoutes(app: FastifyInstance) {
     const buf = await buffer(data.file);
     const imageUrl = await uploadImage(buf, filename, data.mimetype);
     const version = await bumpCatalogVersion(app.prisma);
-    await app.prisma.menuItem.update({ where: { id }, data: { imageUrl, version } });
+    await app.prisma.cloudMenuItem.update({ where: { id }, data: { imageUrl, version } });
     return { imageUrl };
   });
 
@@ -1390,7 +1390,7 @@ export async function adminRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "INVALID_BODY", details: parsed.error.flatten() };
     }
-    const existing = await app.prisma.menuItem.findUnique({ where: { id }, select: { defaultSizeOptionId: true, subCategoryId: true, deletedAt: true } });
+    const existing = await app.prisma.cloudMenuItem.findUnique({ where: { id }, select: { defaultSizeOptionId: true, subCategoryId: true, deletedAt: true } });
     if (!existing) {
       reply.code(404);
       return { error: "NOT_FOUND" };
@@ -1484,7 +1484,7 @@ export async function adminRoutes(app: FastifyInstance) {
       }
       updateData.categoryId = sub.categoryId;
     }
-    return app.prisma.menuItem.update({ where: { id }, data: updateData });
+    return app.prisma.cloudMenuItem.update({ where: { id }, data: updateData });
   });
 
   const drinkSizesByModeSchema = z.object({
@@ -1517,7 +1517,7 @@ export async function adminRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "INVALID_BODY", details: parsed.error.flatten(), message: "drinkSizesByMode with ICED, HOT, CONCENTRATED is required" };
     }
-    const item = await app.prisma.menuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
+    const item = await app.prisma.cloudMenuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
     if (!item) {
       reply.code(404);
       return { error: "NOT_FOUND", message: "Item not found" };
@@ -1576,15 +1576,15 @@ export async function adminRoutes(app: FastifyInstance) {
     const version = await bumpCatalogVersion(app.prisma);
 
     await app.prisma.$transaction([
-      app.prisma.menuItemDrinkSizeConfig.deleteMany({ where: { menuItemId: id } }),
+      app.prisma.cloudMenuItemDrinkSizeConfig.deleteMany({ where: { menuItemId: id } }),
       app.prisma.menuItemDrinkModeDefault.deleteMany({ where: { menuItemId: id } }),
-      app.prisma.menuItemSizePrice.deleteMany({ where: { menuItemId: id } }),
-      app.prisma.menuItem.update({ where: { id }, data: { version, hasSizes } }),
+      app.prisma.cloudMenuItemSizePrice.deleteMany({ where: { menuItemId: id } }),
+      app.prisma.cloudMenuItem.update({ where: { id }, data: { version, hasSizes } }),
     ]);
     for (const mode of modes) {
       const { enabledOptionIds, defaultOptionId } = drinkSizesByMode[mode];
       if (enabledOptionIds.length > 0) {
-        await app.prisma.menuItemDrinkSizeConfig.createMany({
+        await app.prisma.cloudMenuItemDrinkSizeConfig.createMany({
           data: enabledOptionIds.map((optionId) => ({
             menuItemId: id,
             mode,
@@ -1609,7 +1609,7 @@ export async function adminRoutes(app: FastifyInstance) {
               select: { id: true, name: true },
             });
             const nameById = new Map(options.map((o) => [o.id, o.name]));
-            await app.prisma.menuItemSizePrice.createMany({
+            await app.prisma.cloudMenuItemSizePrice.createMany({
               data: optionIdsNeedingPrice.map((optId) => ({
                 menuItemId: id,
                 baseType: mode,
@@ -1623,7 +1623,7 @@ export async function adminRoutes(app: FastifyInstance) {
         }
       }
     }
-    const updated = await app.prisma.menuItem.findUnique({
+    const updated = await app.prisma.cloudMenuItem.findUnique({
       where: { id },
       include: {
         drinkSizeConfigs: { include: { option: true } },
@@ -1635,7 +1635,7 @@ export async function adminRoutes(app: FastifyInstance) {
 
   app.delete("/items/:id", async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as { id: string };
-    const item = await app.prisma.menuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
+    const item = await app.prisma.cloudMenuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
     if (!item) {
       reply.code(404);
       return { error: "NOT_FOUND", message: "Item not found" };
@@ -1645,7 +1645,7 @@ export async function adminRoutes(app: FastifyInstance) {
       return { error: "ALREADY_DELETED", message: "Item is already deleted" };
     }
     const version = await bumpCatalogVersion(app.prisma);
-    await app.prisma.menuItem.update({
+    await app.prisma.cloudMenuItem.update({
       where: { id },
       data: { deletedAt: new Date(), version },
     });
@@ -1654,7 +1654,7 @@ export async function adminRoutes(app: FastifyInstance) {
 
   app.post("/items/:id/restore", async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as { id: string };
-    const item = await app.prisma.menuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
+    const item = await app.prisma.cloudMenuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
     if (!item) {
       reply.code(404);
       return { error: "NOT_FOUND", message: "Item not found" };
@@ -1664,7 +1664,7 @@ export async function adminRoutes(app: FastifyInstance) {
       return { error: "NOT_DELETED", message: "Item is not deleted" };
     }
     const version = await bumpCatalogVersion(app.prisma);
-    return app.prisma.menuItem.update({
+    return app.prisma.cloudMenuItem.update({
       where: { id },
       data: { deletedAt: null, version },
       include: {
@@ -2108,7 +2108,7 @@ export async function adminRoutes(app: FastifyInstance) {
 
   app.get("/items/:id/recipe", async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as { id: string };
-    const item = await app.prisma.menuItem.findUnique({ where: { id } });
+    const item = await app.prisma.cloudMenuItem.findUnique({ where: { id } });
     if (!item) {
       reply.code(404);
       return { error: "NOT_FOUND" };
@@ -2133,7 +2133,7 @@ export async function adminRoutes(app: FastifyInstance) {
       return { error: "INVALID_BODY", details: parsed.error.flatten() };
     }
 
-    const item = await app.prisma.menuItem.findUnique({
+    const item = await app.prisma.cloudMenuItem.findUnique({
       where: { id },
       select: { id: true, deletedAt: true, hasSizes: true },
     });
@@ -2401,7 +2401,7 @@ export async function adminRoutes(app: FastifyInstance) {
     if (!requireCloudAdmin(req, reply)) return;
     const { id } = req.params;
     const moveToId = (req.body as { moveItemsToSubCategoryId?: string } | undefined)?.moveItemsToSubCategoryId;
-    const itemCount = await app.prisma.menuItem.count({ where: { subCategoryId: id, deletedAt: null } });
+    const itemCount = await app.prisma.cloudMenuItem.count({ where: { subCategoryId: id, deletedAt: null } });
 
     if (itemCount > 0) {
       if (!moveToId) {
@@ -2423,7 +2423,7 @@ export async function adminRoutes(app: FastifyInstance) {
         return { error: "TARGET_SELF", message: "Cannot move items to the same subcategory" };
       }
       await app.prisma.$transaction([
-        app.prisma.menuItem.updateMany({ where: { subCategoryId: id, deletedAt: null }, data: { subCategoryId: moveToId } }),
+        app.prisma.cloudMenuItem.updateMany({ where: { subCategoryId: id, deletedAt: null }, data: { subCategoryId: moveToId } }),
         app.prisma.subCategory.update({ where: { id }, data: { deletedAt: new Date() } }),
       ]);
     } else {
@@ -2459,7 +2459,7 @@ export async function adminRoutes(app: FastifyInstance) {
   // MenuItemSize CRUD (per-item sizes)
   app.get("/items/:id/sizes", async (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
     const { id } = req.params;
-    const item = await app.prisma.menuItem.findUnique({ where: { id }, select: { id: true } });
+    const item = await app.prisma.cloudMenuItem.findUnique({ where: { id }, select: { id: true } });
     if (!item) {
       reply.code(404);
       return { error: "NOT_FOUND", message: "Item not found" };
@@ -2482,7 +2482,7 @@ export async function adminRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "INVALID_BODY", details: parsed.error.flatten() };
     }
-    const item = await app.prisma.menuItem.findUnique({ where: { id }, select: { id: true } });
+    const item = await app.prisma.cloudMenuItem.findUnique({ where: { id }, select: { id: true } });
     if (!item) {
       reply.code(404);
       return { error: "NOT_FOUND", message: "Item not found" };
@@ -3273,14 +3273,14 @@ export async function adminRoutes(app: FastifyInstance) {
       }
     }
     await bumpCatalogVersion(app.prisma);
-    await app.prisma.substitutePrice.deleteMany({ where: { substituteId: id } });
+    await app.prisma.cloudSubstitutePrice.deleteMany({ where: { substituteId: id } });
     if (parsed.data.prices.length > 0) {
-      await app.prisma.substitutePrice.createMany({
+      await app.prisma.cloudSubstitutePrice.createMany({
         data: parsed.data.prices.map((p) => ({ substituteId: id, sizeId: p.sizeId, mode: p.mode, priceCents: p.priceCents })),
         skipDuplicates: true,
       });
     }
-    const prices = await app.prisma.substitutePrice.findMany({
+    const prices = await app.prisma.cloudSubstitutePrice.findMany({
       where: { substituteId: id },
       include: { size: true },
     });
@@ -3326,9 +3326,9 @@ export async function adminRoutes(app: FastifyInstance) {
       }
     }
     await bumpCatalogVersion(app.prisma);
-    await app.prisma.substituteRecipeConsumption.deleteMany({ where: { substituteId: id } });
+    await app.prisma.cloudSubstituteRecipeConsumption.deleteMany({ where: { substituteId: id } });
     if (parsed.data.rows.length > 0) {
-      await app.prisma.substituteRecipeConsumption.createMany({
+      await app.prisma.cloudSubstituteRecipeConsumption.createMany({
         data: parsed.data.rows.map((r) => ({
           substituteId: id,
           sizeId: r.sizeId,
@@ -3340,7 +3340,7 @@ export async function adminRoutes(app: FastifyInstance) {
         skipDuplicates: true,
       });
     }
-    const recipeConsumption = await app.prisma.substituteRecipeConsumption.findMany({
+    const recipeConsumption = await app.prisma.cloudSubstituteRecipeConsumption.findMany({
       where: { substituteId: id },
       include: { size: true, ingredient: true },
     });
@@ -3359,7 +3359,7 @@ export async function adminRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "INVALID_BODY", details: parsed.error.flatten() };
     }
-    const item = await app.prisma.menuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
+    const item = await app.prisma.cloudMenuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
     if (!item) {
       reply.code(404);
       return { error: "NOT_FOUND", message: "Item not found" };
@@ -3401,12 +3401,12 @@ export async function adminRoutes(app: FastifyInstance) {
         data: substituteIds.map((substituteId) => ({ itemId: id, substituteId })),
         skipDuplicates: true,
       });
-      await app.prisma.menuItem.update({
+      await app.prisma.cloudMenuItem.update({
         where: { id },
         data: { defaultSubstituteId: parsed.data.defaultSubstituteId },
       });
     } else {
-      await app.prisma.menuItem.update({
+      await app.prisma.cloudMenuItem.update({
         where: { id },
         data: { defaultSubstituteId: null },
       });
@@ -3415,7 +3415,7 @@ export async function adminRoutes(app: FastifyInstance) {
       where: { itemId: id },
       include: { substitute: { select: { id: true, name: true, isActive: true } } },
     });
-    const updated = await app.prisma.menuItem.findUnique({
+    const updated = await app.prisma.cloudMenuItem.findUnique({
       where: { id },
       select: { defaultSubstituteId: true, defaultSubstitute: { select: { id: true, name: true } } },
     });
@@ -3430,7 +3430,7 @@ export async function adminRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "INVALID_BODY", details: parsed.error.flatten() };
     }
-    const item = await app.prisma.menuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
+    const item = await app.prisma.cloudMenuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
     if (!item) {
       reply.code(404);
       return { error: "NOT_FOUND" };
@@ -3461,7 +3461,7 @@ export async function adminRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "INVALID_BODY", details: parsed.error.flatten() };
     }
-    const item = await app.prisma.menuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
+    const item = await app.prisma.cloudMenuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
     if (!item) {
       reply.code(404);
       return { error: "NOT_FOUND", message: "Item not found" };
@@ -3502,7 +3502,7 @@ export async function adminRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "INVALID_BODY", details: parsed.error.flatten() };
     }
-    const item = await app.prisma.menuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
+    const item = await app.prisma.cloudMenuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
     if (!item) {
       reply.code(404);
       return { error: "NOT_FOUND", message: "Item not found" };
@@ -3548,12 +3548,12 @@ export async function adminRoutes(app: FastifyInstance) {
         data: parsed.data.groupIds.map((groupId) => ({ itemId: id, groupId })),
         skipDuplicates: true,
       });
-      await app.prisma.menuItem.update({
+      await app.prisma.cloudMenuItem.update({
         where: { id },
         data: { defaultSubstituteOptionId: parsed.data.defaultSubstituteOptionId },
       });
     } else {
-      await app.prisma.menuItem.update({
+      await app.prisma.cloudMenuItem.update({
         where: { id },
         data: { defaultSubstituteOptionId: null },
       });
@@ -3562,7 +3562,7 @@ export async function adminRoutes(app: FastifyInstance) {
       where: { itemId: id },
       include: { group: { include: { options: { include: { recipeLines: { include: { ingredient: true } } } } } } },
     });
-    const updated = await app.prisma.menuItem.findUnique({
+    const updated = await app.prisma.cloudMenuItem.findUnique({
       where: { id },
       select: { defaultSubstituteOptionId: true, defaultSubstituteOption: true },
     });

@@ -336,7 +336,7 @@ export async function getSalesByCategory(
       where: { storeId, status: "PAID", createdAt: { gte: range.start, lt: range.end } },
       select: { lineItemsSummaryJson: true },
     }),
-    prisma.menuItem.findMany({
+    prisma.cloudMenuItem.findMany({
       where: { deletedAt: null },
       select: { name: true, categoryId: true, category: { select: { name: true } } },
     }),
@@ -437,7 +437,7 @@ export async function getItemsSold(
       where: { storeId, status: "PAID", createdAt: { gte: range.start, lt: range.end } },
       select: { lineItemsSummaryJson: true },
     }),
-    prisma.menuItem.findMany({
+    prisma.cloudMenuItem.findMany({
       where: { deletedAt: null },
       select: { name: true, subCategoryId: true, subCategory: { select: { name: true } } },
     }),
