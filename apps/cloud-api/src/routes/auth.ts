@@ -16,7 +16,7 @@ export async function authRoutes(app: FastifyInstance) {
     }
     const { email, password } = parsed.data;
 
-    const admin = await app.prisma.cloudAdminUser.findUnique({
+    const admin = await app.prisma.adminUser.findUnique({
       where: { email },
       select: { id: true, email: true, passwordHash: true, role: true },
     });
@@ -47,7 +47,7 @@ export async function authRoutes(app: FastifyInstance) {
     }
     const payload = req.user;
     const id = payload.sub;
-    const row = await app.prisma.cloudAdminUser.findUnique({
+    const row = await app.prisma.adminUser.findUnique({
       where: { id },
       select: { email: true, role: true },
     });

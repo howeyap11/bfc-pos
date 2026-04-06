@@ -20,7 +20,7 @@ export function parseTimeToMinutesFromMidnight(s: string | null | undefined): nu
 }
 
 export async function getWorkDayRolloverMinutesFromDb(prisma: PrismaClient): Promise<number> {
-  const row = await prisma.cloudStoreSetting.findUnique({ where: { id: "1" } });
+  const row = await prisma.storeSetting.findUnique({ where: { id: "1" } });
   const raw = row?.workDayFromTimeLocal?.trim() || DEFAULT_WORK_DAY_FROM_TIME_LOCAL;
   return parseTimeToMinutesFromMidnight(raw) ?? DEFAULT_WORK_DAY_ROLLOVER_MINUTES;
 }

@@ -232,7 +232,7 @@ async function accumulateSubstituteRecipes(
   const sizeId = await resolveMenuSizeId(prisma, sizeLabel);
   if (!sizeId) return;
 
-  const legacy = await prisma.cloudSubstituteRecipeConsumption.findMany({
+  const legacy = await prisma.substituteRecipeConsumption.findMany({
     where: { substituteId: substituteCloudId, sizeId, mode },
     select: { ingredientId: true, qtyPerItem: true },
   });

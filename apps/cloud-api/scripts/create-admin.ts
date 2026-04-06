@@ -8,7 +8,7 @@ const DEFAULT_EMAIL = "admin@bfc.local";
 const DEFAULT_PASSWORD = "admin123";
 
 async function main() {
-  const existing = await prisma.cloudAdminUser.findUnique({
+  const existing = await prisma.adminUser.findUnique({
     where: { email: DEFAULT_EMAIL },
   });
   if (existing) {
@@ -18,7 +18,7 @@ async function main() {
   }
 
   const passwordHash = await hashPassword(DEFAULT_PASSWORD);
-  await prisma.cloudAdminUser.create({
+  await prisma.adminUser.create({
     data: { email: DEFAULT_EMAIL, passwordHash },
   });
   console.log("Created admin user:", DEFAULT_EMAIL);
