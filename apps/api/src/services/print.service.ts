@@ -709,13 +709,13 @@ function receiptTinLineForPrint(header: ReceiptHeaderOptions | null | undefined)
 function appendProductionReceiptHeader(lines: string[], header?: ReceiptHeaderOptions | null): void {
   if (!header) return;
   const width = RECEIPT_LINE_WIDTH;
-  let hasIdentity = false;
+  let hasNameOrAddress = false;
   const name = (header.businessName ?? "").trim();
   if (name) {
     for (const w of wrapReceiptText(name, width)) {
       if (w.trim()) {
         lines.push(centerReceiptLine(w, width));
-        hasIdentity = true;
+        hasNameOrAddress = true;
       }
     }
   }
@@ -726,7 +726,7 @@ function appendProductionReceiptHeader(lines: string[], header?: ReceiptHeaderOp
       for (const w of wrapReceiptText(seg, width)) {
         if (w.trim()) {
           lines.push(centerReceiptLine(w, width));
-          hasIdentity = true;
+          hasNameOrAddress = true;
         }
       }
     }
@@ -735,8 +735,8 @@ function appendProductionReceiptHeader(lines: string[], header?: ReceiptHeaderOp
   const tinLine = receiptTinLineForPrint(header);
   const minV = (header.receiptBirMin ?? "").trim();
   const sn = (header.receiptBirSerialNo ?? "").trim();
-  const hasReg = !!(tinLine || minV || sn);
-  if (hasIdentity && hasReg) {
+  const hasRegulatory = !!(tinLine || minV || sn);
+  if (hasNameOrAddress && hasRegulatory) {
     lines.push("");
   }
 
@@ -755,13 +755,6 @@ function appendProductionReceiptHeader(lines: string[], header?: ReceiptHeaderOp
       if (w.trim()) lines.push(centerReceiptLine(w, width));
     }
   }
-
-  const hasHeaderContent = hasIdentity || hasReg;
-  if (hasHeaderContent) {
-    lines.push("");
-    lines.push(centerReceiptLine("SALES INVOICE", width));
-    lines.push("");
-  }
 }
 
 /** SnapResibo voucher footer after totals: "SNAPRESIBO" + QR (voucherId in payload); no plain voucher id line. */
@@ -770,20 +763,23 @@ export type SnapResiboVoucherForPrint = {
   pricePhp: number; // 0 for free reward
 };
 
+/** Leading LF = one blank line before the two centered BIR disclaimer lines; appended before feed + cut (always). */
 function birInputTaxDisclaimerEscPosBytes(): Buffer {
-  const w = RECEIPT_LINE_WIDTH;
-  const body =
+  const width = RECEIPT_LINE_WIDTH;
+  const text =
     LF +
-    centerReceiptLine("THIS DOCUMENT IS NOT VALID FOR", w) +
+    centerReceiptLine("THIS DOCUMENT IS NOT VALID FOR", width) +
     LF +
-    centerReceiptLine("CLAIM OF INPUT TAX", w) +
+    centerReceiptLine("CLAIM OF INPUT TAX", width) +
     LF;
-  return Buffer.from(body, "utf8");
+  return Buffer.from(text, "utf8");
 }
 
 /**
- * Physical receipt ESC/POS body (text lines). Header: centered name/address; blank; centered TIN/MIN/S/N; SALES INVOICE; then RECEIPT #.
- * BIR disclaimer lines are appended after body (and SnapResibo blocks if any), immediately before feed+cut.
+ * Physical receipt ESC/POS body (text lines).
+ * Header: centered name/address; blank before TIN when identity + regulatory exist; centered TIN/MIN/S/N;
+ * blank + centered SALES INVOICE + blank, then RECEIPT #.
+ * Footer: centered BIR disclaimer after body/SnapResibo, always, then feed + cut.
  * Chain: POST /pos/transactions/:id/print-receipt → printReceiptToDevice → buildReceiptEscPos → printReceiptESC
  */
 export function buildReceiptEscPos(
@@ -793,8 +789,14 @@ export function buildReceiptEscPos(
 ): Buffer {
   const paymentMethod = tx.payments[0]?.method ?? "CASH";
   const lines: string[] = [];
+  const width = RECEIPT_LINE_WIDTH;
 
   appendProductionReceiptHeader(lines, header);
+
+  // Always before RECEIPT #: blank, SALES INVOICE (centered), blank — same lines[] path as body.
+  lines.push("");
+  lines.push(centerReceiptLine("SALES INVOICE", width));
+  lines.push("");
 
   lines.push("RECEIPT #" + tx.transactionNo);
   lines.push(new Date(tx.createdAt).toLocaleString());

@@ -1,5 +1,5 @@
 -- DropIndex
-DROP INDEX "Staff_email_idx";
+DROP INDEX IF EXISTS "Staff_email_idx";
 
 -- AlterTable
 ALTER TABLE "MenuItemSizePrice" ADD COLUMN     "includedShots" INTEGER;

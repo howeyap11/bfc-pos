@@ -3,12 +3,13 @@ import { verifyAdminPin } from "../services/adminPin.service";
 import { enqueueOutbox } from "../services/outbox.service";
 import { ensureItemForCloudId } from "../services/catalogCache.service";
 import { syncTransactionToCloudOrEnqueue } from "../services/transactionSync.service";
-import { printReceiptToDevice, printStickersToDevice, formatTransactionLineLabel } from "../services/print.service";
+import { printReceiptToDevice, printStickersToDevice, formatTransactionLineLabel, } from "../services/print.service";
 import { allocateVouchersForTransaction, getSnapResiboVoucherForTransaction, } from "../services/snapResiboVoucher.service";
 import { getCalendarDayRange } from "../services/dayRange.service";
 import { printZReading } from "../services/zReading.service";
 import { getTransactionSummary } from "../services/transactionSummary.service";
 import { getTransactionSyncOutboxStatus } from "../services/outbox.service";
+import { finalizePaidTransactionInventory, restoreInventoryForRefund, restoreInventoryForVoid, } from "../services/posTxnInventory.service";
 const STORE_ID = "store_1";
 const SNAPRESIBO_QR_ITEM_ID = "SNAPRESIBO_QR";
 export const CREATE_TX_STEPS = {
@@ -56,6 +57,31 @@ async function ensureStoreAndConfig(prisma) {
             paymentMethodOrder: null,
         },
     });
+}
+const storeConfigReceiptSelect = {
+    businessName: true,
+    address: true,
+    receiptTaxType: true,
+    receiptNonVatTin: true,
+    receiptVatTin: true,
+    receiptBirMin: true,
+    receiptBirSerialNo: true,
+    snapResiboEnabled: true,
+    snapResiboPriceCents: true,
+    snapResiboRewardMinimumCents: true,
+};
+function receiptHeaderFromStoreConfig(storeConfig) {
+    if (!storeConfig)
+        return undefined;
+    return {
+        businessName: storeConfig.businessName ?? null,
+        address: storeConfig.address ?? null,
+        receiptTaxType: storeConfig.receiptTaxType ?? null,
+        receiptNonVatTin: storeConfig.receiptNonVatTin ?? null,
+        receiptVatTin: storeConfig.receiptVatTin ?? null,
+        receiptBirMin: storeConfig.receiptBirMin ?? null,
+        receiptBirSerialNo: storeConfig.receiptBirSerialNo ?? null,
+    };
 }
 function sum(nums) {
     return nums.reduce((a, b) => a + b, 0);
@@ -817,42 +843,27 @@ export async function posTransactionsRoutes(app) {
             }
             // Sync to cloud (best effort, non-blocking)
             await syncTransactionToCloudOrEnqueue(app.prisma, transaction.id, app.log);
-            // Inventory auto-deduction (best effort): do not block sale on failure
-            const lineItems = transaction.lineItems
-                .filter((l) => l.itemId)
-                .map((l) => {
-                let baseType;
-                let sizeCode;
-                if (l.optionsJson) {
-                    try {
-                        const opts = JSON.parse(l.optionsJson);
-                        const sizeOpt = opts.find((o) => o.type === "size" && o.baseType && o.sizeLabel);
-                        if (sizeOpt) {
-                            const bt = sizeOpt.baseType;
-                            if (bt === "HOT" || bt === "ICED" || bt === "CONCENTRATED") {
-                                baseType = bt;
-                                sizeCode = sizeOpt.sizeLabel;
-                            }
-                        }
-                    }
-                    catch {
-                        // Ignore malformed JSON; fall back to non-sized recipes
-                    }
-                }
-                return {
-                    itemId: l.itemId,
-                    qty: l.qty,
-                    baseType,
-                    sizeCode,
-                };
-            });
-            if (lineItems.length > 0) {
+            // Cloud-recipe inventory (offline): persist per-line frozen consumption + local ledger; cloud uses same JSON and skips recompute
+            const paidLines = transaction.lineItems.filter((l) => l.itemId);
+            if (paidLines.length > 0) {
                 try {
-                    await app.inventoryService.consumeForSale({
+                    const withItems = await app.prisma.transactionLineItem.findMany({
+                        where: { transactionId: transaction.id, id: { in: paidLines.map((l) => l.id) } },
+                        include: { item: { select: { cloudId: true } } },
+                    });
+                    await finalizePaidTransactionInventory({
+                        prisma: app.prisma,
                         storeId: transaction.storeId,
                         transactionId: transaction.id,
-                        lineItems,
+                        lineItems: withItems.map((l) => ({
+                            id: l.id,
+                            qty: l.qty,
+                            optionsJson: l.optionsJson,
+                            item: l.item,
+                        })),
                         createdByStaffId: staff?.id,
+                        inventoryWarn: (meta, msg) => app.log.warn(meta, msg),
+                        inventory: app.inventoryService,
                     });
                 }
                 catch (err) {
@@ -862,7 +873,6 @@ export async function posTransactionsRoutes(app) {
                         topic: "inventory.consume.sale",
                         payload: {
                             transactionId: transaction.id,
-                            lineItems,
                             createdByStaffId: staff?.id ?? null,
                         },
                     });
@@ -902,6 +912,40 @@ export async function posTransactionsRoutes(app) {
         });
         // Sync void to cloud
         await syncTransactionToCloudOrEnqueue(app.prisma, voided.id, app.log);
+        try {
+            const full = await app.prisma.transaction.findUnique({
+                where: { id: voided.id },
+                include: {
+                    lineItems: { include: { item: { select: { cloudId: true } } } },
+                    refunds: { include: { refundItems: true } },
+                },
+            });
+            if (full) {
+                await restoreInventoryForVoid({
+                    prisma: app.prisma,
+                    storeId: full.storeId,
+                    transactionId: full.id,
+                    lineItems: full.lineItems.map((l) => ({
+                        id: l.id,
+                        qty: l.qty,
+                        optionsJson: l.optionsJson,
+                        consumptionPerUnitByIngredientJson: l.consumptionPerUnitByIngredientJson,
+                        item: l.item,
+                    })),
+                    refunds: full.refunds.map((r) => ({
+                        refundItems: r.refundItems.map((ri) => ({
+                            transactionLineItemId: ri.transactionLineItemId,
+                            qtyRefunded: ri.qtyRefunded,
+                        })),
+                    })),
+                    inventoryWarn: (meta, msg) => app.log.warn(meta, msg),
+                    inventory: app.inventoryService,
+                });
+            }
+        }
+        catch (err) {
+            app.log.error({ err, transactionId: voided.id }, "[INVENTORY] Void restore failed");
+        }
         await app.prisma.auditLog.create({
             data: {
                 storeId: STORE_ID,
@@ -1032,6 +1076,40 @@ export async function posTransactionsRoutes(app) {
         });
         // Sync refund to cloud (best effort, non-blocking)
         await syncTransactionToCloudOrEnqueue(app.prisma, id, app.log);
+        try {
+            const lineRows = await app.prisma.transactionLineItem.findMany({
+                where: { transactionId: id },
+                select: {
+                    id: true,
+                    consumptionPerUnitByIngredientJson: true,
+                    optionsJson: true,
+                    item: { select: { cloudId: true } },
+                },
+            });
+            const lineById = new Map(lineRows.map((l) => [
+                l.id,
+                {
+                    consumptionPerUnitByIngredientJson: l.consumptionPerUnitByIngredientJson,
+                    menuItemCloudId: l.item?.cloudId ?? null,
+                    optionsJson: l.optionsJson,
+                },
+            ]));
+            await restoreInventoryForRefund({
+                prisma: app.prisma,
+                storeId: transaction.storeId,
+                refundId: refund.id,
+                refundItems: refund.refundItems.map((ri) => ({
+                    transactionLineItemId: ri.transactionLineItemId,
+                    qtyRefunded: ri.qtyRefunded,
+                })),
+                lineById,
+                inventoryWarn: (meta, msg) => app.log.warn(meta, msg),
+                inventory: app.inventoryService,
+            });
+        }
+        catch (err) {
+            app.log.error({ err, transactionId: id, refundId: refund.id }, "[INVENTORY] Refund restore failed");
+        }
         return updatedTransaction;
     });
     // Receipt view (enrich lineItems with categoryCloudId for sticker decision on client; include business name/address for receipt header; include linked SnapResibo voucher when enabled so UI can display same voucher without allocating)
@@ -1058,7 +1136,7 @@ export async function posTransactionsRoutes(app) {
             }),
             app.prisma.storeConfig.findUnique({
                 where: { storeId: STORE_ID },
-                select: { businessName: true, address: true, snapResiboEnabled: true, snapResiboPriceCents: true },
+                select: storeConfigReceiptSelect,
             }),
         ]);
         if (!transaction) {
@@ -1127,12 +1205,7 @@ export async function posTransactionsRoutes(app) {
                 displayLabel,
             };
         });
-        const receiptHeader = storeConfig && (storeConfig.businessName || storeConfig.address)
-            ? {
-                businessName: storeConfig.businessName ?? null,
-                address: storeConfig.address ?? null,
-            }
-            : undefined;
+        const receiptHeader = receiptHeaderFromStoreConfig(storeConfig ?? null);
         let snapResiboVouchers = [];
         if (storeConfig?.snapResiboEnabled) {
             const one = await getSnapResiboVoucherForTransaction(app.prisma, id);
@@ -1146,7 +1219,15 @@ export async function posTransactionsRoutes(app) {
         return {
             ...transaction,
             lineItems: lineItemsWithCategory,
-            ...(receiptHeader && { businessName: receiptHeader.businessName, address: receiptHeader.address }),
+            ...(receiptHeader && {
+                businessName: receiptHeader.businessName,
+                address: receiptHeader.address,
+                receiptTaxType: receiptHeader.receiptTaxType,
+                receiptNonVatTin: receiptHeader.receiptNonVatTin,
+                receiptVatTin: receiptHeader.receiptVatTin,
+                receiptBirMin: receiptHeader.receiptBirMin,
+                receiptBirSerialNo: receiptHeader.receiptBirSerialNo,
+            }),
             ...(snapResiboVouchers.length > 0 && { snapResiboVouchers }),
         };
     });
@@ -1161,22 +1242,11 @@ export async function posTransactionsRoutes(app) {
             reply.code(404);
             return { error: "TRANSACTION_NOT_FOUND" };
         }
-        const storeConfig = await app.prisma.storeConfig.findUnique({
+        // Full row read (all scalars) so receipt header fields always match DB columns — avoids any select-shape gaps.
+        const storeConfigRow = await app.prisma.storeConfig.findUnique({
             where: { storeId: STORE_ID },
-            select: {
-                businessName: true,
-                address: true,
-                snapResiboEnabled: true,
-                snapResiboPriceCents: true,
-                snapResiboRewardMinimumCents: true,
-            },
         });
-        const receiptHeader = storeConfig && (storeConfig.businessName || storeConfig.address)
-            ? {
-                businessName: storeConfig.businessName ?? null,
-                address: storeConfig.address ?? null,
-            }
-            : undefined;
+        const receiptHeader = receiptHeaderFromStoreConfig(storeConfigRow);
         const txForPrint = {
             ...transaction,
             createdAt: transaction.createdAt instanceof Date
@@ -1185,11 +1255,11 @@ export async function posTransactionsRoutes(app) {
         };
         let vouchersForPrint = [];
         let snapResiboError = null;
-        if (storeConfig?.snapResiboEnabled) {
-            const pricePhp = Math.floor((storeConfig.snapResiboPriceCents ?? 0) / 100);
+        if (storeConfigRow?.snapResiboEnabled) {
+            const pricePhp = Math.floor((storeConfigRow.snapResiboPriceCents ?? 0) / 100);
             const hasPaidSnapResiboLine = transaction.lineItems.some((li) => li.name.trim().toLowerCase() === "snapresibo qr" && li.lineTotal > 0);
-            const qualifiesReward = (storeConfig.snapResiboRewardMinimumCents ?? 0) > 0 &&
-                transaction.totalCents >= (storeConfig.snapResiboRewardMinimumCents ?? 0);
+            const qualifiesReward = (storeConfigRow.snapResiboRewardMinimumCents ?? 0) > 0 &&
+                transaction.totalCents >= (storeConfigRow.snapResiboRewardMinimumCents ?? 0);
             const expectsVoucher = hasPaidSnapResiboLine || qualifiesReward;
             const one = await getSnapResiboVoucherForTransaction(app.prisma, transaction.id);
             if (one) {
