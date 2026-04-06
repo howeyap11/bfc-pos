@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { verifyPassword } from "../lib/password.js";
+import { DEFAULT_WORK_DAY_FROM_TIME_LOCAL, DEFAULT_WORK_DAY_TO_TIME_LOCAL, } from "../lib/workDayDefaults.js";
 import { applyInventoryFromSyncedTransactionRow } from "../services/syncTransactionInventory.service.js";
+import { upsertSyncedInventoryCountSession } from "../services/inventoryCountSync.service.js";
 import { uploadImage } from "../services/r2.service.js";
 const syncSecret = process.env.STORE_SYNC_SECRET ?? "";
 const transactionImportSchema = z.object({
@@ -19,6 +21,7 @@ const transactionImportSchema = z.object({
         method: z.string(),
         amountCents: z.number().int(),
     })),
+    /** When every menu line includes consumptionPerUnitByIngredientJson, cloud skips recipe recompute (offline-first). */
     lineItems: z.array(z.object({
         name: z.string(),
         qty: z.number().int(),
@@ -26,6 +29,7 @@ const transactionImportSchema = z.object({
         sourceLineItemId: z.string().optional(),
         menuItemId: z.string().nullable().optional(),
         optionsJson: z.string().nullable().optional(),
+        consumptionPerUnitByIngredientJson: z.string().nullable().optional(),
     })).optional(),
     createdAt: z.string(), // ISO date
     voidedAt: z.string().nullable().optional(),
@@ -72,12 +76,30 @@ const wasteIngestSchema = z.object({
 const inventoryCountIngestSchema = z.object({
     storeId: z.string().min(1),
     sourceSessionId: z.string().min(1),
+    /** POS-frozen snapshot; when set, cloud stores as-is (no ledger recompute at ingest). */
+    snapshotJson: z.string().optional(),
     submittedByStaffCloudId: z.string().nullable().optional(),
+    submittedByLocalStaffId: z.string().nullable().optional(),
     submittedByStaffName: z.string().min(1),
     source: z.string().default("STAFF_UI"),
     notes: z.string().nullable().optional(),
+    shiftType: z.string().nullable().optional(),
+    businessDate: z.string().nullable().optional(),
+    timeSubmitted: z.string().optional(),
+    auditSource: z.string().optional(),
     countedAt: z.string(),
     lines: z.array(z.record(z.string(), z.any())).min(1),
+});
+const staffStockMovementIngestSchema = z.object({
+    sourceLocalId: z.string().min(1),
+    storeId: z.string().min(1),
+    movementKind: z.enum(["STORE_ADD", "WAREHOUSE_ADD", "WAREHOUSE_PULLOUT"]),
+    ingredientId: z.string().min(1),
+    quantityBase: z.string().min(1),
+    notes: z.string().nullable().optional(),
+    submittedByStaffCloudId: z.string().nullable().optional(),
+    submittedByStaffName: z.string().min(1),
+    happenedAt: z.string(),
 });
 const sopSubmissionIngestSchema = z.object({
     storeId: z.string().min(1),
@@ -127,9 +149,9 @@ export async function syncRoutes(app) {
         }
         // Bootstrap (sinceVersion 0): return all entities. Incremental: only version > sinceVersion.
         const versionFilter = sinceVersion === 0 ? { gte: 0 } : { gt: sinceVersion };
-        const [catalogVersion, items, addOnGroups, substituteGroups, substitutes, substitutePrices, substituteRecipeConsumptions, menuItemAddOnGroups, menuItemSubstituteGroups, menuItemSubstitutes, ingredientsVersioned, recipeLinesVersioned, recipeLineSizesVersioned, categories, subCategories, menuOptionGroups, menuOptions, menuOptionGroupSections, menuItemOptionGroups, menuItemSizes, menuSizes, menuItemSizePrices, transactionTypes, shotPricingRules, storeSetting, staffList,] = await Promise.all([
+        const [catalogVersion, items, addOnGroups, substituteGroups, substitutes, substitutePrices, substituteRecipeConsumptions, menuItemAddOnGroups, menuItemSubstituteGroups, menuItemSubstitutes, ingredientsVersioned, recipeLinesVersioned, recipeLineSizesVersioned, categories, subCategories, menuOptionGroups, menuOptions, menuOptionGroupSections, menuItemOptionGroups, menuItemSizes, menuSizes, menuItemSizePrices, transactionTypes, shotPricingRules, storeSetting, staffList, optionChoiceRecipeLines, legacyAddOns, businessDetailsRow, receiptDetailsRow,] = await Promise.all([
             app.prisma.catalogVersion.findUnique({ where: { id: 1 } }),
-            app.prisma.menuItem.findMany({
+            app.prisma.cloudMenuItem.findMany({
                 where: { version: versionFilter },
                 include: {
                     drinkSizeConfigs: { include: { option: true } },
@@ -139,8 +161,8 @@ export async function syncRoutes(app) {
             app.prisma.addOnGroup.findMany({ where: { isActive: true }, include: { options: { where: { isActive: true }, include: { recipeLines: { include: { ingredient: true } } }, orderBy: { sortOrder: "asc" } } }, orderBy: { sortOrder: "asc" } }),
             app.prisma.substituteGroup.findMany({ where: { isActive: true }, include: { options: { where: { isActive: true }, include: { recipeLines: { include: { ingredient: true } } }, orderBy: { sortOrder: "asc" } } }, orderBy: { sortOrder: "asc" } }),
             app.prisma.substitute.findMany({ where: { isActive: true }, include: { prices: { include: { size: true } }, recipeConsumption: { include: { size: true, ingredient: true } } }, orderBy: { sortOrder: "asc" } }),
-            app.prisma.substitutePrice.findMany({ include: { size: true } }),
-            app.prisma.substituteRecipeConsumption.findMany({ include: { size: true, ingredient: true } }),
+            app.prisma.cloudSubstitutePrice.findMany({ include: { size: true } }),
+            app.prisma.cloudSubstituteRecipeConsumption.findMany({ include: { size: true, ingredient: true } }),
             app.prisma.menuItemAddOnGroup.findMany(),
             app.prisma.menuItemSubstituteGroup.findMany(),
             app.prisma.menuItemSubstitute.findMany(),
@@ -159,15 +181,32 @@ export async function syncRoutes(app) {
                 orderBy: { sortOrder: "asc" },
                 include: { availability: { orderBy: { sortOrder: "asc" } } },
             }),
-            app.prisma.menuItemSizePrice.findMany(),
+            app.prisma.cloudMenuItemSizePrice.findMany(),
             app.prisma.transactionTypeSetting.findMany({ where: { isActive: true }, orderBy: { sortOrder: "asc" } }),
-            app.prisma.shotPricingRule.findMany({ where: { isActive: true }, orderBy: { sortOrder: "asc" } }),
-            app.prisma.storeSetting.findUnique({ where: { id: "1" } }),
+            app.prisma.cloudShotPricingRule.findMany({ where: { isActive: true }, orderBy: { sortOrder: "asc" } }),
+            app.prisma.cloudStoreSetting.findUnique({ where: { id: "1" } }),
             app.prisma.staff.findMany({
                 where: { storeId: "store_1" },
                 orderBy: { name: "asc" },
-                select: { id: true, name: true, email: true, passcode: true, role: true, isActive: true, updatedAt: true },
+                select: {
+                    id: true,
+                    name: true,
+                    email: true,
+                    passcode: true,
+                    passcodeHash: true,
+                    role: true,
+                    isActive: true,
+                    updatedAt: true,
+                },
             }),
+            app.prisma.optionChoiceRecipeLine.findMany({ include: { ingredient: true } }),
+            app.prisma.addOn.findMany({
+                where: { isActive: true },
+                include: { recipeLines: { include: { ingredient: true } } },
+                orderBy: { sortOrder: "asc" },
+            }),
+            app.prisma.businessDetails.findUnique({ where: { id: "1" } }),
+            app.prisma.receiptDetails.findUnique({ where: { id: "1" } }),
         ]);
         const latestVersion = catalogVersion?.latestVersion ?? 0;
         // Delta sync: include related entities for changed items (recipe lines, recipe line sizes, referenced ingredients)
@@ -293,16 +332,50 @@ export async function syncRoutes(app) {
                 priceCentsPerBundle: s.priceCentsPerBundle,
                 isActive: s.isActive,
                 sortOrder: s.sortOrder,
+                extraShotIngredientId: s.extraShotIngredientId ?? null,
+                qtyPerExtraShot: s.qtyPerExtraShot != null && s.qtyPerExtraShot !== undefined
+                    ? s.qtyPerExtraShot.toString()
+                    : null,
             })),
-            storeSettings: storeSetting ? {
-                adminPinHash: storeSetting.adminPinHash ?? null,
-                ownerPasswordHash: storeSetting.ownerPasswordHash ?? null,
-            } : undefined,
+            // Always include business + receipt fields for POS receipt header sync. Admin PIN fields only when StoreSetting row exists (avoid omitting receipt data when storeSetting is null).
+            storeSettings: {
+                ...(storeSetting
+                    ? {
+                        adminPinHash: storeSetting.adminPinHash ?? null,
+                        ownerPasswordHash: storeSetting.ownerPasswordHash ?? null,
+                        workDayFromTimeLocal: storeSetting.workDayFromTimeLocal ?? DEFAULT_WORK_DAY_FROM_TIME_LOCAL,
+                        workDayToTimeLocal: storeSetting.workDayToTimeLocal ?? DEFAULT_WORK_DAY_TO_TIME_LOCAL,
+                    }
+                    : {}),
+                businessName: businessDetailsRow?.businessName ?? null,
+                address: businessDetailsRow?.address ?? null,
+                receiptTaxType: receiptDetailsRow?.taxType ?? null,
+                receiptNonVatTin: receiptDetailsRow?.nonVatTin ?? null,
+                receiptVatTin: receiptDetailsRow?.vatTin ?? null,
+                receiptBirMin: receiptDetailsRow?.birMin ?? null,
+                receiptBirSerialNo: receiptDetailsRow?.birSerialNo ?? null,
+            },
+            optionChoiceRecipeLines: optionChoiceRecipeLines.map((r) => ({
+                id: r.id,
+                optionId: r.optionId,
+                ingredientId: r.ingredientId,
+                qtyPerItem: r.qtyPerItem.toString(),
+                unitCode: r.unitCode,
+            })),
+            legacyAddOns: legacyAddOns.map((a) => ({
+                id: a.id,
+                recipeLines: a.recipeLines.map((r) => ({
+                    ingredientId: r.ingredientId,
+                    qtyPerItem: r.qtyPerItem.toString(),
+                    unitCode: r.unitCode,
+                })),
+            })),
             staff: staffList.map((s) => ({
                 id: s.id,
                 name: s.name,
                 email: s.email ?? null,
                 passcode: s.passcode,
+                passcodeHash: s.passcodeHash ?? null,
                 role: s.role,
                 isActive: s.isActive,
                 updatedAt: s.updatedAt.toISOString(),
@@ -567,48 +640,11 @@ export async function syncRoutes(app) {
         if (!parsed.success)
             return reply.code(400).send({ error: "INVALID_BODY", details: parsed.error.flatten() });
         const d = parsed.data;
-        let row = await app.prisma.syncedInventoryCountSession.findUnique({
-            where: { storeId_sourceLocalId: { storeId: d.storeId, sourceLocalId: d.sourceSessionId } },
+        const { id } = await upsertSyncedInventoryCountSession(app, {
+            ...d,
+            lines: d.lines,
         });
-        if (!row) {
-            row = await app.prisma.syncedInventoryCountSession.create({
-                data: {
-                    sourceLocalId: d.sourceSessionId,
-                    storeId: d.storeId,
-                    submittedByStaffCloudId: d.submittedByStaffCloudId ?? null,
-                    submittedByStaffName: d.submittedByStaffName,
-                    source: d.source,
-                    notes: d.notes ?? null,
-                    countedAt: new Date(d.countedAt),
-                },
-            });
-        }
-        else {
-            row = await app.prisma.syncedInventoryCountSession.update({
-                where: { id: row.id },
-                data: {
-                    submittedByStaffCloudId: d.submittedByStaffCloudId ?? null,
-                    submittedByStaffName: d.submittedByStaffName,
-                    source: d.source,
-                    notes: d.notes ?? null,
-                    countedAt: new Date(d.countedAt),
-                },
-            });
-        }
-        await app.prisma.syncedInventoryCountLine.deleteMany({ where: { sessionId: row.id } });
-        await app.prisma.syncedInventoryCountLine.createMany({
-            data: d.lines.map((line) => ({
-                sessionId: row.id,
-                inventoryItemCloudId: String(line.inventoryItemCloudId ?? ""),
-                inventoryItemName: String(line.inventoryItemName ?? "Unknown"),
-                expectedQuantity: line.expectedQuantity != null ? String(line.expectedQuantity) : null,
-                actualQuantity: String(line.actualQuantity ?? "0"),
-                varianceQuantity: line.varianceQuantity != null ? String(line.varianceQuantity) : null,
-                unit: line.unit != null ? String(line.unit) : null,
-                notes: line.notes != null ? String(line.notes) : null,
-            })),
-        });
-        return { ok: true, id: row.id };
+        return { ok: true, id };
     });
     app.post("/staff/sop-submissions", async (req, reply) => {
         if (syncSecret) {
@@ -758,24 +794,96 @@ export async function syncRoutes(app) {
         if (!parsed.success)
             return reply.code(400).send({ error: "INVALID_BODY", details: parsed.error.flatten() });
         const d = parsed.data;
-        let countRow = await app.prisma.syncedInventoryCountSession.findUnique({
-            where: { storeId_sourceLocalId: { storeId: d.storeId, sourceLocalId: d.sourceSessionId } },
+        await upsertSyncedInventoryCountSession(app, {
+            ...d,
+            lines: d.lines,
         });
-        if (!countRow) {
-            countRow = await app.prisma.syncedInventoryCountSession.create({
-                data: { sourceLocalId: d.sourceSessionId, storeId: d.storeId, submittedByStaffCloudId: d.submittedByStaffCloudId ?? null, submittedByStaffName: d.submittedByStaffName, source: d.source, notes: d.notes ?? null, countedAt: new Date(d.countedAt) },
-            });
+        return { ok: true };
+    });
+    app.post("/staff-ops/stock-movements", async (req, reply) => {
+        if (syncSecret) {
+            const key = req.headers["x-store-sync-key"] || "";
+            if (key !== syncSecret)
+                return reply.code(401).send({ error: "UNAUTHORIZED" });
         }
-        else {
-            countRow = await app.prisma.syncedInventoryCountSession.update({
-                where: { id: countRow.id },
-                data: { submittedByStaffCloudId: d.submittedByStaffCloudId ?? null, submittedByStaffName: d.submittedByStaffName, source: d.source, notes: d.notes ?? null, countedAt: new Date(d.countedAt) },
-            });
+        const parsed = staffStockMovementIngestSchema.safeParse(req.body);
+        if (!parsed.success)
+            return reply.code(400).send({ error: "INVALID_BODY", details: parsed.error.flatten() });
+        const d = parsed.data;
+        const qty = Number(d.quantityBase);
+        if (!Number.isFinite(qty) || qty <= 0) {
+            return reply.code(400).send({ error: "INVALID_QUANTITY" });
         }
-        await app.prisma.syncedInventoryCountLine.deleteMany({ where: { sessionId: countRow.id } });
-        await app.prisma.syncedInventoryCountLine.createMany({
-            data: d.lines.map((line) => ({ sessionId: countRow.id, inventoryItemCloudId: String(line.inventoryItemCloudId ?? ""), inventoryItemName: String(line.inventoryItemName ?? "Unknown"), expectedQuantity: line.expectedQuantity != null ? String(line.expectedQuantity) : null, actualQuantity: String(line.actualQuantity ?? "0"), varianceQuantity: line.varianceQuantity != null ? String(line.varianceQuantity) : null, unit: line.unit != null ? String(line.unit) : null, notes: line.notes != null ? String(line.notes) : null })),
+        const ing = await app.prisma.ingredient.findFirst({
+            where: { id: d.ingredientId, deletedAt: null, isActive: true },
         });
+        if (!ing) {
+            return reply.code(400).send({ error: "UNKNOWN_INGREDIENT" });
+        }
+        const locations = await app.prisma.inventoryLocation.findMany({
+            where: { isActive: true },
+            select: { id: true, code: true },
+        });
+        const mainCafe = locations.find((l) => l.code === "MAIN_CAFE");
+        const warehouse = locations.find((l) => l.code === "WAREHOUSE");
+        if (!mainCafe) {
+            return reply.code(503).send({ error: "NO_STORE_LOCATION" });
+        }
+        if (d.movementKind !== "STORE_ADD" && !warehouse) {
+            return reply.code(503).send({ error: "NO_WAREHOUSE_LOCATION" });
+        }
+        try {
+            if (d.movementKind === "WAREHOUSE_PULLOUT") {
+                const dupTransfer = await app.prisma.stockMovement.findFirst({
+                    where: { sourceType: "TRANSFER", sourceId: d.sourceLocalId },
+                });
+                if (dupTransfer)
+                    return { ok: true, skipped: true };
+                await app.inventoryService.postTransfer({
+                    lines: [{ ingredientId: ing.id, quantityBase: qty }],
+                    fromLocationId: warehouse.id,
+                    toLocationId: mainCafe.id,
+                    sourceId: d.sourceLocalId,
+                });
+            }
+            else {
+                const sourceType = `STAFF_POS_${d.movementKind}`;
+                const existing = await app.prisma.stockMovement.findFirst({
+                    where: { sourceType, sourceId: d.sourceLocalId },
+                });
+                if (existing)
+                    return { ok: true, skipped: true };
+                if (d.movementKind === "STORE_ADD") {
+                    await app.inventoryService.postMovement({
+                        ingredientId: ing.id,
+                        locationId: mainCafe.id,
+                        movementType: "MANUAL_ADJUSTMENT",
+                        quantityDeltaBaseUnit: qty,
+                        sourceType,
+                        sourceId: d.sourceLocalId,
+                        actorStaffId: d.submittedByStaffCloudId?.trim() || null,
+                        notes: d.notes ?? `Staff store add (${d.submittedByStaffName})`,
+                    });
+                }
+                else {
+                    await app.inventoryService.postMovement({
+                        ingredientId: ing.id,
+                        locationId: warehouse.id,
+                        movementType: "MANUAL_ADJUSTMENT",
+                        quantityDeltaBaseUnit: qty,
+                        sourceType,
+                        sourceId: d.sourceLocalId,
+                        actorStaffId: d.submittedByStaffCloudId?.trim() || null,
+                        notes: d.notes ?? `Staff warehouse add (${d.submittedByStaffName})`,
+                    });
+                }
+            }
+        }
+        catch (err) {
+            app.log.error({ err, sourceLocalId: d.sourceLocalId }, "[Sync] staff stock movement failed");
+            reply.code(500);
+            return { error: "STOCK_MOVEMENT_FAILED" };
+        }
         return { ok: true };
     });
     app.post("/staff-ops/sop-submissions", async (req, reply) => {
@@ -848,7 +956,7 @@ export async function syncRoutes(app) {
                 return { error: "UNAUTHORIZED", message: "Invalid or missing X-Store-Sync-Key" };
             }
         }
-        const row = await app.prisma.storeSetting.findUnique({ where: { id: "1" } });
+        const row = await app.prisma.cloudStoreSetting.findUnique({ where: { id: "1" } });
         return { ownerPasswordHash: row?.ownerPasswordHash ?? null };
     });
     // Verify admin PIN (for POS - requires STORE_SYNC_SECRET)
@@ -866,7 +974,7 @@ export async function syncRoutes(app) {
             return { valid: false, error: "INVALID_BODY" };
         }
         try {
-            const row = await app.prisma.storeSetting.findUnique({ where: { id: "1" } });
+            const row = await app.prisma.cloudStoreSetting.findUnique({ where: { id: "1" } });
             if (!row?.adminPinHash) {
                 return { valid: false };
             }
@@ -892,7 +1000,7 @@ export async function syncRoutes(app) {
             return { error: "INVALID_BODY", message: "pin required" };
         }
         try {
-            const row = await app.prisma.storeSetting.findUnique({ where: { id: "1" } });
+            const row = await app.prisma.cloudStoreSetting.findUnique({ where: { id: "1" } });
             if (!row?.adminPinHash) {
                 reply.code(400);
                 return { error: "NO_PIN", message: "Admin PIN not configured" };
