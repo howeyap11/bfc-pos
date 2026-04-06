@@ -151,7 +151,7 @@ export async function syncRoutes(app) {
         const versionFilter = sinceVersion === 0 ? { gte: 0 } : { gt: sinceVersion };
         const [catalogVersion, items, addOnGroups, substituteGroups, substitutes, substitutePrices, substituteRecipeConsumptions, menuItemAddOnGroups, menuItemSubstituteGroups, menuItemSubstitutes, ingredientsVersioned, recipeLinesVersioned, recipeLineSizesVersioned, categories, subCategories, menuOptionGroups, menuOptions, menuOptionGroupSections, menuItemOptionGroups, menuItemSizes, menuSizes, menuItemSizePrices, transactionTypes, shotPricingRules, storeSetting, staffList, optionChoiceRecipeLines, legacyAddOns, businessDetailsRow, receiptDetailsRow,] = await Promise.all([
             app.prisma.catalogVersion.findUnique({ where: { id: 1 } }),
-            app.prisma.cloudMenuItem.findMany({
+            app.prisma.menuItem.findMany({
                 where: { version: versionFilter },
                 include: {
                     drinkSizeConfigs: { include: { option: true } },
@@ -161,8 +161,8 @@ export async function syncRoutes(app) {
             app.prisma.addOnGroup.findMany({ where: { isActive: true }, include: { options: { where: { isActive: true }, include: { recipeLines: { include: { ingredient: true } } }, orderBy: { sortOrder: "asc" } } }, orderBy: { sortOrder: "asc" } }),
             app.prisma.substituteGroup.findMany({ where: { isActive: true }, include: { options: { where: { isActive: true }, include: { recipeLines: { include: { ingredient: true } } }, orderBy: { sortOrder: "asc" } } }, orderBy: { sortOrder: "asc" } }),
             app.prisma.substitute.findMany({ where: { isActive: true }, include: { prices: { include: { size: true } }, recipeConsumption: { include: { size: true, ingredient: true } } }, orderBy: { sortOrder: "asc" } }),
-            app.prisma.cloudSubstitutePrice.findMany({ include: { size: true } }),
-            app.prisma.cloudSubstituteRecipeConsumption.findMany({ include: { size: true, ingredient: true } }),
+            app.prisma.substitutePrice.findMany({ include: { size: true } }),
+            app.prisma.substituteRecipeConsumption.findMany({ include: { size: true, ingredient: true } }),
             app.prisma.menuItemAddOnGroup.findMany(),
             app.prisma.menuItemSubstituteGroup.findMany(),
             app.prisma.menuItemSubstitute.findMany(),
@@ -181,10 +181,10 @@ export async function syncRoutes(app) {
                 orderBy: { sortOrder: "asc" },
                 include: { availability: { orderBy: { sortOrder: "asc" } } },
             }),
-            app.prisma.cloudMenuItemSizePrice.findMany(),
+            app.prisma.menuItemSizePrice.findMany(),
             app.prisma.transactionTypeSetting.findMany({ where: { isActive: true }, orderBy: { sortOrder: "asc" } }),
-            app.prisma.cloudShotPricingRule.findMany({ where: { isActive: true }, orderBy: { sortOrder: "asc" } }),
-            app.prisma.cloudStoreSetting.findUnique({ where: { id: "1" } }),
+            app.prisma.shotPricingRule.findMany({ where: { isActive: true }, orderBy: { sortOrder: "asc" } }),
+            app.prisma.storeSetting.findUnique({ where: { id: "1" } }),
             app.prisma.staff.findMany({
                 where: { storeId: "store_1" },
                 orderBy: { name: "asc" },
@@ -956,7 +956,7 @@ export async function syncRoutes(app) {
                 return { error: "UNAUTHORIZED", message: "Invalid or missing X-Store-Sync-Key" };
             }
         }
-        const row = await app.prisma.cloudStoreSetting.findUnique({ where: { id: "1" } });
+        const row = await app.prisma.storeSetting.findUnique({ where: { id: "1" } });
         return { ownerPasswordHash: row?.ownerPasswordHash ?? null };
     });
     // Verify admin PIN (for POS - requires STORE_SYNC_SECRET)
@@ -974,7 +974,7 @@ export async function syncRoutes(app) {
             return { valid: false, error: "INVALID_BODY" };
         }
         try {
-            const row = await app.prisma.cloudStoreSetting.findUnique({ where: { id: "1" } });
+            const row = await app.prisma.storeSetting.findUnique({ where: { id: "1" } });
             if (!row?.adminPinHash) {
                 return { valid: false };
             }
@@ -1000,7 +1000,7 @@ export async function syncRoutes(app) {
             return { error: "INVALID_BODY", message: "pin required" };
         }
         try {
-            const row = await app.prisma.cloudStoreSetting.findUnique({ where: { id: "1" } });
+            const row = await app.prisma.storeSetting.findUnique({ where: { id: "1" } });
             if (!row?.adminPinHash) {
                 reply.code(400);
                 return { error: "NO_PIN", message: "Admin PIN not configured" };

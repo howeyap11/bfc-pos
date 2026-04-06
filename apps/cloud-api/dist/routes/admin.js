@@ -6,7 +6,7 @@ import { uploadImage } from "../services/r2.service.js";
 import { bumpCatalogVersion } from "../lib/catalogVersion.js";
 import { hashPassword } from "../lib/password.js";
 import { hashStaffPin } from "../lib/staffPin.js";
-import { getDrinkSizesOptionGroup, getDrinkSizesOptionIds } from "../lib/drinkSizes.js";
+import { getDrinkSizesOptionGroup, getDrinkSizesOptionIds, getDrinkSizesCatalogForAdminUi, findMenuOptionForMenuSize, SIZES_GROUP_NAME, } from "../lib/drinkSizes.js";
 import { getDashboardKpis, getSalesByDate, getPaymentTypeTotals, getSalesByCategory, getSalesByItem, getSalesByCashier, getSalesByPayment, getItemsSold, getLastSyncedAt, getStoreName, buildDateRange, getDefaultDateRange, netSalesCentsForSyncedTransaction, foldPaymentsFromSyncedTransactions, } from "../services/dashboard.service.js";
 import { localBusinessDateRangeToUtc, localBusinessDayToUtcRange, localBusinessMonthToUtcRange, } from "../lib/businessDay.js";
 import { buildWorkLogFeed } from "../services/workLogFeed.service.js";
@@ -57,7 +57,7 @@ export async function adminRoutes(app) {
     app.get("/settings/admin-pin", async (req, reply) => {
         if (!requireCloudAdmin(req, reply))
             return;
-        const row = await app.prisma.cloudStoreSetting.upsert({
+        const row = await app.prisma.storeSetting.upsert({
             where: { id: "1" },
             create: { id: "1", adminPinHash: null },
             update: {},
@@ -73,7 +73,7 @@ export async function adminRoutes(app) {
             return { error: "INVALID_PIN", message: parsed.error.issues.map((issue) => issue.message).join("; ") };
         }
         const hash = await hashPassword(parsed.data.pin);
-        await app.prisma.cloudStoreSetting.upsert({
+        await app.prisma.storeSetting.upsert({
             where: { id: "1" },
             create: { id: "1", adminPinHash: hash },
             update: { adminPinHash: hash },
@@ -84,7 +84,7 @@ export async function adminRoutes(app) {
     app.get("/settings/owner-password", async (req, reply) => {
         if (!requireCloudAdmin(req, reply))
             return;
-        const row = await app.prisma.cloudStoreSetting.upsert({
+        const row = await app.prisma.storeSetting.upsert({
             where: { id: "1" },
             create: { id: "1", adminPinHash: null, ownerPasswordHash: null },
             update: {},
@@ -102,7 +102,7 @@ export async function adminRoutes(app) {
             return { error: "INVALID_PASSWORD", message: parsed.error.issues.map((issue) => issue.message).join("; ") };
         }
         const hash = await hashPassword(parsed.data.password);
-        await app.prisma.cloudStoreSetting.upsert({
+        await app.prisma.storeSetting.upsert({
             where: { id: "1" },
             create: { id: "1", adminPinHash: null, ownerPasswordHash: hash },
             update: { ownerPasswordHash: hash },
@@ -118,7 +118,7 @@ export async function adminRoutes(app) {
     app.get("/settings/admin-accounts", async (req, reply) => {
         if (!requireCloudAdmin(req, reply))
             return;
-        const accounts = await app.prisma.cloudAdminUser.findMany({
+        const accounts = await app.prisma.adminUser.findMany({
             orderBy: { createdAt: "asc" },
             select: { id: true, email: true, role: true, createdAt: true, updatedAt: true },
         });
@@ -136,13 +136,13 @@ export async function adminRoutes(app) {
             };
         }
         const email = parsed.data.email.trim().toLowerCase();
-        const existing = await app.prisma.cloudAdminUser.findUnique({ where: { email } });
+        const existing = await app.prisma.adminUser.findUnique({ where: { email } });
         if (existing) {
             reply.code(409);
             return { error: "DUPLICATE_EMAIL", message: "An account with this email already exists." };
         }
         const passwordHash = await hashPassword(parsed.data.password);
-        const account = await app.prisma.cloudAdminUser.create({
+        const account = await app.prisma.adminUser.create({
             data: { email, passwordHash, role: parsed.data.role },
             select: { id: true, email: true, role: true, createdAt: true, updatedAt: true },
         });
@@ -154,7 +154,7 @@ export async function adminRoutes(app) {
         const { id } = req.params;
         const auth = req.user;
         const requesterId = auth?.sub ?? null;
-        const target = await app.prisma.cloudAdminUser.findUnique({
+        const target = await app.prisma.adminUser.findUnique({
             where: { id },
             select: { id: true, role: true },
         });
@@ -167,7 +167,7 @@ export async function adminRoutes(app) {
             return { error: "CANNOT_DELETE_SELF", message: "You cannot delete your own account." };
         }
         if (target.role === "ADMIN") {
-            const adminCount = await app.prisma.cloudAdminUser.count({ where: { role: "ADMIN" } });
+            const adminCount = await app.prisma.adminUser.count({ where: { role: "ADMIN" } });
             if (adminCount <= 1) {
                 reply.code(400);
                 return {
@@ -176,7 +176,7 @@ export async function adminRoutes(app) {
                 };
             }
         }
-        await app.prisma.cloudAdminUser.delete({ where: { id } });
+        await app.prisma.adminUser.delete({ where: { id } });
         return { ok: true };
     });
     // Settings > Receipts: BIR / PTU fields (ReceiptDetails). Owner/trade name is BusinessDetails.businessName (GET merged only).
@@ -307,7 +307,7 @@ export async function adminRoutes(app) {
     app.get("/settings/sales-inventory", async (req, reply) => {
         if (!requireCloudAdmin(req, reply))
             return;
-        const row = await app.prisma.cloudStoreSetting.upsert({
+        const row = await app.prisma.storeSetting.upsert({
             where: { id: STORE_SETTING_ID },
             create: { id: STORE_SETTING_ID },
             update: {},
@@ -360,7 +360,7 @@ export async function adminRoutes(app) {
             data.workDayFromTimeLocal = body.workDayFromTimeLocal;
         if (body.workDayToTimeLocal !== undefined)
             data.workDayToTimeLocal = body.workDayToTimeLocal;
-        const row = await app.prisma.cloudStoreSetting.upsert({
+        const row = await app.prisma.storeSetting.upsert({
             where: { id: STORE_SETTING_ID },
             create: { id: STORE_SETTING_ID, ...data },
             update: data,
@@ -679,10 +679,13 @@ export async function adminRoutes(app) {
         order: z.array(z.object({ id: z.string(), sortOrder: z.number().int().min(0) })),
     });
     app.get("/drink-sizes", async (req, reply) => {
-        const result = await getDrinkSizesOptionGroup(app.prisma);
+        const result = await getDrinkSizesCatalogForAdminUi(app.prisma);
         if (!result.ok) {
             reply.code(404);
             return { error: result.error, message: "Missing required option group: Sizes", code: "SIZES_GROUP_MISSING" };
+        }
+        if (result.createdOptionCount > 0) {
+            await bumpCatalogVersion(app.prisma);
         }
         return {
             optionGroupId: result.optionGroupId,
@@ -743,13 +746,33 @@ export async function adminRoutes(app) {
             availability.HOT = [...allSizeIds];
             availability.CONCENTRATED = [...allSizeIds];
         }
-        return {
-            sizes: group.menuSizes.map((s) => ({
+        const sizesOptGroup = await app.prisma.menuOptionGroup.findFirst({
+            where: { name: SIZES_GROUP_NAME, isSizeGroup: true },
+            select: { id: true },
+        });
+        const sizesPayload = sizesOptGroup
+            ? await Promise.all(group.menuSizes.map(async (s) => {
+                const linked = await findMenuOptionForMenuSize(app.prisma, sizesOptGroup.id, {
+                    label: s.label,
+                    sortOrder: s.sortOrder,
+                });
+                return {
+                    id: s.id,
+                    label: s.label,
+                    sortOrder: s.sortOrder,
+                    isActive: s.isActive,
+                    linkedOptionId: linked?.id ?? null,
+                };
+            }))
+            : group.menuSizes.map((s) => ({
                 id: s.id,
                 label: s.label,
                 sortOrder: s.sortOrder,
                 isActive: s.isActive,
-            })),
+                linkedOptionId: null,
+            }));
+        return {
+            sizes: sizesPayload,
             availability,
             variants,
         };
@@ -770,13 +793,38 @@ export async function adminRoutes(app) {
             reply.code(404);
             return { error: "SIZES_GROUP_NOT_FOUND", message: "Sizes group not found. Run db:seed." };
         }
+        const sizesOptGroup = await app.prisma.menuOptionGroup.findFirst({
+            where: { name: SIZES_GROUP_NAME, isSizeGroup: true },
+            select: { id: true },
+        });
+        if (!sizesOptGroup) {
+            reply.code(500);
+            return { error: "SIZES_OPTION_GROUP_MISSING", message: "Sizes option group not found. Run db:seed." };
+        }
         await bumpCatalogVersion(app.prisma);
-        return app.prisma.menuSize.create({
-            data: {
-                groupId: group.id,
-                label: parsed.data.label,
-                sortOrder: parsed.data.sortOrder ?? 0,
-            },
+        return app.prisma.$transaction(async (tx) => {
+            const created = await tx.menuSize.create({
+                data: {
+                    groupId: group.id,
+                    label: parsed.data.label,
+                    sortOrder: parsed.data.sortOrder ?? 0,
+                },
+            });
+            const existing = await findMenuOptionForMenuSize(tx, sizesOptGroup.id, {
+                label: created.label,
+                sortOrder: created.sortOrder,
+            });
+            if (!existing) {
+                await tx.menuOption.create({
+                    data: {
+                        groupId: sizesOptGroup.id,
+                        name: created.label,
+                        priceDelta: 0,
+                        sortOrder: created.sortOrder,
+                    },
+                });
+            }
+            return created;
         });
     });
     app.patch("/menu-settings/sizes/:id", async (req, reply) => {
@@ -803,10 +851,52 @@ export async function adminRoutes(app) {
             reply.code(404);
             return { error: "NOT_FOUND", message: "Size not found" };
         }
+        const sizesOptGroup = await app.prisma.menuOptionGroup.findFirst({
+            where: { name: SIZES_GROUP_NAME, isSizeGroup: true },
+            select: { id: true },
+        });
+        if (!sizesOptGroup) {
+            reply.code(500);
+            return { error: "SIZES_OPTION_GROUP_MISSING", message: "Sizes option group not found. Run db:seed." };
+        }
+        const before = { label: size.label, sortOrder: size.sortOrder };
         await bumpCatalogVersion(app.prisma);
-        return app.prisma.menuSize.update({
-            where: { id },
-            data: parsed.data,
+        return app.prisma.$transaction(async (tx) => {
+            const updated = await tx.menuSize.update({
+                where: { id },
+                data: parsed.data,
+            });
+            const opt = (await tx.menuOption.findFirst({
+                where: {
+                    groupId: sizesOptGroup.id,
+                    name: before.label,
+                    sortOrder: before.sortOrder,
+                },
+            })) ??
+                (await tx.menuOption.findFirst({
+                    where: { groupId: sizesOptGroup.id, name: before.label },
+                    orderBy: { sortOrder: "asc" },
+                }));
+            if (opt) {
+                await tx.menuOption.update({
+                    where: { id: opt.id },
+                    data: {
+                        name: updated.label,
+                        sortOrder: updated.sortOrder,
+                    },
+                });
+            }
+            else if (updated.isActive) {
+                await tx.menuOption.create({
+                    data: {
+                        groupId: sizesOptGroup.id,
+                        name: updated.label,
+                        priceDelta: 0,
+                        sortOrder: updated.sortOrder,
+                    },
+                });
+            }
+            return updated;
         });
     });
     // POST /admin/menu-settings/sizes/availability/:id/image - multipart upload for variant image
@@ -922,7 +1012,7 @@ export async function adminRoutes(app) {
     });
     // Menu Settings > Shots (extra-shot pricing)
     app.get("/menu-settings/shots", async () => {
-        const rules = await app.prisma.cloudShotPricingRule.findMany({
+        const rules = await app.prisma.shotPricingRule.findMany({
             orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
         });
         const active = rules.find((r) => r.isActive) ?? rules[0] ?? null;
@@ -943,11 +1033,11 @@ export async function adminRoutes(app) {
             reply.code(400);
             return { error: "INVALID_BODY", details: parsed.error.flatten() };
         }
-        const count = await app.prisma.cloudShotPricingRule.count();
+        const count = await app.prisma.shotPricingRule.count();
         const qExtra = parsed.data.qtyPerExtraShot != null && parsed.data.qtyPerExtraShot !== ""
             ? String(parsed.data.qtyPerExtraShot)
             : null;
-        return app.prisma.cloudShotPricingRule.create({
+        return app.prisma.shotPricingRule.create({
             data: {
                 name: parsed.data.name ?? "Standard",
                 shotsPerBundle: parsed.data.shotsPerBundle,
@@ -976,7 +1066,7 @@ export async function adminRoutes(app) {
             reply.code(400);
             return { error: "INVALID_BODY", details: parsed.error.flatten() };
         }
-        const existing = await app.prisma.cloudShotPricingRule.findUnique({ where: { id } });
+        const existing = await app.prisma.shotPricingRule.findUnique({ where: { id } });
         if (!existing) {
             reply.code(404);
             return { error: "NOT_FOUND" };
@@ -989,7 +1079,7 @@ export async function adminRoutes(app) {
         if (parsed.data.extraShotIngredientId !== undefined) {
             data.extraShotIngredientId = parsed.data.extraShotIngredientId?.trim() || null;
         }
-        return app.prisma.cloudShotPricingRule.update({ where: { id }, data: data });
+        return app.prisma.shotPricingRule.update({ where: { id }, data: data });
     });
     // Menu Settings > Transaction Types (requires Prisma client with TransactionTypeSetting model)
     const txDelegate = () => {
@@ -1126,7 +1216,7 @@ export async function adminRoutes(app) {
     });
     app.get("/items", async (req) => {
         const includeDeleted = req.query?.includeDeleted === "1";
-        return app.prisma.cloudMenuItem.findMany({
+        return app.prisma.menuItem.findMany({
             where: includeDeleted ? {} : { deletedAt: null },
             orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
             include: {
@@ -1149,7 +1239,7 @@ export async function adminRoutes(app) {
             return { error: "INVALID_BODY", details: parsed.error.flatten(), message: "order array of { id, sortOrder } required" };
         }
         const ids = parsed.data.order.map((o) => o.id);
-        const existing = await app.prisma.cloudMenuItem.findMany({ where: { id: { in: ids } }, select: { id: true, subCategoryId: true } });
+        const existing = await app.prisma.menuItem.findMany({ where: { id: { in: ids } }, select: { id: true, subCategoryId: true } });
         const foundIds = new Set(existing.map((i) => i.id));
         const missing = ids.filter((id) => !foundIds.has(id));
         if (missing.length > 0) {
@@ -1163,9 +1253,9 @@ export async function adminRoutes(app) {
         }
         const version = await bumpCatalogVersion(app.prisma);
         await app.prisma.$transaction([
-            ...parsed.data.order.map(({ id, sortOrder }) => app.prisma.cloudMenuItem.update({ where: { id }, data: { sortOrder, version } })),
+            ...parsed.data.order.map(({ id, sortOrder }) => app.prisma.menuItem.update({ where: { id }, data: { sortOrder, version } })),
         ]);
-        const list = await app.prisma.cloudMenuItem.findMany({
+        const list = await app.prisma.menuItem.findMany({
             where: { id: { in: ids } },
             orderBy: { sortOrder: "asc" },
             include: { category: true, subCategory: true },
@@ -1198,7 +1288,7 @@ export async function adminRoutes(app) {
         // Place new item at the end of its subcategory unless sortOrder is explicitly provided
         let sortOrder = parsed.data.sortOrder;
         if (sortOrder === undefined) {
-            const maxOrder = await app.prisma.cloudMenuItem.aggregate({
+            const maxOrder = await app.prisma.menuItem.aggregate({
                 _max: { sortOrder: true },
                 where: { subCategoryId: parsed.data.subCategoryId },
             });
@@ -1211,7 +1301,7 @@ export async function adminRoutes(app) {
                 shotsPerSizeEnabled: parsed.data.shotsPerSizeEnabled ?? false,
             }
             : { supportsShots: false, defaultShots: null, shotsPerSizeEnabled: false };
-        return app.prisma.cloudMenuItem.create({
+        return app.prisma.menuItem.create({
             data: {
                 name: parsed.data.name,
                 priceCents: parsed.data.priceCents,
@@ -1230,7 +1320,7 @@ export async function adminRoutes(app) {
     app.get("/items/:id", async (req, reply) => {
         const { id } = req.params;
         const includeDeleted = req.query?.includeDeleted === "1";
-        const item = await app.prisma.cloudMenuItem.findUnique({
+        const item = await app.prisma.menuItem.findUnique({
             where: { id },
             include: {
                 recipeLines: true,
@@ -1264,7 +1354,7 @@ export async function adminRoutes(app) {
     // POST /admin/items/:id/image - multipart upload
     app.post("/items/:id/image", async (req, reply) => {
         const { id } = req.params;
-        const item = await app.prisma.cloudMenuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
+        const item = await app.prisma.menuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
         if (!item) {
             reply.code(404);
             return { error: "NOT_FOUND" };
@@ -1283,7 +1373,7 @@ export async function adminRoutes(app) {
         const buf = await buffer(data.file);
         const imageUrl = await uploadImage(buf, filename, data.mimetype);
         const version = await bumpCatalogVersion(app.prisma);
-        await app.prisma.cloudMenuItem.update({ where: { id }, data: { imageUrl, version } });
+        await app.prisma.menuItem.update({ where: { id }, data: { imageUrl, version } });
         return { imageUrl };
     });
     app.patch("/items/:id", async (req, reply) => {
@@ -1293,7 +1383,7 @@ export async function adminRoutes(app) {
             reply.code(400);
             return { error: "INVALID_BODY", details: parsed.error.flatten() };
         }
-        const existing = await app.prisma.cloudMenuItem.findUnique({ where: { id }, select: { defaultSizeOptionId: true, subCategoryId: true, deletedAt: true } });
+        const existing = await app.prisma.menuItem.findUnique({ where: { id }, select: { defaultSizeOptionId: true, subCategoryId: true, deletedAt: true } });
         if (!existing) {
             reply.code(404);
             return { error: "NOT_FOUND" };
@@ -1373,7 +1463,7 @@ export async function adminRoutes(app) {
             }
             updateData.categoryId = sub.categoryId;
         }
-        return app.prisma.cloudMenuItem.update({ where: { id }, data: updateData });
+        return app.prisma.menuItem.update({ where: { id }, data: updateData });
     });
     const drinkSizesByModeSchema = z.object({
         drinkSizesByMode: z.object({
@@ -1404,7 +1494,7 @@ export async function adminRoutes(app) {
             reply.code(400);
             return { error: "INVALID_BODY", details: parsed.error.flatten(), message: "drinkSizesByMode with ICED, HOT, CONCENTRATED is required" };
         }
-        const item = await app.prisma.cloudMenuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
+        const item = await app.prisma.menuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
         if (!item) {
             reply.code(404);
             return { error: "NOT_FOUND", message: "Item not found" };
@@ -1460,15 +1550,15 @@ export async function adminRoutes(app) {
         }
         const version = await bumpCatalogVersion(app.prisma);
         await app.prisma.$transaction([
-            app.prisma.cloudMenuItemDrinkSizeConfig.deleteMany({ where: { menuItemId: id } }),
+            app.prisma.menuItemDrinkSizeConfig.deleteMany({ where: { menuItemId: id } }),
             app.prisma.menuItemDrinkModeDefault.deleteMany({ where: { menuItemId: id } }),
-            app.prisma.cloudMenuItemSizePrice.deleteMany({ where: { menuItemId: id } }),
-            app.prisma.cloudMenuItem.update({ where: { id }, data: { version, hasSizes } }),
+            app.prisma.menuItemSizePrice.deleteMany({ where: { menuItemId: id } }),
+            app.prisma.menuItem.update({ where: { id }, data: { version, hasSizes } }),
         ]);
         for (const mode of modes) {
             const { enabledOptionIds, defaultOptionId } = drinkSizesByMode[mode];
             if (enabledOptionIds.length > 0) {
-                await app.prisma.cloudMenuItemDrinkSizeConfig.createMany({
+                await app.prisma.menuItemDrinkSizeConfig.createMany({
                     data: enabledOptionIds.map((optionId) => ({
                         menuItemId: id,
                         mode,
@@ -1492,7 +1582,7 @@ export async function adminRoutes(app) {
                             select: { id: true, name: true },
                         });
                         const nameById = new Map(options.map((o) => [o.id, o.name]));
-                        await app.prisma.cloudMenuItemSizePrice.createMany({
+                        await app.prisma.menuItemSizePrice.createMany({
                             data: optionIdsNeedingPrice.map((optId) => ({
                                 menuItemId: id,
                                 baseType: mode,
@@ -1506,7 +1596,7 @@ export async function adminRoutes(app) {
                 }
             }
         }
-        const updated = await app.prisma.cloudMenuItem.findUnique({
+        const updated = await app.prisma.menuItem.findUnique({
             where: { id },
             include: {
                 drinkSizeConfigs: { include: { option: true } },
@@ -1517,7 +1607,7 @@ export async function adminRoutes(app) {
     });
     app.delete("/items/:id", async (req, reply) => {
         const { id } = req.params;
-        const item = await app.prisma.cloudMenuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
+        const item = await app.prisma.menuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
         if (!item) {
             reply.code(404);
             return { error: "NOT_FOUND", message: "Item not found" };
@@ -1527,7 +1617,7 @@ export async function adminRoutes(app) {
             return { error: "ALREADY_DELETED", message: "Item is already deleted" };
         }
         const version = await bumpCatalogVersion(app.prisma);
-        await app.prisma.cloudMenuItem.update({
+        await app.prisma.menuItem.update({
             where: { id },
             data: { deletedAt: new Date(), version },
         });
@@ -1535,7 +1625,7 @@ export async function adminRoutes(app) {
     });
     app.post("/items/:id/restore", async (req, reply) => {
         const { id } = req.params;
-        const item = await app.prisma.cloudMenuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
+        const item = await app.prisma.menuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
         if (!item) {
             reply.code(404);
             return { error: "NOT_FOUND", message: "Item not found" };
@@ -1545,7 +1635,7 @@ export async function adminRoutes(app) {
             return { error: "NOT_DELETED", message: "Item is not deleted" };
         }
         const version = await bumpCatalogVersion(app.prisma);
-        return app.prisma.cloudMenuItem.update({
+        return app.prisma.menuItem.update({
             where: { id },
             data: { deletedAt: null, version },
             include: {
@@ -1964,7 +2054,7 @@ export async function adminRoutes(app) {
     }
     app.get("/items/:id/recipe", async (req, reply) => {
         const { id } = req.params;
-        const item = await app.prisma.cloudMenuItem.findUnique({ where: { id } });
+        const item = await app.prisma.menuItem.findUnique({ where: { id } });
         if (!item) {
             reply.code(404);
             return { error: "NOT_FOUND" };
@@ -1988,7 +2078,7 @@ export async function adminRoutes(app) {
             reply.code(400);
             return { error: "INVALID_BODY", details: parsed.error.flatten() };
         }
-        const item = await app.prisma.cloudMenuItem.findUnique({
+        const item = await app.prisma.menuItem.findUnique({
             where: { id },
             select: { id: true, deletedAt: true, hasSizes: true },
         });
@@ -2243,7 +2333,7 @@ export async function adminRoutes(app) {
             return;
         const { id } = req.params;
         const moveToId = req.body?.moveItemsToSubCategoryId;
-        const itemCount = await app.prisma.cloudMenuItem.count({ where: { subCategoryId: id, deletedAt: null } });
+        const itemCount = await app.prisma.menuItem.count({ where: { subCategoryId: id, deletedAt: null } });
         if (itemCount > 0) {
             if (!moveToId) {
                 reply.code(409);
@@ -2264,7 +2354,7 @@ export async function adminRoutes(app) {
                 return { error: "TARGET_SELF", message: "Cannot move items to the same subcategory" };
             }
             await app.prisma.$transaction([
-                app.prisma.cloudMenuItem.updateMany({ where: { subCategoryId: id, deletedAt: null }, data: { subCategoryId: moveToId } }),
+                app.prisma.menuItem.updateMany({ where: { subCategoryId: id, deletedAt: null }, data: { subCategoryId: moveToId } }),
                 app.prisma.subCategory.update({ where: { id }, data: { deletedAt: new Date() } }),
             ]);
         }
@@ -2297,7 +2387,7 @@ export async function adminRoutes(app) {
     // MenuItemSize CRUD (per-item sizes)
     app.get("/items/:id/sizes", async (req, reply) => {
         const { id } = req.params;
-        const item = await app.prisma.cloudMenuItem.findUnique({ where: { id }, select: { id: true } });
+        const item = await app.prisma.menuItem.findUnique({ where: { id }, select: { id: true } });
         if (!item) {
             reply.code(404);
             return { error: "NOT_FOUND", message: "Item not found" };
@@ -2319,7 +2409,7 @@ export async function adminRoutes(app) {
             reply.code(400);
             return { error: "INVALID_BODY", details: parsed.error.flatten() };
         }
-        const item = await app.prisma.cloudMenuItem.findUnique({ where: { id }, select: { id: true } });
+        const item = await app.prisma.menuItem.findUnique({ where: { id }, select: { id: true } });
         if (!item) {
             reply.code(404);
             return { error: "NOT_FOUND", message: "Item not found" };
@@ -3072,14 +3162,14 @@ export async function adminRoutes(app) {
             }
         }
         await bumpCatalogVersion(app.prisma);
-        await app.prisma.cloudSubstitutePrice.deleteMany({ where: { substituteId: id } });
+        await app.prisma.substitutePrice.deleteMany({ where: { substituteId: id } });
         if (parsed.data.prices.length > 0) {
-            await app.prisma.cloudSubstitutePrice.createMany({
+            await app.prisma.substitutePrice.createMany({
                 data: parsed.data.prices.map((p) => ({ substituteId: id, sizeId: p.sizeId, mode: p.mode, priceCents: p.priceCents })),
                 skipDuplicates: true,
             });
         }
-        const prices = await app.prisma.cloudSubstitutePrice.findMany({
+        const prices = await app.prisma.substitutePrice.findMany({
             where: { substituteId: id },
             include: { size: true },
         });
@@ -3124,9 +3214,9 @@ export async function adminRoutes(app) {
             }
         }
         await bumpCatalogVersion(app.prisma);
-        await app.prisma.cloudSubstituteRecipeConsumption.deleteMany({ where: { substituteId: id } });
+        await app.prisma.substituteRecipeConsumption.deleteMany({ where: { substituteId: id } });
         if (parsed.data.rows.length > 0) {
-            await app.prisma.cloudSubstituteRecipeConsumption.createMany({
+            await app.prisma.substituteRecipeConsumption.createMany({
                 data: parsed.data.rows.map((r) => ({
                     substituteId: id,
                     sizeId: r.sizeId,
@@ -3138,7 +3228,7 @@ export async function adminRoutes(app) {
                 skipDuplicates: true,
             });
         }
-        const recipeConsumption = await app.prisma.cloudSubstituteRecipeConsumption.findMany({
+        const recipeConsumption = await app.prisma.substituteRecipeConsumption.findMany({
             where: { substituteId: id },
             include: { size: true, ingredient: true },
         });
@@ -3156,7 +3246,7 @@ export async function adminRoutes(app) {
             reply.code(400);
             return { error: "INVALID_BODY", details: parsed.error.flatten() };
         }
-        const item = await app.prisma.cloudMenuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
+        const item = await app.prisma.menuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
         if (!item) {
             reply.code(404);
             return { error: "NOT_FOUND", message: "Item not found" };
@@ -3198,13 +3288,13 @@ export async function adminRoutes(app) {
                 data: substituteIds.map((substituteId) => ({ itemId: id, substituteId })),
                 skipDuplicates: true,
             });
-            await app.prisma.cloudMenuItem.update({
+            await app.prisma.menuItem.update({
                 where: { id },
                 data: { defaultSubstituteId: parsed.data.defaultSubstituteId },
             });
         }
         else {
-            await app.prisma.cloudMenuItem.update({
+            await app.prisma.menuItem.update({
                 where: { id },
                 data: { defaultSubstituteId: null },
             });
@@ -3213,7 +3303,7 @@ export async function adminRoutes(app) {
             where: { itemId: id },
             include: { substitute: { select: { id: true, name: true, isActive: true } } },
         });
-        const updated = await app.prisma.cloudMenuItem.findUnique({
+        const updated = await app.prisma.menuItem.findUnique({
             where: { id },
             select: { defaultSubstituteId: true, defaultSubstitute: { select: { id: true, name: true } } },
         });
@@ -3227,7 +3317,7 @@ export async function adminRoutes(app) {
             reply.code(400);
             return { error: "INVALID_BODY", details: parsed.error.flatten() };
         }
-        const item = await app.prisma.cloudMenuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
+        const item = await app.prisma.menuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
         if (!item) {
             reply.code(404);
             return { error: "NOT_FOUND" };
@@ -3257,7 +3347,7 @@ export async function adminRoutes(app) {
             reply.code(400);
             return { error: "INVALID_BODY", details: parsed.error.flatten() };
         }
-        const item = await app.prisma.cloudMenuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
+        const item = await app.prisma.menuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
         if (!item) {
             reply.code(404);
             return { error: "NOT_FOUND", message: "Item not found" };
@@ -3297,7 +3387,7 @@ export async function adminRoutes(app) {
             reply.code(400);
             return { error: "INVALID_BODY", details: parsed.error.flatten() };
         }
-        const item = await app.prisma.cloudMenuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
+        const item = await app.prisma.menuItem.findUnique({ where: { id }, select: { id: true, deletedAt: true } });
         if (!item) {
             reply.code(404);
             return { error: "NOT_FOUND", message: "Item not found" };
@@ -3343,13 +3433,13 @@ export async function adminRoutes(app) {
                 data: parsed.data.groupIds.map((groupId) => ({ itemId: id, groupId })),
                 skipDuplicates: true,
             });
-            await app.prisma.cloudMenuItem.update({
+            await app.prisma.menuItem.update({
                 where: { id },
                 data: { defaultSubstituteOptionId: parsed.data.defaultSubstituteOptionId },
             });
         }
         else {
-            await app.prisma.cloudMenuItem.update({
+            await app.prisma.menuItem.update({
                 where: { id },
                 data: { defaultSubstituteOptionId: null },
             });
@@ -3358,7 +3448,7 @@ export async function adminRoutes(app) {
             where: { itemId: id },
             include: { group: { include: { options: { include: { recipeLines: { include: { ingredient: true } } } } } } },
         });
-        const updated = await app.prisma.cloudMenuItem.findUnique({
+        const updated = await app.prisma.menuItem.findUnique({
             where: { id },
             select: { defaultSubstituteOptionId: true, defaultSubstituteOption: true },
         });

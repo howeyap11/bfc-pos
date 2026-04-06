@@ -7,7 +7,13 @@ import { uploadImage } from "../services/r2.service.js";
 import { bumpCatalogVersion } from "../lib/catalogVersion.js";
 import { hashPassword, verifyPassword } from "../lib/password.js";
 import { hashStaffPin } from "../lib/staffPin.js";
-import { getDrinkSizesOptionGroup, getDrinkSizesOptionIds } from "../lib/drinkSizes.js";
+import {
+  getDrinkSizesOptionGroup,
+  getDrinkSizesOptionIds,
+  getDrinkSizesCatalogForAdminUi,
+  findMenuOptionForMenuSize,
+  SIZES_GROUP_NAME,
+} from "../lib/drinkSizes.js";
 import {
   getDashboardKpis,
   getSalesByDate,
@@ -735,10 +741,13 @@ export async function adminRoutes(app: FastifyInstance) {
   });
 
   app.get("/drink-sizes", async (req: FastifyRequest, reply: FastifyReply) => {
-    const result = await getDrinkSizesOptionGroup(app.prisma);
+    const result = await getDrinkSizesCatalogForAdminUi(app.prisma);
     if (!result.ok) {
       reply.code(404);
       return { error: result.error, message: "Missing required option group: Sizes", code: "SIZES_GROUP_MISSING" };
+    }
+    if (result.createdOptionCount > 0) {
+      await bumpCatalogVersion(app.prisma);
     }
     return {
       optionGroupId: result.optionGroupId,
@@ -807,13 +816,37 @@ export async function adminRoutes(app: FastifyInstance) {
       availability.CONCENTRATED = [...allSizeIds];
     }
 
+    const sizesOptGroup = await app.prisma.menuOptionGroup.findFirst({
+      where: { name: SIZES_GROUP_NAME, isSizeGroup: true },
+      select: { id: true },
+    });
+
+    const sizesPayload = sizesOptGroup
+      ? await Promise.all(
+          group.menuSizes.map(async (s) => {
+            const linked = await findMenuOptionForMenuSize(app.prisma, sizesOptGroup.id, {
+              label: s.label,
+              sortOrder: s.sortOrder,
+            });
+            return {
+              id: s.id,
+              label: s.label,
+              sortOrder: s.sortOrder,
+              isActive: s.isActive,
+              linkedOptionId: linked?.id ?? null,
+            };
+          })
+        )
+      : group.menuSizes.map((s) => ({
+          id: s.id,
+          label: s.label,
+          sortOrder: s.sortOrder,
+          isActive: s.isActive,
+          linkedOptionId: null as string | null,
+        }));
+
     return {
-      sizes: group.menuSizes.map((s) => ({
-        id: s.id,
-        label: s.label,
-        sortOrder: s.sortOrder,
-        isActive: s.isActive,
-      })),
+      sizes: sizesPayload,
       availability,
       variants,
     };
@@ -835,13 +868,38 @@ export async function adminRoutes(app: FastifyInstance) {
       reply.code(404);
       return { error: "SIZES_GROUP_NOT_FOUND", message: "Sizes group not found. Run db:seed." };
     }
+    const sizesOptGroup = await app.prisma.menuOptionGroup.findFirst({
+      where: { name: SIZES_GROUP_NAME, isSizeGroup: true },
+      select: { id: true },
+    });
+    if (!sizesOptGroup) {
+      reply.code(500);
+      return { error: "SIZES_OPTION_GROUP_MISSING", message: "Sizes option group not found. Run db:seed." };
+    }
     await bumpCatalogVersion(app.prisma);
-    return app.prisma.menuSize.create({
-      data: {
-        groupId: group.id,
-        label: parsed.data.label,
-        sortOrder: parsed.data.sortOrder ?? 0,
-      },
+    return app.prisma.$transaction(async (tx) => {
+      const created = await tx.menuSize.create({
+        data: {
+          groupId: group.id,
+          label: parsed.data.label,
+          sortOrder: parsed.data.sortOrder ?? 0,
+        },
+      });
+      const existing = await findMenuOptionForMenuSize(tx, sizesOptGroup.id, {
+        label: created.label,
+        sortOrder: created.sortOrder,
+      });
+      if (!existing) {
+        await tx.menuOption.create({
+          data: {
+            groupId: sizesOptGroup.id,
+            name: created.label,
+            priceDelta: 0,
+            sortOrder: created.sortOrder,
+          },
+        });
+      }
+      return created;
     });
   });
 
@@ -869,10 +927,52 @@ export async function adminRoutes(app: FastifyInstance) {
       reply.code(404);
       return { error: "NOT_FOUND", message: "Size not found" };
     }
+    const sizesOptGroup = await app.prisma.menuOptionGroup.findFirst({
+      where: { name: SIZES_GROUP_NAME, isSizeGroup: true },
+      select: { id: true },
+    });
+    if (!sizesOptGroup) {
+      reply.code(500);
+      return { error: "SIZES_OPTION_GROUP_MISSING", message: "Sizes option group not found. Run db:seed." };
+    }
+    const before = { label: size.label, sortOrder: size.sortOrder };
     await bumpCatalogVersion(app.prisma);
-    return app.prisma.menuSize.update({
-      where: { id },
-      data: parsed.data,
+    return app.prisma.$transaction(async (tx) => {
+      const updated = await tx.menuSize.update({
+        where: { id },
+        data: parsed.data,
+      });
+      const opt =
+        (await tx.menuOption.findFirst({
+          where: {
+            groupId: sizesOptGroup.id,
+            name: before.label,
+            sortOrder: before.sortOrder,
+          },
+        })) ??
+        (await tx.menuOption.findFirst({
+          where: { groupId: sizesOptGroup.id, name: before.label },
+          orderBy: { sortOrder: "asc" },
+        }));
+      if (opt) {
+        await tx.menuOption.update({
+          where: { id: opt.id },
+          data: {
+            name: updated.label,
+            sortOrder: updated.sortOrder,
+          },
+        });
+      } else if (updated.isActive) {
+        await tx.menuOption.create({
+          data: {
+            groupId: sizesOptGroup.id,
+            name: updated.label,
+            priceDelta: 0,
+            sortOrder: updated.sortOrder,
+          },
+        });
+      }
+      return updated;
     });
   });
 

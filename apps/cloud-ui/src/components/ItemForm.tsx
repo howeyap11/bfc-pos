@@ -402,14 +402,19 @@ export default function ItemForm({
     (modeKey: DrinkMode) => {
       if (!drinkSizes) return [];
       const idsForMode = sizeAvailability[modeKey] ?? [];
-      const labelById = new Map(menuSizes.map((s) => [s.id, s.label]));
-      const allowedLabels = new Set(
-        idsForMode
-          .map((id) => labelById.get(id))
-          .filter((l): l is string => !!l)
-      );
-      if (allowedLabels.size === 0) return drinkSizes.options;
-      return drinkSizes.options.filter((o) => allowedLabels.has(o.label));
+      if (idsForMode.length === 0) return [];
+
+      const byOptionId = new Map(drinkSizes.options.map((o) => [o.id, o]));
+      const out: NonNullable<typeof drinkSizes>["options"] = [];
+      for (const sizeId of idsForMode) {
+        const row = menuSizes.find((s) => s.id === sizeId);
+        const linked = row?.linkedOptionId;
+        const opt =
+          (linked ? byOptionId.get(linked) : undefined) ??
+          (row ? drinkSizes.options.find((o) => o.label === row.label) : undefined);
+        if (opt && !out.some((x) => x.id === opt.id)) out.push(opt);
+      }
+      return out;
     },
     [drinkSizes, sizeAvailability, menuSizes]
   );

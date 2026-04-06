@@ -115,6 +115,8 @@ export type MenuSize = {
   label: string;
   sortOrder: number;
   isActive: boolean;
+  /** MenuOption id in the Sizes group; used to map Menu Settings size ids to item drink-size config. */
+  linkedOptionId?: string | null;
 };
 
 export type MenuSizeVariant = {
