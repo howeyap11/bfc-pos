@@ -196,6 +196,8 @@ export async function syncRoutes(app: FastifyInstance) {
         staffList,
         optionChoiceRecipeLines,
         legacyAddOns,
+        businessDetailsRow,
+        receiptDetailsRow,
       ] = await Promise.all([
         app.prisma.catalogVersion.findUnique({ where: { id: 1 } }),
         app.prisma.menuItem.findMany({
@@ -252,6 +254,8 @@ export async function syncRoutes(app: FastifyInstance) {
           include: { recipeLines: { include: { ingredient: true } } },
           orderBy: { sortOrder: "asc" },
         }),
+        app.prisma.businessDetails.findUnique({ where: { id: "1" } }),
+        app.prisma.receiptDetails.findUnique({ where: { id: "1" } }),
       ]);
 
       const latestVersion = catalogVersion?.latestVersion ?? 0;
@@ -385,14 +389,24 @@ export async function syncRoutes(app: FastifyInstance) {
               ? s.qtyPerExtraShot.toString()
               : null,
         })),
-        storeSettings: storeSetting
-          ? {
-              adminPinHash: storeSetting.adminPinHash ?? null,
-              ownerPasswordHash: storeSetting.ownerPasswordHash ?? null,
-              workDayFromTimeLocal: storeSetting.workDayFromTimeLocal ?? DEFAULT_WORK_DAY_FROM_TIME_LOCAL,
-              workDayToTimeLocal: storeSetting.workDayToTimeLocal ?? DEFAULT_WORK_DAY_TO_TIME_LOCAL,
-            }
-          : undefined,
+        // Always include business + receipt fields for POS receipt header sync. Admin PIN fields only when StoreSetting row exists (avoid omitting receipt data when storeSetting is null).
+        storeSettings: {
+          ...(storeSetting
+            ? {
+                adminPinHash: storeSetting.adminPinHash ?? null,
+                ownerPasswordHash: storeSetting.ownerPasswordHash ?? null,
+                workDayFromTimeLocal: storeSetting.workDayFromTimeLocal ?? DEFAULT_WORK_DAY_FROM_TIME_LOCAL,
+                workDayToTimeLocal: storeSetting.workDayToTimeLocal ?? DEFAULT_WORK_DAY_TO_TIME_LOCAL,
+              }
+            : {}),
+          businessName: businessDetailsRow?.businessName ?? null,
+          address: businessDetailsRow?.address ?? null,
+          receiptTaxType: receiptDetailsRow?.taxType ?? null,
+          receiptNonVatTin: receiptDetailsRow?.nonVatTin ?? null,
+          receiptVatTin: receiptDetailsRow?.vatTin ?? null,
+          receiptBirMin: receiptDetailsRow?.birMin ?? null,
+          receiptBirSerialNo: receiptDetailsRow?.birSerialNo ?? null,
+        },
         optionChoiceRecipeLines: optionChoiceRecipeLines.map((r) => ({
           id: r.id,
           optionId: r.optionId,
