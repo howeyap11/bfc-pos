@@ -1,10 +1,25 @@
 // apps/api/src/routes/staff.ts
 import fp from "fastify-plugin";
+import { randomBytes } from "crypto";
 import { verifyAdminPin } from "../services/adminPin.service.js";
+import { verifyStaffPin } from "../lib/staffPin.js";
 const STORE_ID = "store_1";
+async function ensureStaffAuthKey(prisma, staffId) {
+    const row = await prisma.staff.findUnique({
+        where: { id: staffId },
+        select: { key: true },
+    });
+    if (row?.key)
+        return row.key;
+    const newKey = "staff_" + randomBytes(16).toString("hex");
+    await prisma.staff.update({
+        where: { id: staffId },
+        data: { key: newKey },
+    });
+    return newKey;
+}
 const staffRoutes = async (app) => {
-    // GET /staff - List all staff members
-    // Note: Returns passcode and key for local-first PIN validation and API authentication
+    // GET /staff — synced staff roster for POS picker (no PIN or hash exposed)
     app.get("/staff", async (req, reply) => {
         const prisma = app.prisma;
         if (!prisma?.staff) {
@@ -19,15 +34,12 @@ const staffRoutes = async (app) => {
                 name: true,
                 email: true,
                 role: true,
-                passcode: true,
                 key: true,
                 isActive: true,
             },
         });
         return staff;
     });
-    // POST /staff/verify-admin-pin - Verify admin PIN without changing session
-    // Cloud-first when CLOUD_URL + STORE_SYNC_SECRET; else local Staff (ADMIN/MANAGER)
     app.post("/staff/verify-admin-pin", async (req, reply) => {
         const body = req.body;
         if (!body.pin) {
@@ -44,10 +56,10 @@ const staffRoutes = async (app) => {
             role: result.role ?? "ADMIN",
         };
     });
-    // POST /staff/login - Validate staff passcode
+    // POST /staff/login — POS tablet: staffId + PIN; verified locally against synced hash or legacy passcode
     app.post("/staff/login", async (req, reply) => {
         const body = req.body;
-        if (!body.staffId || !body.passcode) {
+        if (!body.staffId || body.passcode == null) {
             return reply.code(400).send({ error: "MISSING_FIELDS" });
         }
         const staff = await app.prisma.staff.findUnique({
@@ -56,23 +68,68 @@ const staffRoutes = async (app) => {
                 id: true,
                 name: true,
                 role: true,
+                email: true,
                 passcode: true,
+                passcodeHash: true,
                 key: true,
+                cloudId: true,
                 isActive: true,
             },
         });
         if (!staff || !staff.isActive) {
             return reply.code(404).send({ error: "STAFF_NOT_FOUND" });
         }
-        if (staff.passcode !== body.passcode) {
+        if (!verifyStaffPin(body.passcode, staff.passcodeHash, staff.passcode)) {
             return reply.code(401).send({ error: "INVALID_PASSCODE" });
         }
-        // Return staff info (without passcode, but WITH key for API authentication)
+        const key = await ensureStaffAuthKey(app.prisma, staff.id);
         return {
             id: staff.id,
             name: staff.name,
             role: staff.role,
-            key: staff.key,
+            email: staff.email ?? null,
+            cloudId: staff.cloudId ?? null,
+            key,
+        };
+    });
+    // POST /staff/login-email — staff phone app: email + PIN; same local verification, no cloud call
+    app.post("/staff/login-email", async (req, reply) => {
+        const body = req.body;
+        const email = String(body.email ?? "")
+            .trim()
+            .toLowerCase();
+        if (!email || body.passcode == null) {
+            return reply.code(400).send({ error: "MISSING_FIELDS" });
+        }
+        const candidates = await app.prisma.staff.findMany({
+            where: { storeId: STORE_ID, isActive: true, email: { not: null } },
+            select: {
+                id: true,
+                name: true,
+                role: true,
+                email: true,
+                passcode: true,
+                passcodeHash: true,
+                key: true,
+                cloudId: true,
+                isActive: true,
+            },
+        });
+        const staff = candidates.find((s) => String(s.email ?? "").trim().toLowerCase() === email) ?? null;
+        if (!staff) {
+            return reply.code(401).send({ error: "INVALID_CREDENTIALS", message: "Invalid email or PIN" });
+        }
+        if (!verifyStaffPin(body.passcode, staff.passcodeHash, staff.passcode)) {
+            return reply.code(401).send({ error: "INVALID_CREDENTIALS", message: "Invalid email or PIN" });
+        }
+        const key = await ensureStaffAuthKey(app.prisma, staff.id);
+        return {
+            id: staff.id,
+            name: staff.name,
+            role: staff.role,
+            email: staff.email ?? null,
+            cloudId: staff.cloudId ?? null,
+            key,
         };
     });
 };

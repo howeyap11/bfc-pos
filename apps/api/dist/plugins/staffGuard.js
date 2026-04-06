@@ -55,6 +55,7 @@ function createRequireStaffHook(app) {
             // Attach full staff info to request
             req.staff = {
                 id: staff.id,
+                cloudId: staff.cloudId ?? null,
                 name: staff.name,
                 role: staff.role,
                 storeId: staff.storeId,

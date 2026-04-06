@@ -1,4 +1,5 @@
 import { requireStaffHook } from "../plugins/staffGuard";
+import { openCashDrawerUsingConfiguredReceiptPrinter } from "../services/print.service";
 const STORE_ID = "store_1";
 export async function drawerRoutes(app) {
     app.addHook("preHandler", requireStaffHook);
@@ -30,8 +31,15 @@ export async function drawerRoutes(app) {
                 }),
             },
         });
-        // In production, this would trigger hardware to open the cash drawer
-        // For now, we just log it
+        try {
+            await openCashDrawerUsingConfiguredReceiptPrinter();
+        }
+        catch (err) {
+            const message = err instanceof Error ? err.message : String(err ?? "Drawer hardware failed");
+            app.log.warn({ err, auditLogId: auditLog.id }, "Cash drawer pulse failed after DRAWER_OPEN audit");
+            reply.code(500);
+            return { error: "DRAWER_OPEN_FAILED", message, auditLogId: auditLog.id };
+        }
         return {
             ok: true,
             message: "Drawer opened",

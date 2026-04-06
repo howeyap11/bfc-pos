@@ -1,7 +1,28 @@
 // apps/api/src/routes/storeConfig.ts
 import fp from "fastify-plugin";
 import { requireStaffHook } from "../plugins/staffGuard.js";
+import { verifyAdminPin } from "../services/adminPin.service.js";
 const STORE_ID = "store_1";
+function defaultTabletNav() {
+    return { showPending: true, showQr: true, showKitchen: true, showStaff: true };
+}
+export function parseTabletNavJson(raw) {
+    if (!raw?.trim())
+        return defaultTabletNav();
+    try {
+        const o = JSON.parse(raw);
+        const d = defaultTabletNav();
+        return {
+            showPending: typeof o.showPending === "boolean" ? o.showPending : d.showPending,
+            showQr: typeof o.showQr === "boolean" ? o.showQr : d.showQr,
+            showKitchen: typeof o.showKitchen === "boolean" ? o.showKitchen : d.showKitchen,
+            showStaff: typeof o.showStaff === "boolean" ? o.showStaff : d.showStaff,
+        };
+    }
+    catch {
+        return defaultTabletNav();
+    }
+}
 /** Body is only business name/address (Cloud Admin Business Details page). */
 function isBusinessDetailsOnly(body) {
     if (!body || typeof body !== "object")
@@ -48,10 +69,17 @@ const storeConfigRoutesImpl = async (app) => {
                     stickerPrintCategoryIds: [],
                     businessName: null,
                     address: null,
+                    receiptTaxType: null,
+                    receiptNonVatTin: null,
+                    receiptVatTin: null,
+                    receiptBirMin: null,
+                    receiptBirSerialNo: null,
                     devMode: false,
                     snapResiboEnabled: false,
                     snapResiboPriceCents: null,
                     snapResiboRewardMinimumCents: null,
+                    tabletNav: defaultTabletNav(),
+                    qrMenuEnabled: true,
                 };
             }
             const enabledPaymentMethods = JSON.parse(config.enabledPaymentMethods || "[]");
@@ -59,6 +87,14 @@ const storeConfigRoutesImpl = async (app) => {
             const stickerPrintCategoryIds = config.stickerPrintCategoryIds
                 ? JSON.parse(config.stickerPrintCategoryIds)
                 : [];
+            /* tabletNavJson: safe if null, invalid JSON, or column missing on very old Prisma client — parseTabletNavJson covers all. */
+            let tabletNav = defaultTabletNav();
+            try {
+                tabletNav = parseTabletNavJson(config.tabletNavJson);
+            }
+            catch {
+                tabletNav = defaultTabletNav();
+            }
             return {
                 storeId: config.storeId,
                 enabledPaymentMethods,
@@ -67,10 +103,17 @@ const storeConfigRoutesImpl = async (app) => {
                 stickerPrintCategoryIds,
                 businessName: config.businessName ?? null,
                 address: config.address ?? null,
+                receiptTaxType: config.receiptTaxType ?? null,
+                receiptNonVatTin: config.receiptNonVatTin ?? null,
+                receiptVatTin: config.receiptVatTin ?? null,
+                receiptBirMin: config.receiptBirMin ?? null,
+                receiptBirSerialNo: config.receiptBirSerialNo ?? null,
                 devMode: config.devMode ?? false,
                 snapResiboEnabled: config.snapResiboEnabled ?? false,
                 snapResiboPriceCents: config.snapResiboPriceCents ?? null,
                 snapResiboRewardMinimumCents: config.snapResiboRewardMinimumCents ?? null,
+                tabletNav,
+                qrMenuEnabled: config.qrMenuEnabled !== false,
             };
         }
         catch (err) {
@@ -118,6 +161,9 @@ const storeConfigRoutesImpl = async (app) => {
             const v = body.snapResiboRewardMinimumCents;
             updateData.snapResiboRewardMinimumCents = v == null || v === "" ? null : Math.max(0, Math.trunc(Number(v)));
         }
+        if (body.qrMenuEnabled !== undefined) {
+            updateData.qrMenuEnabled = !!body.qrMenuEnabled;
+        }
         let config;
         try {
             config = await app.prisma.storeConfig.upsert({
@@ -137,6 +183,7 @@ const storeConfigRoutesImpl = async (app) => {
                     snapResiboEnabled: !!body.snapResiboEnabled,
                     snapResiboPriceCents: body.snapResiboPriceCents != null ? Math.max(0, Math.trunc(Number(body.snapResiboPriceCents))) : null,
                     snapResiboRewardMinimumCents: body.snapResiboRewardMinimumCents != null ? Math.max(0, Math.trunc(Number(body.snapResiboRewardMinimumCents))) : null,
+                    qrMenuEnabled: body.qrMenuEnabled !== undefined ? !!body.qrMenuEnabled : true,
                 },
             });
         }
@@ -154,11 +201,52 @@ const storeConfigRoutesImpl = async (app) => {
             stickerPrintCategoryIds,
             businessName: config.businessName ?? null,
             address: config.address ?? null,
+            receiptTaxType: config.receiptTaxType ?? null,
+            receiptNonVatTin: config.receiptNonVatTin ?? null,
+            receiptVatTin: config.receiptVatTin ?? null,
+            receiptBirMin: config.receiptBirMin ?? null,
+            receiptBirSerialNo: config.receiptBirSerialNo ?? null,
             devMode: config.devMode ?? false,
             snapResiboEnabled: config.snapResiboEnabled ?? false,
             snapResiboPriceCents: config.snapResiboPriceCents ?? null,
             snapResiboRewardMinimumCents: config.snapResiboRewardMinimumCents ?? null,
+            tabletNav: parseTabletNavJson(config.tabletNavJson),
+            qrMenuEnabled: config.qrMenuEnabled !== false,
         };
+    });
+    /** Tablet nav visibility: admin PIN only (no staff session required). Local-first. */
+    app.patch("/store-config/tablet-nav", async (req, reply) => {
+        const body = req.body;
+        const pin = (body.adminPin ?? "").trim();
+        const pinResult = await verifyAdminPin(pin, app.prisma);
+        if (!pinResult.valid) {
+            return reply.code(401).send({ error: "INVALID_PIN", message: "Invalid admin PIN" });
+        }
+        const t = body.tabletNav;
+        if (!t || typeof t !== "object") {
+            return reply.code(400).send({ error: "INVALID_BODY", message: "tabletNav object required" });
+        }
+        const raw = t;
+        const cur = await app.prisma.storeConfig.findUnique({ where: { storeId: STORE_ID } });
+        const base = parseTabletNavJson(cur?.tabletNavJson ?? null);
+        /* Only these four booleans are persisted — ignore any other keys. */
+        const next = {
+            showPending: typeof raw.showPending === "boolean" ? raw.showPending : base.showPending,
+            showQr: typeof raw.showQr === "boolean" ? raw.showQr : base.showQr,
+            showKitchen: typeof raw.showKitchen === "boolean" ? raw.showKitchen : base.showKitchen,
+            showStaff: typeof raw.showStaff === "boolean" ? raw.showStaff : base.showStaff,
+        };
+        await app.prisma.storeConfig.upsert({
+            where: { storeId: STORE_ID },
+            update: { tabletNavJson: JSON.stringify(next) },
+            create: {
+                storeId: STORE_ID,
+                enabledPaymentMethods: JSON.stringify(["CASH", "CARD", "GCASH", "FOODPANDA"]),
+                splitPaymentEnabled: true,
+                tabletNavJson: JSON.stringify(next),
+            },
+        });
+        return { ok: true, tabletNav: next };
     });
 };
 export const storeConfigRoutes = fp(storeConfigRoutesImpl, { name: "storeConfigRoutes", dependencies: ["prisma"] });
