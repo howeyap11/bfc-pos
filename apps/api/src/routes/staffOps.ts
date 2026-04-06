@@ -368,6 +368,34 @@ export async function staffOpsRoutes(app: FastifyInstance) {
     if (!parsed.success) return reply.code(400).send({ error: "INVALID_BODY", details: parsed.error.flatten() });
 
     const storeId = getStoreId(req as StaffReq);
+
+    if (parsed.data.source === "STAFF_UI") {
+      const catalog = await app.prisma.cloudIngredient.findMany({
+        where: { storeId, isActive: true, deletedAt: null },
+        select: { cloudId: true },
+      });
+      const byCid = new Map(
+        parsed.data.lines.map((l) => [l.inventoryItemCloudId.trim(), l] as const)
+      );
+      for (const c of catalog) {
+        const line = byCid.get(c.cloudId);
+        if (!line) {
+          return reply.code(400).send({
+            error: "INCOMPLETE_COUNT",
+            message: "Every active inventory item must be counted before submit.",
+            missingInventoryItemCloudId: c.cloudId,
+          });
+        }
+        const aq = String(line.actualQuantity ?? "").trim();
+        if (!aq || !Number.isFinite(Number.parseFloat(aq))) {
+          return reply.code(400).send({
+            error: "INVALID_QUANTITY",
+            message: "Each line must have a valid numeric count.",
+            inventoryItemCloudId: c.cloudId,
+          });
+        }
+      }
+    }
     const countedAt = parsed.data.countedAt ? new Date(parsed.data.countedAt) : new Date();
     const setting = await app.prisma.cloudStoreSetting.findUnique({ where: { id: "1" } });
     const cutoverMinutes =

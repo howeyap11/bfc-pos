@@ -7,8 +7,9 @@ import {
   type IngCountMeta,
   emptyBreakdown,
   computeTotalAmount,
-  lineHasAny,
   formatCountTotal,
+  guidedLineComplete,
+  isValidQuantityString,
   normalizeInventoryIngredients,
 } from "@/lib/inventoryCountShared";
 
@@ -53,7 +54,8 @@ function IngredientThumb({ ing, variant = "row" }: { ing: Ing; variant?: "row" |
   );
 }
 
-function CountFieldGroup({
+/** Guided count only: breakdown + computed total (sealed fields when ingredient supports them). */
+function GuidedCountFieldGroup({
   ing,
   b,
   onPatch,
@@ -124,6 +126,42 @@ function CountFieldGroup({
           />
         </label>
       ) : null}
+    </div>
+  );
+}
+
+function ManualListRow({
+  ing,
+  openedAmount,
+  onOpenedChange,
+}: {
+  ing: Ing;
+  openedAmount: string;
+  onOpenedChange: (v: string) => void;
+}) {
+  const inp =
+    "w-full min-w-[6rem] rounded-xl border border-zinc-600 bg-black/30 px-3 py-3 text-center text-lg font-semibold tabular-nums text-white placeholder:text-white/25";
+  return (
+    <div className="flex items-center gap-3 border-b border-white/10 py-4 last:border-0">
+      <IngredientThumb ing={ing} />
+      <div className="min-w-0 flex-1">
+        <p className="text-lg font-semibold leading-snug text-white">{ing.name}</p>
+        <p className="mt-0.5 text-sm text-white/45">{ing.unitCode}</p>
+      </div>
+      <div className="w-[7.5rem] shrink-0 sm:w-36">
+        <div className="mb-1 text-center text-[10px] font-medium uppercase tracking-wide text-emerald-200/80">
+          totalAmount
+        </div>
+        <input
+          type="text"
+          inputMode="decimal"
+          autoComplete="off"
+          placeholder="0"
+          value={openedAmount}
+          onChange={(e) => onOpenedChange(e.target.value)}
+          className={inp}
+        />
+      </div>
     </div>
   );
 }
@@ -223,38 +261,42 @@ export function StaffFullInventoryCount({ draftStorageKey }: { draftStorageKey: 
     return ingredients.filter((i) => i.name.toLowerCase().includes(s));
   }, [ingredients, search]);
 
-  const linesForSubmit = useMemo(() => {
-    const out: Array<{
-      inventoryItemCloudId: string;
-      inventoryItemName: string;
-      actualQuantity: string;
-      unit: string;
-      openedAmount?: string;
-      sealedUnitCount?: string;
-      sealedBoxCount?: string;
-      totalAmount: number;
-    }> = [];
+  const submitComplete = useMemo(() => {
+    if (ingredients.length === 0) return false;
     for (const ing of ingredients) {
       const b = getB(ing.cloudId);
-      if (!lineHasAny(b)) continue;
+      if (guidedMode) {
+        if (!guidedLineComplete(ing, b)) return false;
+      } else if (!isValidQuantityString(b.openedAmount)) {
+        return false;
+      }
+    }
+    return true;
+  }, [ingredients, breakdown, guidedMode]);
+
+  const linesForSubmit = useMemo(() => {
+    if (!submitComplete) return [];
+    return ingredients.map((ing) => {
+      const b = getB(ing.cloudId);
       const totalAmount = computeTotalAmount(ing, b);
-      out.push({
+      return {
         inventoryItemCloudId: ing.cloudId,
         inventoryItemName: ing.name,
         actualQuantity: String(totalAmount),
         unit: ing.unitCode,
-        ...(b.openedAmount.trim() !== "" ? { openedAmount: b.openedAmount.trim() } : {}),
-        ...(b.sealedUnitCount.trim() !== "" ? { sealedUnitCount: b.sealedUnitCount.trim() } : {}),
-        ...(b.sealedBoxCount.trim() !== "" ? { sealedBoxCount: b.sealedBoxCount.trim() } : {}),
+        ...(guidedMode && b.openedAmount.trim() !== "" ? { openedAmount: b.openedAmount.trim() } : {}),
+        ...(guidedMode && b.sealedUnitCount.trim() !== ""
+          ? { sealedUnitCount: b.sealedUnitCount.trim() }
+          : {}),
+        ...(guidedMode && b.sealedBoxCount.trim() !== "" ? { sealedBoxCount: b.sealedBoxCount.trim() } : {}),
         totalAmount,
-      });
-    }
-    return out;
-  }, [ingredients, breakdown]);
+      };
+    });
+  }, [ingredients, breakdown, guidedMode, submitComplete]);
 
   async function submit() {
-    if (linesForSubmit.length === 0) {
-      setMsg("Enter at least one quantity.");
+    if (!submitComplete || linesForSubmit.length === 0) {
+      setMsg("Enter a valid count for every ingredient before submitting.");
       return;
     }
     setBusy(true);
@@ -323,7 +365,7 @@ export function StaffFullInventoryCount({ draftStorageKey }: { draftStorageKey: 
             <IngredientThumb ing={currentIng} variant="guided" />
             <h3 className="mt-5 text-center text-xl font-semibold leading-snug text-white sm:text-2xl">{currentIng.name}</h3>
             <p className="mt-2 text-center text-base text-white/50">{currentIng.unitCode}</p>
-            <CountFieldGroup
+            <GuidedCountFieldGroup
               ing={currentIng}
               b={getB(currentIng.cloudId)}
               onPatch={(p) => patchLine(currentIng.cloudId, p)}
@@ -367,28 +409,19 @@ export function StaffFullInventoryCount({ draftStorageKey }: { draftStorageKey: 
           <div className="max-h-[min(58vh,28rem)] space-y-3 overflow-y-auto rounded-2xl border border-white/12 bg-black/25 p-3 sm:p-4">
             {filtered.map((ing) => {
               const b = getB(ing.cloudId);
-              const total = computeTotalAmount(ing, b);
               return (
-                <div
+                <ManualListRow
                   key={ing.cloudId}
-                  className="space-y-2 border-b border-white/10 py-4 last:border-0"
-                >
-                  <div className="flex items-start gap-3 sm:gap-4">
-                    <IngredientThumb ing={ing} />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-lg font-semibold leading-snug text-white">{ing.name}</p>
-                      <p className="mt-0.5 text-sm text-white/45">
-                        {ing.unitCode} · totalAmount {formatCountTotal(total)}
-                      </p>
-                    </div>
-                  </div>
-                  <CountFieldGroup
-                    ing={ing}
-                    b={b}
-                    onPatch={(p) => patchLine(ing.cloudId, p)}
-                    compact
-                  />
-                </div>
+                  ing={ing}
+                  openedAmount={b.openedAmount}
+                  onOpenedChange={(v) =>
+                    patchLine(ing.cloudId, {
+                      openedAmount: v,
+                      sealedUnitCount: "",
+                      sealedBoxCount: "",
+                    })
+                  }
+                />
               );
             })}
             {filtered.length === 0 && (
@@ -400,7 +433,7 @@ export function StaffFullInventoryCount({ draftStorageKey }: { draftStorageKey: 
 
       <button
         type="button"
-        disabled={busy || linesForSubmit.length === 0}
+        disabled={busy || !submitComplete}
         onClick={submit}
         className="w-full rounded-2xl bg-emerald-600 py-5 text-lg font-semibold text-white shadow-lg shadow-emerald-900/30 disabled:opacity-45"
       >

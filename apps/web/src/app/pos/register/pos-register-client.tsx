@@ -2113,10 +2113,17 @@ export default function PosRegisterClient() {
     return () => clearInterval(interval);
   }, []);
 
-  // Safe JSON fetch helper
+  // Safe JSON fetch helper (attach cashier session for POS API routes that require x-staff-key)
   async function fetchJson(url: string, init?: RequestInit) {
-    const staffKeyHeader = init?.headers ? (init.headers as any)["x-staff-key"] : undefined;
-    const res = await fetch(url, init);
+    const headers = new Headers(init?.headers as HeadersInit | undefined);
+    if (!headers.has("x-staff-key") && activeStaff?.staffKey?.trim()) {
+      headers.set("x-staff-key", activeStaff.staffKey.trim());
+    }
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (method !== "GET" && method !== "HEAD" && !headers.has("content-type")) {
+      headers.set("content-type", "application/json");
+    }
+    const res = await fetch(url, { ...init, headers });
     const text = await res.text();
     
     if (!res.ok) {

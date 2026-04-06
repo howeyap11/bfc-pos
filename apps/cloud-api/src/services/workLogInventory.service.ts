@@ -63,8 +63,15 @@ export async function getInventoryVarianceTotalsForDay(
     let sum = 0;
     for (const line of session.lines) {
       const ingId = line.inventoryItemCloudId;
+      if (line.varianceQuantity != null && String(line.varianceQuantity).trim() !== "") {
+        sum += Math.abs(parseQty(line.varianceQuantity));
+        continue;
+      }
       const staff = parseQty(line.totalAmount ?? line.actualQuantity);
-      const systemAtSubmit = snap[ingId]?.storeStock ?? parseQty(line.expectedQuantity);
+      const systemAtSubmit =
+        line.expectedQuantity != null && String(line.expectedQuantity).trim() !== ""
+          ? parseQty(line.expectedQuantity)
+          : snap[ingId]?.storeStock ?? 0;
       sum += Math.abs(staff - systemAtSubmit);
     }
     if (shiftType === "Beginning") out.beginningTotalAbsVariance = sum;
@@ -93,7 +100,6 @@ export type WorkLogInventoryCompareRow = {
   openedAmount?: number | null;
   sealedUnitCount?: number | null;
   sealedBoxCount?: number | null;
-  totalAmount?: number | null;
 };
 
 function normalizeInventoryShiftType(shiftType: string): "Beginning" | "End" {
@@ -157,12 +163,18 @@ export async function buildWorkLogInventoryCompare(
     const ingredientId = line.inventoryItemCloudId;
     const meta = ingMeta.get(ingredientId);
     const staffCount = parseQty(line.totalAmount ?? line.actualQuantity);
-    const systemStoreStockAtSubmit = snap[ingredientId]?.storeStock ?? parseQty(line.expectedQuantity);
+    const systemStoreStockAtSubmit =
+      line.expectedQuantity != null && String(line.expectedQuantity).trim() !== ""
+        ? parseQty(line.expectedQuantity)
+        : snap[ingredientId]?.storeStock ?? 0;
+    const variance =
+      line.varianceQuantity != null && String(line.varianceQuantity).trim() !== ""
+        ? parseQty(line.varianceQuantity)
+        : staffCount - systemStoreStockAtSubmit;
     const roll = moveDay.get(ingredientId) ?? { storeAdded: 0, warehouseAdded: 0, pulledOut: 0 };
     const hasOpened = line.openedAmount != null && String(line.openedAmount).trim() !== "";
     const hasSu = line.sealedUnitCount != null && String(line.sealedUnitCount).trim() !== "";
     const hasSb = line.sealedBoxCount != null && String(line.sealedBoxCount).trim() !== "";
-    const hasTotal = line.totalAmount != null && String(line.totalAmount).trim() !== "";
     rows.push({
       ingredientId,
       ingredientName: meta?.name ?? line.inventoryItemName,
@@ -172,7 +184,7 @@ export async function buildWorkLogInventoryCompare(
       staffCount,
       shiftType: canonShift,
       systemStoreStockAtSubmit,
-      variance: staffCount - systemStoreStockAtSubmit,
+      variance,
       storeStockCurrent: mainId ? (stockMap.get(`${ingredientId}:${mainId}`) ?? 0) : Number.NaN,
       storeAdded: mainId ? roll.storeAdded : Number.NaN,
       waste: wasteDay.get(ingredientId) ?? 0,
@@ -182,7 +194,6 @@ export async function buildWorkLogInventoryCompare(
       ...(hasOpened ? { openedAmount: parseQty(line.openedAmount) } : {}),
       ...(hasSu ? { sealedUnitCount: parseQty(line.sealedUnitCount) } : {}),
       ...(hasSb ? { sealedBoxCount: parseQty(line.sealedBoxCount) } : {}),
-      ...(hasTotal ? { totalAmount: parseQty(line.totalAmount) } : {}),
     });
   }
   rows.sort((a, b) => {

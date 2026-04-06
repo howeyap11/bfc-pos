@@ -122,7 +122,7 @@ export async function buildWorkLogFeed(
       select: { id: true, sortOrder: true },
     });
     const ord = new Map(ingOrd.map((i) => [i.id, i.sortOrder ?? 0]));
-    const rows = await prisma.syncedInventoryCountSession.findMany({
+    const rowsRaw = await prisma.syncedInventoryCountSession.findMany({
       where: bdFilter
         ? {
             OR: [
@@ -135,6 +135,15 @@ export async function buildWorkLogFeed(
       take: takePerSource,
       include: { lines: true },
     });
+    const slotKey = (r: (typeof rowsRaw)[number]) =>
+      `${r.storeId}\0${(r.businessDate?.trim() || bdKey(r.countedAt)) || ""}\0${r.shiftType ?? ""}`;
+    const latestBySlot = new Map<string, (typeof rowsRaw)[number]>();
+    for (const r of rowsRaw) {
+      const k = slotKey(r);
+      const cur = latestBySlot.get(k);
+      if (!cur || r.countedAt > cur.countedAt) latestBySlot.set(k, r);
+    }
+    const rows = [...latestBySlot.values()].sort((a, b) => b.countedAt.getTime() - a.countedAt.getTime());
     for (const r of rows) {
       const iso = r.countedAt.toISOString();
       const bd = r.businessDate?.trim() || bdKey(r.countedAt);

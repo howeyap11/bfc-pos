@@ -7,9 +7,9 @@
  * **Legacy fallback:** If `snapshotJson` is absent/blank, cloud builds a snapshot from the **current**
  * cloud ledger at ingest (older clients / emergency only — not offline-first truth).
  *
- * - Effective uniqueness: storeId + businessDate + shiftType (latest countedAt wins, revision++).
  * - Idempotent replay: same sourceLocalId updates in place without revision bump.
- * - POS may send a new sourceLocalId per resubmit while superseding the prior local row; cloud still collapses to one effective row per slot.
+ * - New local session (new sourceLocalId) for the same businessDate + shiftType creates a **new** cloud row so prior submissions
+ *   stay immutable for history/variance; reporting uses latest session by `countedAt` per slot.
  */
 import type { FastifyInstance } from "fastify";
 
@@ -112,45 +112,28 @@ export async function upsertSyncedInventoryCountSession(
     });
     rowId = existingByLocal.id;
   } else if (businessDate && shiftType) {
-    const existingEffective = await app.prisma.syncedInventoryCountSession.findFirst({
+    const latestForSlot = await app.prisma.syncedInventoryCountSession.findFirst({
       where: { storeId: d.storeId, businessDate, shiftType },
       orderBy: { countedAt: "desc" },
     });
-    if (existingEffective) {
-      await app.prisma.syncedInventoryCountSession.update({
-        where: { id: existingEffective.id },
-        data: {
-          sourceLocalId: d.sourceSessionId,
-          submittedByStaffCloudId: d.submittedByStaffCloudId ?? null,
-          submittedByLocalStaffId: d.submittedByLocalStaffId ?? null,
-          submittedByStaffName: d.submittedByStaffName,
-          source: d.source,
-          notes: d.notes ?? null,
-          countedAt,
-          snapshotJson,
-          revision: { increment: 1 },
-        },
-      });
-      rowId = existingEffective.id;
-    } else {
-      const created = await app.prisma.syncedInventoryCountSession.create({
-        data: {
-          sourceLocalId: d.sourceSessionId,
-          storeId: d.storeId,
-          submittedByStaffCloudId: d.submittedByStaffCloudId ?? null,
-          submittedByLocalStaffId: d.submittedByLocalStaffId ?? null,
-          submittedByStaffName: d.submittedByStaffName,
-          source: d.source,
-          notes: d.notes ?? null,
-          shiftType,
-          businessDate,
-          countedAt,
-          snapshotJson,
-          revision: 1,
-        },
-      });
-      rowId = created.id;
-    }
+    const nextRevision = (latestForSlot?.revision ?? 0) + 1;
+    const created = await app.prisma.syncedInventoryCountSession.create({
+      data: {
+        sourceLocalId: d.sourceSessionId,
+        storeId: d.storeId,
+        submittedByStaffCloudId: d.submittedByStaffCloudId ?? null,
+        submittedByLocalStaffId: d.submittedByLocalStaffId ?? null,
+        submittedByStaffName: d.submittedByStaffName,
+        source: d.source,
+        notes: d.notes ?? null,
+        shiftType,
+        businessDate,
+        countedAt,
+        snapshotJson,
+        revision: nextRevision,
+      },
+    });
+    rowId = created.id;
   } else {
     const created = await app.prisma.syncedInventoryCountSession.create({
       data: {

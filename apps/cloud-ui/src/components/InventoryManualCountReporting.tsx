@@ -129,7 +129,8 @@ export function InventoryManualCountReporting() {
         />
       </div>
       <p className="-mt-2 mb-6 text-xs text-teal-800/60">
-        Σ|staff count − store stock in frozen snapshot per Beginning / End session on this date.
+        Σ|variance| from each submitted line (stored variance when present, else staff count minus baseline store stock
+        frozen at submit).
       </p>
 
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -153,7 +154,8 @@ export function InventoryManualCountReporting() {
         </div>
       </div>
       <p className="mb-4 text-xs text-teal-800/60">
-        Store stock is the frozen quantity from the count submission. Movement columns are day-window ledger totals.
+        Baseline store stock is the quantity frozen on each line at submit (<span className="font-medium">expected</span> /
+        snapshot). Movement columns are day-window ledger totals.
       </p>
       {compareLoading ? (
         <p className="text-sm text-teal-800/70">Loading comparison…</p>
@@ -186,9 +188,6 @@ export function InventoryManualCountReporting() {
                     </th>
                     <th className="px-2 py-2.5 text-right text-xs font-semibold uppercase tracking-wide text-teal-800/70">
                       sealed B
-                    </th>
-                    <th className="px-2 py-2.5 text-right text-xs font-semibold uppercase tracking-wide text-teal-800/70">
-                      total
                     </th>
                   </>
                 ) : null}
@@ -235,9 +234,6 @@ export function InventoryManualCountReporting() {
                       </td>
                       <td className="px-2 py-2 text-right tabular-nums text-teal-900/80">
                         {r.sealedBoxCount != null ? formatQty(r.sealedBoxCount) : "—"}
-                      </td>
-                      <td className="px-2 py-2 text-right tabular-nums text-teal-950">
-                        {r.totalAmount != null ? formatQty(r.totalAmount) : "—"}
                       </td>
                     </>
                   ) : null}

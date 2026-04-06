@@ -37,6 +37,19 @@ export function lineHasAny(b: CountBreakdown): boolean {
   );
 }
 
+/** Non-empty string that parses to a finite number (0 allowed). */
+export function isValidQuantityString(s: string): boolean {
+  const t = s.trim();
+  if (t === "") return false;
+  return Number.isFinite(parseFloat(t));
+}
+
+/** Guided count: at least one breakdown field filled and total is finite. */
+export function guidedLineComplete(ing: IngCountMeta, b: CountBreakdown): boolean {
+  if (!lineHasAny(b)) return false;
+  return Number.isFinite(computeTotalAmount(ing, b));
+}
+
 export function formatCountTotal(n: number): string {
   if (!Number.isFinite(n)) return "0";
   if (Math.abs(n - Math.round(n)) < 1e-9) return String(Math.round(n));

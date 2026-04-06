@@ -1231,7 +1231,6 @@ export const api = {
       openedAmount?: number | null;
       sealedUnitCount?: number | null;
       sealedBoxCount?: number | null;
-      totalAmount?: number | null;
     }>;
   }> {
     const q = new URLSearchParams();

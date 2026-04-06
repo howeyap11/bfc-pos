@@ -238,40 +238,42 @@ export function WorkLogEntryDetail({ entry }: { entry: WorkLogEntryLite }) {
                   <thead className="bg-teal-50/80 text-left text-xs font-semibold uppercase tracking-wide text-teal-800/70">
                     <tr>
                       <th className="px-2 py-2">Item</th>
-                      <th className="px-2 py-2 text-right">Counted</th>
-                      <th className="px-2 py-2 text-right">Expected</th>
+                      <th className="px-2 py-2 text-right">Staff count</th>
+                      <th className="px-2 py-2 text-right">Baseline store</th>
                       <th className="px-2 py-2">Unit</th>
-                      <th className="px-2 py-2 text-right">Open / sealed</th>
+                      <th className="px-2 py-2 text-right">Breakdown</th>
                       <th className="px-2 py-2 text-right">Variance</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-teal-100/80 bg-white">
                     {lines.map((l, i) => {
                       const name = str(l.inventoryItemName) || "—";
-                      const totalField = parseNum(l.totalAmount);
-                      const actualLegacy = parseNum(l.actualQuantity);
-                      const actual = Number.isFinite(totalField) ? totalField : actualLegacy;
-                      const exp = parseNum(l.expectedQuantity);
+                      const staffCount = (() => {
+                        const t = parseNum(l.totalAmount);
+                        if (Number.isFinite(t)) return t;
+                        return parseNum(l.actualQuantity);
+                      })();
+                      const baseline = parseNum(l.expectedQuantity);
                       const varq = parseNum(l.varianceQuantity);
                       const variance = Number.isFinite(varq)
                         ? varq
-                        : Number.isFinite(actual) && Number.isFinite(exp)
-                          ? actual - exp
+                        : Number.isFinite(staffCount) && Number.isFinite(baseline)
+                          ? staffCount - baseline
                           : NaN;
                       const o = str(l.openedAmount);
                       const su = str(l.sealedUnitCount);
                       const sb = str(l.sealedBoxCount);
-                      const br =
-                        o || su || sb
-                          ? [o ? `opened ${o}` : null, su ? `units ${su}` : null, sb ? `boxes ${sb}` : null]
-                              .filter(Boolean)
-                              .join(" · ")
-                          : "—";
+                      const hasBreakdown = !!(o || su || sb);
+                      const br = hasBreakdown
+                        ? [o ? `opened ${o}` : null, su ? `units ${su}` : null, sb ? `boxes ${sb}` : null]
+                            .filter(Boolean)
+                            .join(" · ")
+                        : "—";
                       return (
                         <tr key={`${name}-${i}`}>
                           <td className="px-2 py-2 font-medium text-teal-950">{name}</td>
-                          <td className="px-2 py-2 text-right tabular-nums">{formatQty(actual)}</td>
-                          <td className="px-2 py-2 text-right tabular-nums">{formatQty(exp)}</td>
+                          <td className="px-2 py-2 text-right tabular-nums">{formatQty(staffCount)}</td>
+                          <td className="px-2 py-2 text-right tabular-nums">{formatQty(baseline)}</td>
                           <td className="px-2 py-2 text-teal-900/70">{str(l.unit) || "—"}</td>
                           <td className="px-2 py-2 text-right text-xs text-teal-900/80">{br}</td>
                           <td className="px-2 py-2 text-right tabular-nums text-teal-950">{formatQty(variance)}</td>
