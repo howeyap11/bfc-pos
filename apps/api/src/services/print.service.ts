@@ -708,46 +708,60 @@ function receiptTinLineForPrint(header: ReceiptHeaderOptions | null | undefined)
 
 function appendProductionReceiptHeader(lines: string[], header?: ReceiptHeaderOptions | null): void {
   if (!header) return;
-  let wrote = false;
+  const width = RECEIPT_LINE_WIDTH;
+  let hasIdentity = false;
   const name = (header.businessName ?? "").trim();
   if (name) {
-    for (const w of wrapReceiptText(name, RECEIPT_LINE_WIDTH)) {
-      if (w.trim()) lines.push(centerReceiptLine(w, RECEIPT_LINE_WIDTH));
-      wrote = true;
+    for (const w of wrapReceiptText(name, width)) {
+      if (w.trim()) {
+        lines.push(centerReceiptLine(w, width));
+        hasIdentity = true;
+      }
     }
   }
   const addrRaw = (header.address ?? "").trim();
   if (addrRaw) {
     const segments = addrRaw.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
     for (const seg of segments) {
-      for (const w of wrapReceiptText(seg, RECEIPT_LINE_WIDTH)) {
-        if (w.trim()) lines.push(centerReceiptLine(w, RECEIPT_LINE_WIDTH));
-        wrote = true;
+      for (const w of wrapReceiptText(seg, width)) {
+        if (w.trim()) {
+          lines.push(centerReceiptLine(w, width));
+          hasIdentity = true;
+        }
       }
     }
   }
+
   const tinLine = receiptTinLineForPrint(header);
-  if (tinLine) {
-    for (const w of wrapReceiptText(tinLine, RECEIPT_LINE_WIDTH)) {
-      lines.push(w);
-    }
-    wrote = true;
-  }
   const minV = (header.receiptBirMin ?? "").trim();
-  if (minV) {
-    for (const w of wrapReceiptText(`MIN: ${minV}`, RECEIPT_LINE_WIDTH)) {
-      lines.push(w);
-    }
-    wrote = true;
-  }
   const sn = (header.receiptBirSerialNo ?? "").trim();
-  if (sn) {
-    for (const w of wrapReceiptText(`S/N: ${sn}`, RECEIPT_LINE_WIDTH)) {
-      lines.push(w);
-    }
-    wrote = true;
+  const hasReg = !!(tinLine || minV || sn);
+  if (hasIdentity && hasReg) {
+    lines.push("");
   }
-  if (wrote) lines.push("");
+
+  if (tinLine) {
+    for (const w of wrapReceiptText(tinLine, width)) {
+      if (w.trim()) lines.push(centerReceiptLine(w, width));
+    }
+  }
+  if (minV) {
+    for (const w of wrapReceiptText(`MIN: ${minV}`, width)) {
+      if (w.trim()) lines.push(centerReceiptLine(w, width));
+    }
+  }
+  if (sn) {
+    for (const w of wrapReceiptText(`S/N: ${sn}`, width)) {
+      if (w.trim()) lines.push(centerReceiptLine(w, width));
+    }
+  }
+
+  const hasHeaderContent = hasIdentity || hasReg;
+  if (hasHeaderContent) {
+    lines.push("");
+    lines.push(centerReceiptLine("SALES INVOICE", width));
+    lines.push("");
+  }
 }
 
 /** SnapResibo voucher footer after totals: "SNAPRESIBO" + QR (voucherId in payload); no plain voucher id line. */
@@ -756,8 +770,20 @@ export type SnapResiboVoucherForPrint = {
   pricePhp: number; // 0 for free reward
 };
 
+function birInputTaxDisclaimerEscPosBytes(): Buffer {
+  const w = RECEIPT_LINE_WIDTH;
+  const body =
+    LF +
+    centerReceiptLine("THIS DOCUMENT IS NOT VALID FOR", w) +
+    LF +
+    centerReceiptLine("CLAIM OF INPUT TAX", w) +
+    LF;
+  return Buffer.from(body, "utf8");
+}
+
 /**
- * Physical receipt ESC/POS body (text lines). Header: centered name/address; labeled NON VAT / VAT TIN; MIN; S/N — then RECEIPT #.
+ * Physical receipt ESC/POS body (text lines). Header: centered name/address; blank; centered TIN/MIN/S/N; SALES INVOICE; then RECEIPT #.
+ * BIR disclaimer lines are appended after body (and SnapResibo blocks if any), immediately before feed+cut.
  * Chain: POST /pos/transactions/:id/print-receipt → printReceiptToDevice → buildReceiptEscPos → printReceiptESC
  */
 export function buildReceiptEscPos(
@@ -805,8 +831,6 @@ export function buildReceiptEscPos(
   lines.push(sep);
   lines.push("TOTAL: " + formatPesos(tx.totalCents));
   lines.push("Payment: " + paymentMethod);
-  lines.push("");
-  lines.push("");
 
   const receiptTextBody = lines.join(LF);
 
@@ -823,7 +847,8 @@ export function buildReceiptEscPos(
     buf = Buffer.concat([buf, ...snapParts]);
   }
 
-  return Buffer.concat([buf, FEED_LINES_BEFORE_CUT, Buffer.from(FULL_CUT, "binary")]);
+  buf = Buffer.concat([buf, birInputTaxDisclaimerEscPosBytes(), FEED_LINES_BEFORE_CUT, Buffer.from(FULL_CUT, "binary")]);
+  return buf;
 }
 
 /** Default dimensions (mm) when not in config. Portrait: width x height. */
