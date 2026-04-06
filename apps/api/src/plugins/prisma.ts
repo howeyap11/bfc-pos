@@ -24,6 +24,30 @@ function disconnectOnShutdown(): void {
   prisma.$disconnect().catch(() => {});
 }
 
+/** If _prisma_migrations says staff_passcode_hash ran but ALTER never applied, sync/catalog will crash. */
+async function ensureSqliteStaffPasscodeHashColumn(client: PrismaClient): Promise<void> {
+  const rows = await client.$queryRawUnsafe<Array<{ name: string }>>(`PRAGMA table_info(Staff)`);
+  if (rows.some((c) => c.name === "passcodeHash")) return;
+  await client.$executeRawUnsafe(`ALTER TABLE "Staff" ADD COLUMN "passcodeHash" TEXT`);
+  console.warn(
+    "[prisma] Added missing Staff.passcodeHash (SQLite was out of sync with migration history). Catalog sync should work after restart."
+  );
+  // #region agent log
+  fetch("http://127.0.0.1:7414/ingest/a4056341-4d7a-46ec-9a40-be642c3300db", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "c6c39b" },
+    body: JSON.stringify({
+      sessionId: "c6c39b",
+      location: "plugins/prisma.ts:ensureSqliteStaffPasscodeHashColumn",
+      message: "repaired missing Staff.passcodeHash",
+      data: { repaired: true },
+      timestamp: Date.now(),
+      hypothesisId: "S1",
+    }),
+  }).catch(() => {});
+  // #endregion
+}
+
 const prismaPlugin: FastifyPluginAsync = async (app) => {
   // SQLite: PRAGMA returns results in SQLite — must use $queryRawUnsafe, not $executeRaw (P2010)
   if (rawUrl.startsWith("file:")) {
@@ -33,6 +57,11 @@ const prismaPlugin: FastifyPluginAsync = async (app) => {
     } catch (pragmaErr) {
       // Don't break startup if PRAGMA fails (e.g. driver quirk)
       console.warn("[prisma] PRAGMA busy_timeout failed:", pragmaErr);
+    }
+    try {
+      await ensureSqliteStaffPasscodeHashColumn(prisma);
+    } catch (repairErr) {
+      console.warn("[prisma] Staff.passcodeHash repair skipped/failed:", repairErr);
     }
   }
   app.decorate("prisma", prisma);
