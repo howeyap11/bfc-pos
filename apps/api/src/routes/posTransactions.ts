@@ -14,7 +14,12 @@ import { verifyAdminPin } from "../services/adminPin.service";
 import { enqueueOutbox } from "../services/outbox.service";
 import { ensureItemForCloudId } from "../services/catalogCache.service";
 import { syncTransactionToCloudOrEnqueue } from "../services/transactionSync.service";
-import { printReceiptToDevice, printStickersToDevice, formatTransactionLineLabel } from "../services/print.service";
+import {
+  printReceiptToDevice,
+  printStickersToDevice,
+  formatTransactionLineLabel,
+  type ReceiptHeaderOptions,
+} from "../services/print.service";
 import {
   allocateVouchersForTransaction,
   getSnapResiboVoucherForTransaction,
@@ -89,6 +94,42 @@ async function ensureStoreAndConfig(prisma: PrismaClient) {
       paymentMethodOrder: null,
     },
   });
+}
+
+const storeConfigReceiptSelect = {
+  businessName: true,
+  address: true,
+  receiptTaxType: true,
+  receiptNonVatTin: true,
+  receiptVatTin: true,
+  receiptBirMin: true,
+  receiptBirSerialNo: true,
+  snapResiboEnabled: true,
+  snapResiboPriceCents: true,
+  snapResiboRewardMinimumCents: true,
+} as const;
+
+function receiptHeaderFromStoreConfig(
+  storeConfig: {
+    businessName: string | null;
+    address: string | null;
+    receiptTaxType: string | null;
+    receiptNonVatTin: string | null;
+    receiptVatTin: string | null;
+    receiptBirMin: string | null;
+    receiptBirSerialNo: string | null;
+  } | null
+): ReceiptHeaderOptions | undefined {
+  if (!storeConfig) return undefined;
+  return {
+    businessName: storeConfig.businessName ?? null,
+    address: storeConfig.address ?? null,
+    receiptTaxType: storeConfig.receiptTaxType ?? null,
+    receiptNonVatTin: storeConfig.receiptNonVatTin ?? null,
+    receiptVatTin: storeConfig.receiptVatTin ?? null,
+    receiptBirMin: storeConfig.receiptBirMin ?? null,
+    receiptBirSerialNo: storeConfig.receiptBirSerialNo ?? null,
+  };
 }
 
 function sum(nums: number[]) {
@@ -1292,7 +1333,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     }),
       app.prisma.storeConfig.findUnique({
         where: { storeId: STORE_ID },
-        select: { businessName: true, address: true, snapResiboEnabled: true, snapResiboPriceCents: true },
+        select: storeConfigReceiptSelect,
       }),
     ]);
     if (!transaction) {
@@ -1360,13 +1401,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         displayLabel,
       };
     });
-    const receiptHeader =
-      storeConfig && (storeConfig.businessName || storeConfig.address)
-        ? {
-            businessName: storeConfig.businessName ?? null,
-            address: storeConfig.address ?? null,
-          }
-        : undefined;
+    const receiptHeader = receiptHeaderFromStoreConfig(storeConfig ?? null);
 
     let snapResiboVouchers: Array<{ voucherId: string; pricePhp: number }> = [];
     if (storeConfig?.snapResiboEnabled) {
@@ -1382,7 +1417,15 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     return {
       ...transaction,
       lineItems: lineItemsWithCategory,
-      ...(receiptHeader && { businessName: receiptHeader.businessName, address: receiptHeader.address }),
+      ...(receiptHeader && {
+        businessName: receiptHeader.businessName,
+        address: receiptHeader.address,
+        receiptTaxType: receiptHeader.receiptTaxType,
+        receiptNonVatTin: receiptHeader.receiptNonVatTin,
+        receiptVatTin: receiptHeader.receiptVatTin,
+        receiptBirMin: receiptHeader.receiptBirMin,
+        receiptBirSerialNo: receiptHeader.receiptBirSerialNo,
+      }),
       ...(snapResiboVouchers.length > 0 && { snapResiboVouchers }),
     };
   });
@@ -1398,23 +1441,11 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       reply.code(404);
       return { error: "TRANSACTION_NOT_FOUND" };
     }
-    const storeConfig = await app.prisma.storeConfig.findUnique({
+    // Full row read (all scalars) so receipt header fields always match DB columns — avoids any select-shape gaps.
+    const storeConfigRow = await app.prisma.storeConfig.findUnique({
       where: { storeId: STORE_ID },
-      select: {
-        businessName: true,
-        address: true,
-        snapResiboEnabled: true,
-        snapResiboPriceCents: true,
-        snapResiboRewardMinimumCents: true,
-      },
     });
-    const receiptHeader =
-      storeConfig && (storeConfig.businessName || storeConfig.address)
-        ? {
-            businessName: storeConfig.businessName ?? null,
-            address: storeConfig.address ?? null,
-          }
-        : undefined;
+    const receiptHeader = receiptHeaderFromStoreConfig(storeConfigRow);
 
     const txForPrint = {
       ...transaction,
@@ -1427,14 +1458,14 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     let vouchersForPrint: Array<{ voucherId: string; pricePhp: number }> = [];
     let snapResiboError: string | null = null;
 
-    if (storeConfig?.snapResiboEnabled) {
-      const pricePhp = Math.floor((storeConfig.snapResiboPriceCents ?? 0) / 100);
+    if (storeConfigRow?.snapResiboEnabled) {
+      const pricePhp = Math.floor((storeConfigRow.snapResiboPriceCents ?? 0) / 100);
       const hasPaidSnapResiboLine = transaction.lineItems.some(
         (li) => li.name.trim().toLowerCase() === "snapresibo qr" && li.lineTotal > 0
       );
       const qualifiesReward =
-        (storeConfig.snapResiboRewardMinimumCents ?? 0) > 0 &&
-        transaction.totalCents >= (storeConfig.snapResiboRewardMinimumCents ?? 0);
+        (storeConfigRow.snapResiboRewardMinimumCents ?? 0) > 0 &&
+        transaction.totalCents >= (storeConfigRow.snapResiboRewardMinimumCents ?? 0);
       const expectsVoucher = hasPaidSnapResiboLine || qualifiesReward;
 
       const one = await getSnapResiboVoucherForTransaction(app.prisma, transaction.id);
@@ -1448,7 +1479,11 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     }
 
     try {
-      await printReceiptToDevice(txForPrint, receiptHeader, vouchersForPrint.length > 0 ? vouchersForPrint : undefined);
+      await printReceiptToDevice(
+        txForPrint,
+        receiptHeader,
+        vouchersForPrint.length > 0 ? vouchersForPrint : undefined
+      );
       return snapResiboError ? { ok: true, snapResiboError } : { ok: true };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err ?? "Receipt print failed");

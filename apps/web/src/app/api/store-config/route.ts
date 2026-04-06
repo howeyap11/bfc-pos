@@ -13,6 +13,7 @@ const DEFAULT_CONFIG = {
   snapResiboEnabled: false,
   snapResiboPriceCents: null as number | null,
   snapResiboRewardMinimumCents: null as number | null,
+  qrMenuEnabled: true,
   tabletNav: {
     showPending: true,
     showQr: true,

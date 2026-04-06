@@ -1999,6 +1999,18 @@ export default function PosRegisterClient() {
 
   async function loadCartFromQROrder(orderId: string) {
     try {
+      let cfgQr = true;
+      try {
+        const cfg = await fetchJson("/api/store-config", { cache: "no-store" });
+        cfgQr = cfg?.qrMenuEnabled !== false;
+      } catch {
+        cfgQr = true;
+      }
+      if (!cfgQr) {
+        setError("QR Menu is disabled in POS Settings. Enable it there to load QR orders.");
+        return;
+      }
+
       console.log("[QR Accept] Loading cart from order:", orderId);
       
       const data = await fetchJson(`/api/qr/orders/${orderId}/accept`, {
@@ -5020,7 +5032,18 @@ export default function PosRegisterClient() {
                 formatPesos={formatPesos}
                 router={router}
                 activeStaff={activeStaff}
-                storeConfig={storeConfig as { businessName?: string | null; address?: string | null; stickerPrintCategoryIds?: string[] | null } | null}
+                storeConfig={
+                  storeConfig as {
+                    businessName?: string | null;
+                    address?: string | null;
+                    stickerPrintCategoryIds?: string[] | null;
+                    receiptTaxType?: string | null;
+                    receiptNonVatTin?: string | null;
+                    receiptVatTin?: string | null;
+                    receiptBirMin?: string | null;
+                    receiptBirSerialNo?: string | null;
+                  } | null
+                }
               />
             );
           }
@@ -5603,7 +5626,16 @@ function TransactionSuccessPanel({
   formatPesos: (cents: number) => string;
   router: ReturnType<typeof useRouter>;
   activeStaff: { id: string; name: string; role: string; staffKey: string } | null;
-  storeConfig?: { businessName?: string | null; address?: string | null; stickerPrintCategoryIds?: string[] | null } | null;
+  storeConfig?: {
+    businessName?: string | null;
+    address?: string | null;
+    stickerPrintCategoryIds?: string[] | null;
+    receiptTaxType?: string | null;
+    receiptNonVatTin?: string | null;
+    receiptVatTin?: string | null;
+    receiptBirMin?: string | null;
+    receiptBirSerialNo?: string | null;
+  } | null;
 }) {
   console.log("[SUCCESS PANEL RENDER]", { transaction });
 
@@ -5637,7 +5669,15 @@ function TransactionSuccessPanel({
     console.log("[Print] triggered from local transaction", { type, transactionId: transaction.id });
     const rx = cartToReceiptTransaction(
       { ...transaction, items: transaction.items },
-      { businessName: storeConfig?.businessName ?? null, address: storeConfig?.address ?? null }
+      {
+        businessName: storeConfig?.businessName ?? null,
+        address: storeConfig?.address ?? null,
+        receiptTaxType: storeConfig?.receiptTaxType ?? null,
+        receiptNonVatTin: storeConfig?.receiptNonVatTin ?? null,
+        receiptVatTin: storeConfig?.receiptVatTin ?? null,
+        receiptBirMin: storeConfig?.receiptBirMin ?? null,
+        receiptBirSerialNo: storeConfig?.receiptBirSerialNo ?? null,
+      }
     );
     if (type === "receipt") {
       printReceipt(rx);

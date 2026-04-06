@@ -56,6 +56,14 @@ model StoreConfig {
   stickerPrintCategoryIds String?  // JSON array of category cloud ids; when set, only lines in these categories print stickers
   businessName            String?  // Receipt header; shown at top of receipt
   address                 String?  // Receipt header; each comma becomes a new line
+  /** Synced from cloud ReceiptDetails; used with nonVatTin/vatTin to choose TIN line on receipt. */
+  receiptTaxType          String?
+  receiptNonVatTin        String?
+  receiptVatTin           String?
+  receiptBirMin           String?
+  receiptBirSerialNo      String?
+  /** Local POS: when false, QR order flows are hidden/disabled (offline-first; not overwritten by catalog sync). */
+  qrMenuEnabled           Boolean  @default(true)
   devMode                 Boolean  @default(false) // When true, synced transactions are marked isTest (demo cleanup)
   snapResiboEnabled       Boolean  @default(false)
   snapResiboPriceCents    Int?     // Price in centavos for paid SnapResibo QR item

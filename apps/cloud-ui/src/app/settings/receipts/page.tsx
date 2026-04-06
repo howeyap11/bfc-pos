@@ -111,7 +111,14 @@ export default function ReceiptsPage() {
   return (
     <div className="max-w-xl">
       <h1 className="mb-2 text-xl font-semibold text-white">Receipt Details</h1>
-      <p className="mb-4 text-sm text-white/60">Receipt header, footer, and BIR information for printed receipts.</p>
+      <p className="mb-4 text-sm text-white/60">
+        Receipt header, footer, and BIR information for printed receipts. Business name and address are set in{" "}
+        <Link href="/settings/business-details" className="text-teal-400 underline">
+          Business Details
+        </Link>
+        ; the POS prints them first, then TIN (from tax type + VAT/NON VAT TIN fields below), MIN, and S/N, before the
+        receipt body. Sync the POS after saving so the local printer picks up changes.
+      </p>
 
       <div className={bannerClass}>
         Hover over the (i) icon to review available functions.

@@ -21,6 +21,7 @@ type StoreConfig = {
   snapResiboEnabled?: boolean;
   snapResiboPriceCents?: number | null;
   snapResiboRewardMinimumCents?: number | null;
+  qrMenuEnabled?: boolean;
 };
 
 type DeviceStatus = {
@@ -95,6 +96,7 @@ export default function SettingsClient() {
   const [snapResiboUsedCount, setSnapResiboUsedCount] = useState<number | null>(null);
   const [snapResiboTotalCount, setSnapResiboTotalCount] = useState<number | null>(null);
   const [publicSnapResiboEnabled, setPublicSnapResiboEnabled] = useState<boolean | null>(null);
+  const [qrMenuEnabled, setQrMenuEnabled] = useState(true);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -269,6 +271,7 @@ export default function SettingsClient() {
       setSnapResiboEnabled(!!data.snapResiboEnabled);
       setSnapResiboPriceCents(data.snapResiboPriceCents ?? "");
       setSnapResiboRewardMinimumCents(data.snapResiboRewardMinimumCents ?? "");
+      setQrMenuEnabled(data.qrMenuEnabled !== false);
     } catch (e: any) {
       setError(e.message || String(e));
     } finally {
@@ -461,6 +464,7 @@ export default function SettingsClient() {
           snapResiboEnabled,
           snapResiboPriceCents: snapResiboPriceCents === "" ? null : Number(snapResiboPriceCents),
           snapResiboRewardMinimumCents: snapResiboRewardMinimumCents === "" ? null : Number(snapResiboRewardMinimumCents),
+          qrMenuEnabled,
         }),
       });
 
@@ -479,6 +483,7 @@ export default function SettingsClient() {
       setSnapResiboEnabled(!!data.snapResiboEnabled);
       setSnapResiboPriceCents(data.snapResiboPriceCents ?? "");
       setSnapResiboRewardMinimumCents(data.snapResiboRewardMinimumCents ?? "");
+      setQrMenuEnabled(data.qrMenuEnabled !== false);
       setSuccess("Settings saved successfully!");
       setTimeout(() => setSuccess(null), 3000);
     } catch (e: any) {
@@ -1130,6 +1135,46 @@ export default function SettingsClient() {
             border: `1px solid ${COLORS.borderLight}`,
           }}
         >
+          <h2 style={{ margin: "0 0 8px 0", fontSize: 18, fontWeight: 600, color: COLORS.textPrimary }}>
+            QR Menu (staff orders)
+          </h2>
+          <p style={{ color: COLORS.textSecondary, marginBottom: 16, fontSize: 14 }}>
+            When off, the QR Orders tab on Orders and QR acceptance on the Register are hidden. Customer-facing QR ordering is unchanged.
+          </p>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, marginBottom: 24, maxWidth: 400 }}>
+            <span style={{ fontSize: 15, color: COLORS.textPrimary, fontWeight: 600 }}>Enable QR Menu on this POS</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={qrMenuEnabled}
+              onClick={() => setQrMenuEnabled(!qrMenuEnabled)}
+              disabled={loading}
+              style={{
+                position: "relative",
+                width: 48,
+                height: 28,
+                flexShrink: 0,
+                borderRadius: 14,
+                border: "none",
+                cursor: loading ? "not-allowed" : "pointer",
+                background: qrMenuEnabled ? COLORS.primary : COLORS.bgDark,
+              }}
+            >
+              <span
+                style={{
+                  position: "absolute",
+                  top: 3,
+                  left: qrMenuEnabled ? 22 : 3,
+                  width: 22,
+                  height: 22,
+                  borderRadius: "50%",
+                  background: "#fff",
+                  transition: "left 0.15s ease",
+                }}
+              />
+            </button>
+          </div>
+
           <h2 style={{ margin: "0 0 8px 0", fontSize: 18, fontWeight: 600, color: COLORS.textPrimary }}>
             Payment Modes
           </h2>

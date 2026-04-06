@@ -79,11 +79,17 @@ const storeConfigRoutesImpl: FastifyPluginAsync = async (app) => {
           stickerPrintCategoryIds: [] as string[],
           businessName: null as string | null,
           address: null as string | null,
+          receiptTaxType: null as string | null,
+          receiptNonVatTin: null as string | null,
+          receiptVatTin: null as string | null,
+          receiptBirMin: null as string | null,
+          receiptBirSerialNo: null as string | null,
           devMode: false,
           snapResiboEnabled: false,
           snapResiboPriceCents: null as number | null,
           snapResiboRewardMinimumCents: null as number | null,
           tabletNav: defaultTabletNav(),
+          qrMenuEnabled: true,
         };
       }
 
@@ -109,11 +115,17 @@ const storeConfigRoutesImpl: FastifyPluginAsync = async (app) => {
         stickerPrintCategoryIds,
         businessName: config.businessName ?? null,
         address: config.address ?? null,
+        receiptTaxType: config.receiptTaxType ?? null,
+        receiptNonVatTin: config.receiptNonVatTin ?? null,
+        receiptVatTin: config.receiptVatTin ?? null,
+        receiptBirMin: config.receiptBirMin ?? null,
+        receiptBirSerialNo: config.receiptBirSerialNo ?? null,
         devMode: config.devMode ?? false,
         snapResiboEnabled: config.snapResiboEnabled ?? false,
         snapResiboPriceCents: config.snapResiboPriceCents ?? null,
         snapResiboRewardMinimumCents: config.snapResiboRewardMinimumCents ?? null,
         tabletNav,
+        qrMenuEnabled: config.qrMenuEnabled !== false,
       };
     } catch (err) {
       app.log.error({ err }, "[StoreConfig] Error loading config");
@@ -139,6 +151,7 @@ const storeConfigRoutesImpl: FastifyPluginAsync = async (app) => {
         snapResiboEnabled?: boolean;
         snapResiboPriceCents?: number | string | null;
         snapResiboRewardMinimumCents?: number | string | null;
+        qrMenuEnabled?: boolean;
       };
 
       const updateData: Record<string, unknown> = {};
@@ -185,6 +198,10 @@ const storeConfigRoutesImpl: FastifyPluginAsync = async (app) => {
         updateData.snapResiboRewardMinimumCents = v == null || v === "" ? null : Math.max(0, Math.trunc(Number(v)));
       }
 
+      if (body.qrMenuEnabled !== undefined) {
+        updateData.qrMenuEnabled = !!body.qrMenuEnabled;
+      }
+
       let config;
       try {
         config = await app.prisma.storeConfig.upsert({
@@ -204,6 +221,7 @@ const storeConfigRoutesImpl: FastifyPluginAsync = async (app) => {
             snapResiboEnabled: !!body.snapResiboEnabled,
             snapResiboPriceCents: body.snapResiboPriceCents != null ? Math.max(0, Math.trunc(Number(body.snapResiboPriceCents))) : null,
             snapResiboRewardMinimumCents: body.snapResiboRewardMinimumCents != null ? Math.max(0, Math.trunc(Number(body.snapResiboRewardMinimumCents))) : null,
+            qrMenuEnabled: body.qrMenuEnabled !== undefined ? !!body.qrMenuEnabled : true,
           },
         });
       } catch (upsertErr) {
@@ -222,11 +240,17 @@ const storeConfigRoutesImpl: FastifyPluginAsync = async (app) => {
         stickerPrintCategoryIds,
         businessName: config.businessName ?? null,
         address: config.address ?? null,
+        receiptTaxType: config.receiptTaxType ?? null,
+        receiptNonVatTin: config.receiptNonVatTin ?? null,
+        receiptVatTin: config.receiptVatTin ?? null,
+        receiptBirMin: config.receiptBirMin ?? null,
+        receiptBirSerialNo: config.receiptBirSerialNo ?? null,
         devMode: config.devMode ?? false,
         snapResiboEnabled: config.snapResiboEnabled ?? false,
         snapResiboPriceCents: config.snapResiboPriceCents ?? null,
         snapResiboRewardMinimumCents: config.snapResiboRewardMinimumCents ?? null,
         tabletNav: parseTabletNavJson(config.tabletNavJson),
+        qrMenuEnabled: config.qrMenuEnabled !== false,
       };
     }
   );

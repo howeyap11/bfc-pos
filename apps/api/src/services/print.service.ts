@@ -107,11 +107,23 @@ const GS = "\x1d";
 const INIT = ESC + "@";
 const LF = "\x0a";
 const FULL_CUT = GS + "V\x00";
+/** ESC/POS: print and feed n lines — ensures last text clears the print head before partial/full cut. */
+const FEED_LINES_BEFORE_CUT = Buffer.from([0x1b, 0x64, 0x06]);
 const OPEN_CASH_DRAWER_PULSE = Buffer.from([0x1b, 0x70, 0x00, 0x19, 0xfa]);
 
 /** Fire-and-forget drawer pulse; failures must never affect receipt printing. */
 async function pulseCashDrawer(printerName: string): Promise<void> {
   await printReceiptESC(OPEN_CASH_DRAWER_PULSE, printerName);
+}
+
+/**
+ * Opens the cash drawer using the same ESC/POS pulse and configured receipt printer queue as CASH receipt printing.
+ * Use for manual drawer open and anywhere else the drawer should behave like a cash sale.
+ */
+export async function openCashDrawerUsingConfiguredReceiptPrinter(): Promise<void> {
+  const config = await getPrinterConfig();
+  const name = requireResolvedWindowsQueue(config.receiptPrinter, "receipt", config.receiptPrinter);
+  await pulseCashDrawer(name);
 }
 
 /** Raw ESC/POS QR code bytes (model 2). moduleSize 1..16, ecLevel 48(L)|49(M)|50(Q)|51(H). */
@@ -314,13 +326,27 @@ const RECEIPT_LINE_WIDTH = 48;
 const RECEIPT_PRICE_COLUMN_WIDTH = 12;
 const RECEIPT_TEXT_WIDTH = RECEIPT_LINE_WIDTH - RECEIPT_PRICE_COLUMN_WIDTH;
 
-/** Wrap text to maxCharsPerLine for receipt; no truncation. Breaks at space when possible. */
-function wrapReceiptText(text: string, maxCharsPerLine: number, maxLines = 15): string[] {
+/**
+ * Wrap text to maxCharsPerLine for receipt. Breaks at space when possible.
+ * Does not drop trailing content: continues until rest is empty (maxLines is a safety cap only).
+ */
+function wrapReceiptText(text: string, maxCharsPerLine: number, maxLines = 200): string[] {
   const t = text.trim();
   if (!t) return [];
   const out: string[] = [];
   let rest = t;
   while (out.length < maxLines && rest.length > 0) {
+    if (rest.length <= maxCharsPerLine) {
+      out.push(rest);
+      rest = "";
+      break;
+    }
+    let breakAt = rest.lastIndexOf(" ", maxCharsPerLine);
+    if (breakAt <= 0) breakAt = maxCharsPerLine;
+    out.push(rest.slice(0, breakAt).trim());
+    rest = rest.slice(breakAt).trim();
+  }
+  while (rest.length > 0 && out.length < maxLines) {
     if (rest.length <= maxCharsPerLine) {
       out.push(rest);
       break;
@@ -330,7 +356,47 @@ function wrapReceiptText(text: string, maxCharsPerLine: number, maxLines = 15): 
     out.push(rest.slice(0, breakAt).trim());
     rest = rest.slice(breakAt).trim();
   }
-  if (rest.length > 0 && out.length < maxLines) out.push(rest);
+  return out;
+}
+
+/** Left side of receipt main line: quantity (if >1), item name, size/temperature. */
+function buildReceiptItemMainLeft(qty: number, name: string, sizeTempPrimary: string): string {
+  const q = qty > 1 ? `${qty}× ` : "";
+  const st = sizeTempPrimary.trim();
+  const n = name.trim();
+  if (st && n) return `${q}${n} ${st}`.trim();
+  return `${q}${n}`.trim();
+}
+
+/** When DB line name already embeds size/temp (e.g. display label), do not append primary again. */
+function receiptNameAndSizeTempForPrint(name: string, primary: string): { nameForLine: string; sizeTemp: string } {
+  const st = primary.trim();
+  const n = name.trim();
+  if (!st) return { nameForLine: n, sizeTemp: "" };
+  if (n.toLowerCase().includes(st.toLowerCase())) {
+    return { nameForLine: n, sizeTemp: "" };
+  }
+  return { nameForLine: n, sizeTemp: st };
+}
+
+/** Omit secondary tokens that duplicate the size/temp line or item name (stops doubled modifier lines). */
+function receiptItemSecondaryDedup(secondary: string[], primary: string, itemName: string): string[] {
+  const p = primary.trim().toLowerCase();
+  const nameLow = itemName.trim().toLowerCase();
+  const primaryTokens = new Set(p.split(/\s+/).filter((t) => t.length > 1));
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of secondary) {
+    const s = raw.trim();
+    if (!s) continue;
+    const sl = s.toLowerCase();
+    if (seen.has(sl)) continue;
+    if (p && (sl === p || p.includes(sl))) continue;
+    if (p && primaryTokens.has(sl)) continue;
+    if (nameLow && sl.length >= 3 && nameLow.includes(sl)) continue;
+    seen.add(sl);
+    out.push(s);
+  }
   return out;
 }
 
@@ -604,11 +670,85 @@ export type TransactionForPrint = {
   payments: Array<{ method: string; amountCents: number }>;
 };
 
-/** Optional receipt header from Settings/Business Details (StoreConfig.businessName / address). */
+/** Optional receipt header from cloud-synced Business Details + Receipt Details (local StoreConfig). */
 export type ReceiptHeaderOptions = {
   businessName?: string | null;
   address?: string | null;
+  receiptTaxType?: string | null;
+  receiptNonVatTin?: string | null;
+  receiptVatTin?: string | null;
+  receiptBirMin?: string | null;
+  receiptBirSerialNo?: string | null;
 };
+
+/** Center text for 80mm monospace receipt (visual centering with spaces; OK for thermal). */
+function centerReceiptLine(textArg: string, width: number): string {
+  const text = textArg.trim();
+  if (!text) return "";
+  if (text.length >= width) return text;
+  const pad = width - text.length;
+  const left = Math.floor(pad / 2);
+  return " ".repeat(left) + text + " ".repeat(pad - left);
+}
+
+/** Single labeled TIN line: NON VAT REG TIN vs VAT REG TIN from tax type and filled fields, with value-matched fallback. */
+function receiptTinLineForPrint(header: ReceiptHeaderOptions | null | undefined): string | null {
+  if (!header) return null;
+  const tt = (header.receiptTaxType ?? "").trim().toUpperCase();
+  const vat = (header.receiptVatTin ?? "").trim();
+  const nonVat = (header.receiptNonVatTin ?? "").trim();
+  const useVat = tt.includes("VAT") && !tt.includes("NONVAT");
+
+  if (!useVat && nonVat) return `NON VAT REG TIN: ${nonVat}`;
+  if (useVat && vat) return `VAT REG TIN: ${vat}`;
+  if (nonVat) return `NON VAT REG TIN: ${nonVat}`;
+  if (vat) return `VAT REG TIN: ${vat}`;
+  return null;
+}
+
+function appendProductionReceiptHeader(lines: string[], header?: ReceiptHeaderOptions | null): void {
+  if (!header) return;
+  let wrote = false;
+  const name = (header.businessName ?? "").trim();
+  if (name) {
+    for (const w of wrapReceiptText(name, RECEIPT_LINE_WIDTH)) {
+      if (w.trim()) lines.push(centerReceiptLine(w, RECEIPT_LINE_WIDTH));
+      wrote = true;
+    }
+  }
+  const addrRaw = (header.address ?? "").trim();
+  if (addrRaw) {
+    const segments = addrRaw.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
+    for (const seg of segments) {
+      for (const w of wrapReceiptText(seg, RECEIPT_LINE_WIDTH)) {
+        if (w.trim()) lines.push(centerReceiptLine(w, RECEIPT_LINE_WIDTH));
+        wrote = true;
+      }
+    }
+  }
+  const tinLine = receiptTinLineForPrint(header);
+  if (tinLine) {
+    for (const w of wrapReceiptText(tinLine, RECEIPT_LINE_WIDTH)) {
+      lines.push(w);
+    }
+    wrote = true;
+  }
+  const minV = (header.receiptBirMin ?? "").trim();
+  if (minV) {
+    for (const w of wrapReceiptText(`MIN: ${minV}`, RECEIPT_LINE_WIDTH)) {
+      lines.push(w);
+    }
+    wrote = true;
+  }
+  const sn = (header.receiptBirSerialNo ?? "").trim();
+  if (sn) {
+    for (const w of wrapReceiptText(`S/N: ${sn}`, RECEIPT_LINE_WIDTH)) {
+      lines.push(w);
+    }
+    wrote = true;
+  }
+  if (wrote) lines.push("");
+}
 
 /** SnapResibo voucher footer after totals: "SNAPRESIBO" + QR (voucherId in payload); no plain voucher id line. */
 export type SnapResiboVoucherForPrint = {
@@ -616,6 +756,10 @@ export type SnapResiboVoucherForPrint = {
   pricePhp: number; // 0 for free reward
 };
 
+/**
+ * Physical receipt ESC/POS body (text lines). Header: centered name/address; labeled NON VAT / VAT TIN; MIN; S/N — then RECEIPT #.
+ * Chain: POST /pos/transactions/:id/print-receipt → printReceiptToDevice → buildReceiptEscPos → printReceiptESC
+ */
 export function buildReceiptEscPos(
   tx: TransactionForPrint,
   header?: ReceiptHeaderOptions | null,
@@ -624,21 +768,7 @@ export function buildReceiptEscPos(
   const paymentMethod = tx.payments[0]?.method ?? "CASH";
   const lines: string[] = [];
 
-  if (header?.businessName?.trim()) {
-    for (const line of wrapReceiptText(header.businessName, RECEIPT_LINE_WIDTH)) {
-      lines.push(line);
-    }
-  }
-  if (header?.address?.trim()) {
-    const raw = header.address.trim();
-    const segments = raw.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
-    for (const seg of segments) {
-      for (const line of wrapReceiptText(seg, RECEIPT_LINE_WIDTH)) {
-        lines.push(line);
-      }
-    }
-  }
-  if (lines.length > 0) lines.push("");
+  appendProductionReceiptHeader(lines, header);
 
   lines.push("RECEIPT #" + tx.transactionNo);
   lines.push(new Date(tx.createdAt).toLocaleString());
@@ -647,31 +777,28 @@ export function buildReceiptEscPos(
   lines.push(sep);
   for (const item of tx.lineItems) {
     const { primary, secondary } = lineItemDisplayParts(item.optionsJson);
-    const secondaryDedup = secondary.filter(
-      (s) => s !== primary && !primary.endsWith(" " + s)
-    );
-    const mods = [primary, ...secondaryDedup].filter(Boolean);
-    const addonsStr = mods.length > 0 ? "(" + mods.join(", ") + ")" : "";
-    const displayBase = formatTransactionLineLabel({
-      name: item.name,
-      optionsJson: item.optionsJson,
-      categoryName: item.categoryName,
-      subCategoryName: item.subCategoryName,
-      qty: item.qty,
-      includeQuantity: true,
-    });
-    const mainText = addonsStr ? `${displayBase} ${addonsStr}` : displayBase;
+    const { nameForLine, sizeTemp } = receiptNameAndSizeTempForPrint(item.name, primary);
+    const secondaryDedup = receiptItemSecondaryDedup(secondary, primary, item.name);
+
+    const sub = item.subCategoryName != null && item.subCategoryName.trim() !== "" ? item.subCategoryName.trim() : null;
+    if (sub) {
+      for (const w of wrapReceiptText(sub, RECEIPT_LINE_WIDTH)) {
+        lines.push(w);
+      }
+    }
+
+    const mainLeft = buildReceiptItemMainLeft(item.qty, nameForLine, sizeTemp);
     const priceStr = formatPesos(item.lineTotal);
-    const firstLineText = mainText.length <= RECEIPT_TEXT_WIDTH
-      ? mainText
-      : addonsStr
-        ? displayBase
-        : mainText;
-    const paddedFirst = firstLineText.padEnd(RECEIPT_TEXT_WIDTH);
-    lines.push(paddedFirst + priceStr.padStart(RECEIPT_PRICE_COLUMN_WIDTH));
-    if (addonsStr && firstLineText === displayBase) {
-      for (const line of wrapReceiptAddons(addonsStr, RECEIPT_TEXT_WIDTH)) {
-        lines.push(line);
+    const mainChunks = mainLeft.trim() ? wrapReceiptText(mainLeft, RECEIPT_TEXT_WIDTH) : [""];
+    lines.push(mainChunks[0].padEnd(RECEIPT_TEXT_WIDTH) + priceStr.padStart(RECEIPT_PRICE_COLUMN_WIDTH));
+    for (let i = 1; i < mainChunks.length; i++) {
+      lines.push(mainChunks[i]);
+    }
+
+    const optionParts = secondaryDedup.map((s) => s.trim()).filter(Boolean);
+    if (optionParts.length > 0) {
+      for (const w of wrapReceiptAddons(optionParts.join(", "), RECEIPT_LINE_WIDTH)) {
+        lines.push(w);
       }
     }
   }
@@ -681,7 +808,9 @@ export function buildReceiptEscPos(
   lines.push("");
   lines.push("");
 
-  let buf = Buffer.from(INIT + lines.join(LF) + LF + LF, "utf8");
+  const receiptTextBody = lines.join(LF);
+
+  let buf = Buffer.from(INIT + receiptTextBody + LF, "utf8");
 
   if (snapResiboVouchers && snapResiboVouchers.length > 0) {
     const snapParts: Buffer[] = [];
@@ -694,7 +823,7 @@ export function buildReceiptEscPos(
     buf = Buffer.concat([buf, ...snapParts]);
   }
 
-  return Buffer.concat([buf, Buffer.from(FULL_CUT, "utf8")]);
+  return Buffer.concat([buf, FEED_LINES_BEFORE_CUT, Buffer.from(FULL_CUT, "binary")]);
 }
 
 /** Default dimensions (mm) when not in config. Portrait: width x height. */
@@ -941,8 +1070,8 @@ export async function printStickersToDevice(
 }
 
 export function buildTestReceiptEscPos(): Buffer {
-  const lines = [INIT, "", "BFC POS TEST", "Printer OK", "", ""].join(LF) + LF + LF + FULL_CUT;
-  return Buffer.from(lines, "utf8");
+  const body = INIT + ["", "BFC POS TEST", "Printer OK", "", ""].join(LF) + LF;
+  return Buffer.concat([Buffer.from(body, "utf8"), FEED_LINES_BEFORE_CUT, Buffer.from(FULL_CUT, "binary")]);
 }
 
 export async function printTestReceiptToDevice(): Promise<void> {

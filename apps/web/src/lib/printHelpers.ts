@@ -30,6 +30,11 @@ export type ReceiptTransaction = {
   /** From Settings > Business Details; shown at top of receipt */
   businessName?: string | null;
   address?: string | null;
+  receiptTaxType?: string | null;
+  receiptNonVatTin?: string | null;
+  receiptVatTin?: string | null;
+  receiptBirMin?: string | null;
+  receiptBirSerialNo?: string | null;
 };
 
 function formatPesos(cents: number): string {
@@ -99,6 +104,20 @@ function escapeHtml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
+function browserReceiptTinLine(
+  taxType: string | null | undefined,
+  nonVatTin: string | null | undefined,
+  vatTin: string | null | undefined
+): string | null {
+  const tt = (taxType ?? "").trim().toUpperCase();
+  const vat = (vatTin ?? "").trim();
+  const nonVat = (nonVatTin ?? "").trim();
+  const useVat = tt.includes("VAT") && !tt.includes("NONVAT");
+  const raw = useVat ? vat : nonVat || vat;
+  if (!raw) return null;
+  return `TIN: ${raw}`;
+}
+
 export function buildReceiptHtml(tx: ReceiptTransaction): string {
   const paymentMethod = tx.payments[0]?.method ?? "CASH";
   const headerLines: string[] = [];
@@ -107,6 +126,12 @@ export function buildReceiptHtml(tx: ReceiptTransaction): string {
     const addressLines = tx.address.trim().split(",").map((s) => s.trim()).filter(Boolean);
     for (const line of addressLines) headerLines.push(`<div style="text-align:center;font-size:11px;color:#555;margin-bottom:2px">${escapeHtml(line)}</div>`);
   }
+  const tin = browserReceiptTinLine(tx.receiptTaxType, tx.receiptNonVatTin, tx.receiptVatTin);
+  if (tin) headerLines.push(`<div style="text-align:center;font-size:11px;color:#555;margin-bottom:2px">${escapeHtml(tin)}</div>`);
+  const minRaw = tx.receiptBirMin?.trim();
+  if (minRaw) headerLines.push(`<div style="text-align:center;font-size:11px;color:#555;margin-bottom:2px">${escapeHtml(`MIN: ${minRaw}`)}</div>`);
+  const snRaw = tx.receiptBirSerialNo?.trim();
+  if (snRaw) headerLines.push(`<div style="text-align:center;font-size:11px;color:#555;margin-bottom:2px">${escapeHtml(`S/N: ${snRaw}`)}</div>`);
   const headerHtml = headerLines.length > 0 ? `<div style="margin-bottom:8px">${headerLines.join("")}</div>` : "";
 
   const lines = tx.lineItems
@@ -297,7 +322,15 @@ export function cartToReceiptTransaction(
     items: CartItemForPrint[];
     createdAt: string;
   },
-  opts?: { businessName?: string | null; address?: string | null }
+  opts?: {
+    businessName?: string | null;
+    address?: string | null;
+    receiptTaxType?: string | null;
+    receiptNonVatTin?: string | null;
+    receiptVatTin?: string | null;
+    receiptBirMin?: string | null;
+    receiptBirSerialNo?: string | null;
+  }
 ): ReceiptTransaction {
   const paymentMethod = tx.method.replace(/\s*\(QUEUED\)\s*$/i, "").trim() || "CASH";
   const lineItems: ReceiptLineItem[] = tx.items.map((item) => {
@@ -342,5 +375,10 @@ export function cartToReceiptTransaction(
     payments: [{ method: paymentMethod, amountCents: tx.totalCents }],
     businessName: opts?.businessName ?? null,
     address: opts?.address ?? null,
+    receiptTaxType: opts?.receiptTaxType ?? null,
+    receiptNonVatTin: opts?.receiptNonVatTin ?? null,
+    receiptVatTin: opts?.receiptVatTin ?? null,
+    receiptBirMin: opts?.receiptBirMin ?? null,
+    receiptBirSerialNo: opts?.receiptBirSerialNo ?? null,
   };
 }

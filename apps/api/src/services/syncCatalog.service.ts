@@ -8,6 +8,9 @@ import {
 const CLOUD_URL = process.env.CLOUD_URL ?? "";
 const ADMIN_ROLES = ["ADMIN", "OIC", "AUDITOR", "MANAGER"];
 
+/** POS printing and transactions always use StoreConfig for `store_1` (see posTransactions STORE_ID). */
+const LOCAL_RECEIPT_STORE_CONFIG_ID = "store_1";
+
 async function ensureLocalIngredientFromCloud(
   tx: Prisma.TransactionClient,
   storeId: string,
@@ -311,10 +314,17 @@ type SyncResponse = {
     recipeLines: Array<{ ingredientId: string; qtyPerItem: string; unitCode: string }>;
   }>;
   storeSettings?: {
-    adminPinHash: string | null;
+    adminPinHash?: string | null;
     ownerPasswordHash?: string | null;
     workDayFromTimeLocal?: string;
     workDayToTimeLocal?: string;
+    businessName?: string | null;
+    address?: string | null;
+    receiptTaxType?: string | null;
+    receiptNonVatTin?: string | null;
+    receiptVatTin?: string | null;
+    receiptBirMin?: string | null;
+    receiptBirSerialNo?: string | null;
   };
   staff?: Array<{
     id: string;
@@ -327,6 +337,125 @@ type SyncResponse = {
     updatedAt: string;
   }>;
 };
+
+type CatalogStoreSettingsPayload = NonNullable<SyncResponse["storeSettings"]>;
+
+function catalogStoreSettingsFromUnknown(raw: unknown): CatalogStoreSettingsPayload | null {
+  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  const pick = (...keys: string[]): unknown => {
+    for (const k of keys) {
+      if (Object.prototype.hasOwnProperty.call(o, k) && o[k] !== undefined) return o[k];
+    }
+    return undefined;
+  };
+  const out: CatalogStoreSettingsPayload = {};
+  const set = (field: keyof CatalogStoreSettingsPayload, ...keys: string[]) => {
+    const v = pick(...keys);
+    if (v !== undefined) (out as Record<string, unknown>)[field as string] = v;
+  };
+  set("adminPinHash", "adminPinHash", "admin_pin_hash");
+  set("ownerPasswordHash", "ownerPasswordHash", "owner_password_hash");
+  set("workDayFromTimeLocal", "workDayFromTimeLocal", "work_day_from_time_local");
+  set("workDayToTimeLocal", "workDayToTimeLocal", "work_day_to_time_local");
+  set("businessName", "businessName", "business_name");
+  set("address", "address", "business_address");
+  set("receiptTaxType", "receiptTaxType", "receipt_tax_type", "taxType", "tax_type");
+  set("receiptNonVatTin", "receiptNonVatTin", "receipt_non_vat_tin", "nonVatTin", "non_vat_tin");
+  set("receiptVatTin", "receiptVatTin", "receipt_vat_tin", "vatTin", "vat_tin");
+  set("receiptBirMin", "receiptBirMin", "receipt_bir_min", "birMin", "bir_min");
+  set("receiptBirSerialNo", "receiptBirSerialNo", "receipt_bir_serial_no", "birSerialNo", "bir_serial_no");
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/**
+ * Merge cloud `storeSettings` for apply: snake_case aliases via catalogStoreSettingsFromUnknown,
+ * then explicit camelCase passthrough for every key present on the wire (includes `null`),
+ * so a sparse/null-safe JSON shape still updates StoreConfig(store_1).
+ */
+function mergeStoreSettingsForApply(raw: Record<string, unknown>): CatalogStoreSettingsPayload {
+  const base = catalogStoreSettingsFromUnknown(raw) ?? {};
+  const merged: CatalogStoreSettingsPayload = { ...base };
+  const passthrough: (keyof CatalogStoreSettingsPayload)[] = [
+    "adminPinHash",
+    "ownerPasswordHash",
+    "workDayFromTimeLocal",
+    "workDayToTimeLocal",
+    "businessName",
+    "address",
+    "receiptTaxType",
+    "receiptNonVatTin",
+    "receiptVatTin",
+    "receiptBirMin",
+    "receiptBirSerialNo",
+  ];
+  for (const k of passthrough) {
+    if (Object.prototype.hasOwnProperty.call(raw, k)) {
+      (merged as Record<string, unknown>)[k as string] = raw[k as string];
+    }
+  }
+  return merged;
+}
+
+async function applyCatalogStoreSettingsTx(
+  tx: Prisma.TransactionClient,
+  receiptStoreId: string,
+  ss: CatalogStoreSettingsPayload
+) {
+  if ("adminPinHash" in ss) {
+    await tx.cloudStoreSetting.upsert({
+      where: { id: "1" },
+      create: {
+        id: "1",
+        adminPinHash: ss.adminPinHash ?? null,
+        ownerPasswordHash: ss.ownerPasswordHash ?? null,
+        workDayFromTimeLocal: ss.workDayFromTimeLocal ?? DEFAULT_WORK_DAY_FROM_TIME_LOCAL,
+        workDayToTimeLocal: ss.workDayToTimeLocal ?? DEFAULT_WORK_DAY_TO_TIME_LOCAL,
+      },
+      update: {
+        adminPinHash: ss.adminPinHash ?? null,
+        ownerPasswordHash: ss.ownerPasswordHash ?? null,
+        workDayFromTimeLocal: ss.workDayFromTimeLocal ?? DEFAULT_WORK_DAY_FROM_TIME_LOCAL,
+        workDayToTimeLocal: ss.workDayToTimeLocal ?? DEFAULT_WORK_DAY_TO_TIME_LOCAL,
+      },
+    });
+  }
+
+  const receiptPatch: Record<string, unknown> = {};
+  if (ss.businessName !== undefined) receiptPatch.businessName = ss.businessName;
+  if (ss.address !== undefined) receiptPatch.address = ss.address;
+  if (ss.receiptTaxType !== undefined) receiptPatch.receiptTaxType = ss.receiptTaxType;
+  if (ss.receiptNonVatTin !== undefined) receiptPatch.receiptNonVatTin = ss.receiptNonVatTin;
+  if (ss.receiptVatTin !== undefined) receiptPatch.receiptVatTin = ss.receiptVatTin;
+  if (ss.receiptBirMin !== undefined) receiptPatch.receiptBirMin = ss.receiptBirMin;
+  if (ss.receiptBirSerialNo !== undefined) receiptPatch.receiptBirSerialNo = ss.receiptBirSerialNo;
+  if (Object.keys(receiptPatch).length === 0) {
+    console.log("[SyncCatalog] StoreConfig.upsert skipped — empty receiptPatch", { receiptStoreId });
+    return;
+  }
+
+  console.log("[SyncCatalog] StoreConfig.upsert payload", { receiptStoreId, receiptPatch });
+
+  await tx.store.upsert({
+    where: { id: receiptStoreId },
+    update: {},
+    create: {
+      id: receiptStoreId,
+      code: receiptStoreId === "store_1" ? "BFC-LOCAL" : receiptStoreId,
+      name: receiptStoreId === "store_1" ? "But First, Coffee (Local)" : `Store ${receiptStoreId}`,
+    },
+  });
+  await tx.storeConfig.upsert({
+    where: { storeId: receiptStoreId },
+    update: receiptPatch as Prisma.StoreConfigUpdateInput,
+    create: {
+      storeId: receiptStoreId,
+      enabledPaymentMethods: JSON.stringify(["CASH", "CARD", "GCASH", "FOODPANDA"]),
+      splitPaymentEnabled: true,
+      ...receiptPatch,
+    },
+  });
+}
 
 export type SyncCatalogResult = {
   latestVersion: number;
@@ -515,6 +644,34 @@ export async function syncCatalogFromCloud(
   let shotPricingRulesUpserted = 0;
 
   try {
+    // Receipt + admin settings always target store_1 (print-receipt reads this row). Run before catalog tx.
+    const rawStoreSettings = data.storeSettings;
+    if (rawStoreSettings != null && typeof rawStoreSettings === "object" && !Array.isArray(rawStoreSettings)) {
+      const settingsPayload = mergeStoreSettingsForApply(rawStoreSettings as Record<string, unknown>);
+      console.log("[SyncCatalog] storeSettings.incoming (catalog response)", JSON.stringify(rawStoreSettings));
+      console.log("[SyncCatalog] storeSettings.mergedForApply", JSON.stringify(settingsPayload));
+      await prisma.$transaction((tx) =>
+        applyCatalogStoreSettingsTx(tx, LOCAL_RECEIPT_STORE_CONFIG_ID, settingsPayload)
+      );
+      const readBack = await prisma.storeConfig.findUnique({
+        where: { storeId: LOCAL_RECEIPT_STORE_CONFIG_ID },
+        select: {
+          businessName: true,
+          address: true,
+          receiptTaxType: true,
+          receiptNonVatTin: true,
+          receiptVatTin: true,
+          receiptBirMin: true,
+          receiptBirSerialNo: true,
+        },
+      });
+      console.log("[SyncCatalog] StoreConfig.readBackAfterSettingsTx (store_1)", readBack);
+    } else {
+      console.warn("[SyncCatalog] storeSettings missing or not an object; header fields not synced this run", {
+        type: rawStoreSettings === null ? "null" : typeof rawStoreSettings,
+      });
+    }
+
     await prisma.$transaction(async (tx) => {
       // Ensure Store exists before Staff sync (Staff.storeId FK -> Store.id)
       await tx.store.upsert({
@@ -1251,26 +1408,6 @@ export async function syncCatalogFromCloud(
           },
         });
         recipeLineSizesUpserted++;
-      }
-
-      // Sync store settings (admin PIN + owner password for offline verification)
-      if (data.storeSettings) {
-        await tx.cloudStoreSetting.upsert({
-          where: { id: "1" },
-          create: {
-            id: "1",
-            adminPinHash: data.storeSettings.adminPinHash ?? null,
-            ownerPasswordHash: data.storeSettings.ownerPasswordHash ?? null,
-            workDayFromTimeLocal: data.storeSettings.workDayFromTimeLocal ?? DEFAULT_WORK_DAY_FROM_TIME_LOCAL,
-            workDayToTimeLocal: data.storeSettings.workDayToTimeLocal ?? DEFAULT_WORK_DAY_TO_TIME_LOCAL,
-          },
-          update: {
-            adminPinHash: data.storeSettings.adminPinHash ?? null,
-            ownerPasswordHash: data.storeSettings.ownerPasswordHash ?? null,
-            workDayFromTimeLocal: data.storeSettings.workDayFromTimeLocal ?? DEFAULT_WORK_DAY_FROM_TIME_LOCAL,
-            workDayToTimeLocal: data.storeSettings.workDayToTimeLocal ?? DEFAULT_WORK_DAY_TO_TIME_LOCAL,
-          },
-        });
       }
 
       // Sync staff from Cloud Admin (source of truth for names, PINs, email, roles)

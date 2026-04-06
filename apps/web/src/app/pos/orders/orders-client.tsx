@@ -191,10 +191,23 @@ export default function OrdersClient({
   const [bumpingOrderId, setBumpingOrderId] = useState<string | null>(null);
   const [bumpingKdsTxId, setBumpingKdsTxId] = useState<string | null>(null);
   const [lastSyncAt, setLastSyncAt] = useState<number | null>(null);
+  const [qrMenuEnabled, setQrMenuEnabled] = useState(true);
   const loadOrdersInFlight = useRef(false);
   const kdsPrevIdsRef = useRef<Set<string> | null>(null);
 
-  const effectiveTab = isKds || isTabletPending ? "pending" : isTabletQr ? "qr" : innerTab;
+  const effectiveTab =
+    isKds || isTabletPending ? "pending" : isTabletQr ? "qr" : qrMenuEnabled ? innerTab : "pending";
+
+  useEffect(() => {
+    fetch("/api/store-config", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => {
+        const en = d?.qrMenuEnabled !== false;
+        setQrMenuEnabled(en);
+        if (!en) setInnerTab("pending");
+      })
+      .catch(() => setQrMenuEnabled(true));
+  }, []);
 
   useEffect(() => {
     try {
@@ -1033,6 +1046,7 @@ export default function OrdersClient({
 
       {!isTabletOrders && (
       <div style={{ display: "flex", gap: 8, marginBottom: 24, borderBottom: `1px solid ${COLORS.borderLight}`, paddingBottom: 16 }}>
+        {qrMenuEnabled ? (
         <button
           type="button"
           onClick={() => setInnerTab("qr")}
@@ -1049,6 +1063,7 @@ export default function OrdersClient({
         >
           QR Orders
         </button>
+        ) : null}
         <button
           type="button"
           onClick={() => setInnerTab("pending")}
