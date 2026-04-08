@@ -1,5 +1,5 @@
 {
-  "receiptPrinter": "XP360 Receipt",
+  "receiptPrinter": "Generic / Text Only",
   "stickerPrinter": "",
   "stickerWidthMm": 80,
   "stickerHeightMm": 60

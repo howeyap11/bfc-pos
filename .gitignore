@@ -35,6 +35,7 @@ cache/
 
 # Chrome POS local profile (DO NOT TRACK)
 chrome-pos/
+chrome-customer/
 apps/chrome-customer/
 
 # General browser junk

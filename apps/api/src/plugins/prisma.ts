@@ -32,20 +32,6 @@ async function ensureSqliteStaffPasscodeHashColumn(client: PrismaClient): Promis
   console.warn(
     "[prisma] Added missing Staff.passcodeHash (SQLite was out of sync with migration history). Catalog sync should work after restart."
   );
-  // #region agent log
-  fetch("http://127.0.0.1:7414/ingest/a4056341-4d7a-46ec-9a40-be642c3300db", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "c6c39b" },
-    body: JSON.stringify({
-      sessionId: "c6c39b",
-      location: "plugins/prisma.ts:ensureSqliteStaffPasscodeHashColumn",
-      message: "repaired missing Staff.passcodeHash",
-      data: { repaired: true },
-      timestamp: Date.now(),
-      hypothesisId: "S1",
-    }),
-  }).catch(() => {});
-  // #endregion
 }
 
 const prismaPlugin: FastifyPluginAsync = async (app) => {

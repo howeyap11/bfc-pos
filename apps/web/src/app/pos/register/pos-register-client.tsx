@@ -3535,7 +3535,12 @@ export default function PosRegisterClient() {
       console.log("[PAY] Creating transaction...", { itemCount: cartSnapshot.length });
 
       const serviceType = cartSnapshot[0]?.transactionTypeCode ?? "FOR_HERE";
-      const txBody = buildCreateTransactionBody({ cart: cartSnapshot, discountCents: 0, serviceType });
+      const txBody = buildCreateTransactionBody({
+        cart: cartSnapshot,
+        discountCents: 0,
+        serviceType,
+        ...(qrOrderId && { orderId: qrOrderId }),
+      });
 
       console.log("[PAY] TX BODY", { 
         itemCount: cartSnapshot.length,
@@ -3567,7 +3572,15 @@ export default function PosRegisterClient() {
       });
 
       if (!txRes.ok) {
-        setError(`Transaction failed (${txRes.status})`);
+        const detail =
+          (txData && (txData.message || txData.error || txData.code)) ?
+            String(txData.message || txData.error || txData.code)
+          : "";
+        setError(
+          detail ?
+            `Transaction failed (${txRes.status}): ${detail}`
+          : `Transaction failed (${txRes.status})`
+        );
         setBusy(false);
         return;
       }
@@ -3670,6 +3683,7 @@ export default function PosRegisterClient() {
           cart: cartSnapshot,
           discountCents: 0,
           serviceType: cartSnapshot[0]?.transactionTypeCode ?? "FOR_HERE",
+          ...(qrOrderId && { orderId: qrOrderId }),
         });
         await queueOfflineTransactionSync({
           txBody: txBody as Record<string, unknown>,

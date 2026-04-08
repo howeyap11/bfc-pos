@@ -57,22 +57,7 @@ export function enumerateWindowsPrinters(): PrinterEnumerationResult {
 
   if (r.error) {
     const msg = r.error.message;
-    const result: PrinterEnumerationResult = { code: "GETPRINTERS_THREW", printers: [], detail: msg };
-    // #region agent log
-    fetch("http://127.0.0.1:7414/ingest/a4056341-4d7a-46ec-9a40-be642c3300db", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "c6c39b" },
-      body: JSON.stringify({
-        sessionId: "c6c39b",
-        hypothesisId: "H2",
-        location: "printerDiscovery.service.ts:enumerateWindowsPrinters",
-        message: "printer enum spawn error",
-        data: { platform: process.platform, code: result.code, psPath: ps, err: msg.slice(0, 400) },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
-    return result;
+    return { code: "GETPRINTERS_THREW", printers: [], detail: msg };
   }
 
   const stderr = (r.stderr ?? "").trim();
@@ -81,28 +66,7 @@ export function enumerateWindowsPrinters(): PrinterEnumerationResult {
 
   if (r.status !== 0) {
     const msg = [stderr || `exit ${r.status}`, stdout.trim().slice(0, 200)].filter(Boolean).join(" | ");
-    const result: PrinterEnumerationResult = { code: "GETPRINTERS_THREW", printers: [], detail: msg };
-    // #region agent log
-    fetch("http://127.0.0.1:7414/ingest/a4056341-4d7a-46ec-9a40-be642c3300db", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "c6c39b" },
-      body: JSON.stringify({
-        sessionId: "c6c39b",
-        hypothesisId: "H2",
-        location: "printerDiscovery.service.ts:enumerateWindowsPrinters",
-        message: "printer enum non-zero exit",
-        data: {
-          platform: process.platform,
-          code: result.code,
-          status: r.status,
-          stderrPreview: stderr.slice(0, 400),
-          stdoutPreview: stdout.trim().slice(0, 200),
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
-    return result;
+    return { code: "GETPRINTERS_THREW", printers: [], detail: msg };
   }
 
   // Fallback when Win32_Printer returns nothing but queues exist (rare WMI issues)
@@ -116,47 +80,12 @@ export function enumerateWindowsPrinters(): PrinterEnumerationResult {
     if (!r2.error && r2.status === 0) {
       const alt = parsePrinterLines(r2.stdout ?? "");
       if (alt.length > 0) {
-        const result = { code: "OK" as const, printers: alt };
-        // #region agent log
-        fetch("http://127.0.0.1:7414/ingest/a4056341-4d7a-46ec-9a40-be642c3300db", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "c6c39b" },
-          body: JSON.stringify({
-            sessionId: "c6c39b",
-            hypothesisId: "H3",
-            location: "printerDiscovery.service.ts:enumerateWindowsPrinters",
-            message: "printer enum used Get-Printer fallback",
-            data: { printerCount: alt.length },
-            timestamp: Date.now(),
-          }),
-        }).catch(() => {});
-        // #endregion
-        return result;
+        return { code: "OK", printers: alt };
       }
     }
   }
 
-  const result: PrinterEnumerationResult = { code: "OK", printers };
-  // #region agent log
-  fetch("http://127.0.0.1:7414/ingest/a4056341-4d7a-46ec-9a40-be642c3300db", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "c6c39b" },
-    body: JSON.stringify({
-      sessionId: "c6c39b",
-      hypothesisId: "H1-H4",
-      location: "printerDiscovery.service.ts:enumerateWindowsPrinters",
-      message: "printer enum success",
-      data: {
-        platform: process.platform,
-        code: result.code,
-        printerCount: printers.length,
-        firstNames: printers.slice(0, 5),
-      },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
-  return result;
+  return { code: "OK", printers };
 }
 
 /**

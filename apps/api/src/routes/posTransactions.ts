@@ -7,7 +7,7 @@
 // When cash reconciliation is ready, re-enable the NO_OPEN_REGISTER check in POST /pos/transactions.
 //
 import type { FastifyInstance, FastifyReply } from "fastify";
-import type { MilkType, ServiceType, ShotsPricingMode } from "@prisma/client";
+import { Prisma, type MilkType, type ServiceType, type ShotsPricingMode } from "@prisma/client";
 import type { PrismaClient } from "@prisma/client";
 import { requireStaffHook } from "../plugins/staffGuard";
 import { verifyAdminPin } from "../services/adminPin.service";
@@ -253,8 +253,12 @@ function calculateShotsUpcharge(
     const defShots = typeof defaultShots === "number" ? defaultShots : 0;
     const extraShots = Math.max(0, shotsQty - defShots);
     if (extraShots === 0) return 0;
-    const bundles = Math.ceil(extraShots / shotRule.shotsPerBundle);
-    return bundles * shotRule.priceCentsPerBundle;
+    const perBundle = shotRule.shotsPerBundle;
+    if (typeof perBundle !== "number" || perBundle <= 0) return 0;
+    const bundles = Math.ceil(extraShots / perBundle);
+    const price = shotRule.priceCentsPerBundle;
+    if (typeof price !== "number" || !Number.isFinite(bundles * price)) return 0;
+    return bundles * price;
   }
 
   // Legacy: shotsPricingMode
@@ -493,6 +497,34 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       if (body.items.length === 0) {
         reply.code(400);
         return { error: "EMPTY_ITEMS" };
+      }
+
+      let orderIdForCreate: string | null = null;
+      if (body.orderId != null && String(body.orderId).trim() !== "") {
+        const oid = String(body.orderId).trim();
+        const ord = await app.prisma.order.findUnique({
+          where: { id: oid },
+          select: { id: true },
+        });
+        if (!ord) {
+          reply.code(400);
+          return {
+            error: "ORDER_NOT_FOUND",
+            message: "Order not found. Reload QR orders or start a new cart.",
+          };
+        }
+        const existingForOrder = await app.prisma.transaction.findUnique({
+          where: { orderId: oid },
+          select: { id: true },
+        });
+        if (existingForOrder) {
+          reply.code(409);
+          return {
+            error: "ORDER_ALREADY_HAS_TRANSACTION",
+            message: "This order is already linked to a sale. Open it from Transactions or start a new order.",
+          };
+        }
+        orderIdForCreate = oid;
       }
 
       step = CREATE_TX_STEPS.ensure_store;
@@ -1051,7 +1083,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         serviceType,
         registerSessionId: open?.id || null, // Optional: link to register session if open
         tableId,
-        orderId: body.orderId || null, // Link to QR order if provided
+        orderId: orderIdForCreate, // Link to QR order if provided (validated above)
         subtotalCents,
         discountCents,
         serviceCents: 0, // Surcharges are per-line, not transaction-level
@@ -1082,6 +1114,50 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
 
     return created;
     } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err ?? "");
+
+      if (
+        errMsg.startsWith("DRINK_MODE_NOT_ALLOWED") ||
+        errMsg.startsWith("DRINK_SIZE_NOT_ALLOWED")
+      ) {
+        logCreateTransactionError(app.log, { storeId: STORE_ID, step, deviceId }, err);
+        reply.code(400);
+        return {
+          code: "INVALID_DRINK_SELECTION",
+          message:
+            "Drink size or temperature does not match the synced menu. Refresh the menu or adjust the line.",
+        };
+      }
+
+      if (errMsg.startsWith("Invalid itemId:") || errMsg.includes("CloudMenuItem not found:")) {
+        logCreateTransactionError(app.log, { storeId: STORE_ID, step, deviceId }, err);
+        reply.code(400);
+        return {
+          code: "INVALID_CART_ITEM",
+          message: "A cart item is not on the menu anymore. Remove it or sync catalog and try again.",
+        };
+      }
+
+      if (err instanceof Prisma.PrismaClientKnownRequestError) {
+        logCreateTransactionError(app.log, { storeId: STORE_ID, step, deviceId }, err, {
+          prismaCode: err.code,
+        });
+        if (err.code === "P2002") {
+          reply.code(409);
+          return {
+            code: "TRANSACTION_CONFLICT",
+            message: "Another sale was saved at the same time. Try payment again.",
+          };
+        }
+        if (err.code === "P2003") {
+          reply.code(400);
+          return {
+            code: "INVALID_REFERENCE",
+            message: "Linked order or table is invalid. Refresh and try again.",
+          };
+        }
+      }
+
       logCreateTransactionError(app.log, { storeId: STORE_ID, step, deviceId }, err);
       const safeMessage =
         step === CREATE_TX_STEPS.validate_input
