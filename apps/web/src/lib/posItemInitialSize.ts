@@ -9,8 +9,8 @@
 const MODES = ["HOT", "ICED", "CONCENTRATED"] as const;
 export type DrinkModeKey = (typeof MODES)[number];
 
-/** When the same size id exists under multiple modes, prefer iced drinks (after explicit drinkModeDefaults match). */
-const AMBIGUOUS_MODE_ORDER: DrinkModeKey[] = ["ICED", "HOT", "CONCENTRATED"];
+/** When the same size id exists under multiple modes, prefer HOT so disabled ICED is not chosen by tie-break. */
+const AMBIGUOUS_MODE_ORDER: DrinkModeKey[] = ["HOT", "ICED", "CONCENTRATED"];
 
 function pickAmbiguous(modes: DrinkModeKey[]): DrinkModeKey | null {
   for (const m of AMBIGUOUS_MODE_ORDER) {
@@ -115,7 +115,7 @@ export function resolveInitialHasSizesModeAndSize(args: {
     }
   }
 
-  // No default from backend: prefer ICED then HOT then CONCENTRATED; prefer 16oz over 12oz when both exist (common default)
+  // No default from backend: prefer HOT then ICED then CONCENTRATED; prefer 16oz over 12oz when both exist (common default)
   const mode =
     AMBIGUOUS_MODE_ORDER.find((m) => (sm[m]?.length ?? 0) > 0) ?? null;
   const list = mode ? (sm[mode] ?? []) : [];

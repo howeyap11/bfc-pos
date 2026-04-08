@@ -8,7 +8,129 @@ const PosOrdersQuery = z.object({
 
 const STORE_ID = "store_1";
 
+async function itemCloudIdToCategoryCloudIdMap(
+  prisma: {
+    cloudMenuItem: {
+      findMany: (args: {
+        where: { storeId: string; cloudId: { in: string[] } };
+        select: { cloudId: true; categoryCloudId: true };
+      }) => Promise<Array<{ cloudId: string; categoryCloudId: string | null }>>;
+    };
+  },
+  storeId: string,
+  itemCloudIds: string[]
+): Promise<Map<string, string | null>> {
+  const m = new Map<string, string | null>();
+  if (itemCloudIds.length === 0) return m;
+  const rows = await prisma.cloudMenuItem.findMany({
+    where: { storeId, cloudId: { in: itemCloudIds } },
+    select: { cloudId: true, categoryCloudId: true },
+  });
+  for (const r of rows) m.set(r.cloudId, r.categoryCloudId ?? null);
+  return m;
+}
+
+/** Same shape as pending tab transaction cards (for standalone tx list or order.linkedTransaction). */
+function pendingTransactionCardFromPrisma(
+  tx: {
+    id: string;
+    transactionNo: number;
+    status: string;
+    source: string;
+    createdAt: Date;
+    createdBy: string | null;
+    prepStartedAt: Date | null;
+    prepReadyAt: Date | null;
+    serviceType: string;
+    table: { id: string; label: string; zone: { code: string; name: string } | null } | null;
+    lineItems: Array<{
+      id: string;
+      qty: number;
+      unitPrice: number;
+      note: string | null;
+      specialInstructions: string | null;
+      customerName: string | null;
+      name: string;
+      optionsJson: string | null;
+      categoryName: string | null;
+      subCategoryName: string | null;
+      item: {
+        id: string;
+        name: string;
+        cloudId: string | null;
+        images: Array<{ url: string }>;
+        category: { id: string; name: string; prepArea: string } | null;
+      } | null;
+    }>;
+  },
+  itemCloudToCategoryCloud: Map<string, string | null>
+) {
+  return {
+    id: tx.id,
+    transactionNo: tx.transactionNo,
+    status: tx.status,
+    source: tx.source,
+    createdAt: tx.createdAt.toISOString(),
+    createdBy: tx.createdBy,
+    prepStartedAt: tx.prepStartedAt?.toISOString() ?? null,
+    prepReadyAt: tx.prepReadyAt?.toISOString() ?? null,
+    serviceType: tx.serviceType,
+    table: tx.table
+      ? {
+          id: tx.table.id,
+          label: tx.table.label,
+          zone: tx.table.zone ? { code: tx.table.zone.code, name: tx.table.zone.name } : null,
+        }
+      : null,
+    lineItems: tx.lineItems.map((li) => ({
+      id: li.id,
+      qty: li.qty,
+      unitPrice: li.unitPrice,
+      lineNote: li.note,
+      specialInstructions: li.specialInstructions,
+      customerName: li.customerName,
+      name: li.name,
+      optionsJson: li.optionsJson,
+      categoryName: li.categoryName,
+      subCategoryName: li.subCategoryName,
+      displayLabel: formatTransactionLineLabel({
+        name: li.name,
+        optionsJson: li.optionsJson,
+        categoryName: li.categoryName ?? li.item?.category?.name ?? undefined,
+        subCategoryName: li.subCategoryName ?? undefined,
+        qty: li.qty,
+        includeQuantity: true,
+      }),
+      item: li.item
+        ? {
+            id: li.item.id,
+            name: li.item.name,
+            imageUrl: li.item.images[0]?.url ?? null,
+            category: li.item.category
+              ? {
+                  id: li.item.category.id,
+                  name: li.item.category.name,
+                  prepArea: li.item.category.prepArea,
+                  cloudCategoryId: li.item.cloudId ? itemCloudToCategoryCloud.get(li.item.cloudId) ?? null : null,
+                }
+              : null,
+          }
+        : null,
+    })),
+  };
+}
+
 export const posOrdersRoutes: FastifyPluginAsync = async (app) => {
+  /** Synced cloud categories (local DB mirror). IDs are stable cloudIds — matches kitchen filter + CloudMenuItem.categoryCloudId. */
+  app.get("/pos/catalog-categories", { preHandler: app.requireStaff }, async (_req, _reply) => {
+    const rows = await app.prisma.cloudCategory.findMany({
+      where: { storeId: STORE_ID },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      select: { cloudId: true, name: true },
+    });
+    return { categories: rows.map((r) => ({ id: r.cloudId, name: r.name })) };
+  });
+
   app.get("/pos/orders", { preHandler: app.requireStaff }, async (req, reply) => {
     const parsed = PosOrdersQuery.safeParse(req.query);
     const tab = parsed.success ? parsed.data.tab : "qr";
@@ -32,7 +154,10 @@ export const posOrdersRoutes: FastifyPluginAsync = async (app) => {
         items: {
           include: {
             item: {
-              include: {
+              select: {
+                id: true,
+                name: true,
+                cloudId: true,
                 category: true,
                 images: { orderBy: [{ isPrimary: "desc" }, { sort: "asc" }], take: 1 },
               },
@@ -40,8 +165,85 @@ export const posOrdersRoutes: FastifyPluginAsync = async (app) => {
             options: { include: { option: { include: { group: true } } } },
           },
         },
+        ...(tab === "pending"
+          ? {
+              transaction: {
+                include: {
+                  table: { select: { id: true, label: true, zone: { select: { code: true, name: true } } } },
+                  lineItems: {
+                    include: {
+                      item: {
+                        select: {
+                          id: true,
+                          name: true,
+                          cloudId: true,
+                          category: { select: { id: true, name: true, prepArea: true } },
+                          images: { orderBy: [{ isPrimary: "desc" }, { sort: "asc" }], take: 1, select: { url: true } },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            }
+          : {}),
       },
     });
+
+    const pendingTxRows =
+      tab === "pending"
+        ? await app.prisma.transaction.findMany({
+            where: {
+              storeId: STORE_ID,
+              status: "PAID",
+              prepCompletedAt: null,
+            },
+            orderBy: { createdAt: "asc" },
+            take: 100,
+            include: {
+              table: { select: { id: true, label: true, zone: { select: { code: true, name: true } } } },
+              lineItems: {
+                include: {
+                  item: {
+                    select: {
+                      id: true,
+                      name: true,
+                      cloudId: true,
+                      category: { select: { id: true, name: true, prepArea: true } },
+                      images: { orderBy: [{ isPrimary: "desc" }, { sort: "asc" }], take: 1, select: { url: true } },
+                    },
+                  },
+                },
+              },
+            },
+          })
+        : [];
+
+    const itemCloudIds = new Set<string>();
+    for (const o of orders) {
+      for (const oi of o.items) {
+        const cid = oi.item?.cloudId;
+        if (cid) itemCloudIds.add(cid);
+      }
+      if (tab === "pending" && "transaction" in o && o.transaction) {
+        const linkedTx = o.transaction as unknown as { lineItems: Array<{ item: { cloudId: string | null } | null }> };
+        for (const li of linkedTx.lineItems) {
+          const cid = li.item?.cloudId;
+          if (cid) itemCloudIds.add(cid);
+        }
+      }
+    }
+    for (const tx of pendingTxRows) {
+      for (const li of tx.lineItems) {
+        const cid = li.item?.cloudId;
+        if (cid) itemCloudIds.add(cid);
+      }
+    }
+    const itemCloudToCategoryCloud = await itemCloudIdToCategoryCloudIdMap(
+      app.prisma,
+      STORE_ID,
+      [...itemCloudIds]
+    );
 
     const ordersPayload = orders.map((o) => ({
       id: o.id,
@@ -69,7 +271,12 @@ export const posOrdersRoutes: FastifyPluginAsync = async (app) => {
               id: oi.item.id,
               name: oi.item.name,
               category: oi.item.category
-                ? { name: oi.item.category.name, prepArea: oi.item.category.prepArea }
+                ? {
+                    id: oi.item.category.id,
+                    name: oi.item.category.name,
+                    prepArea: oi.item.category.prepArea,
+                    cloudCategoryId: oi.item.cloudId ? itemCloudToCategoryCloud.get(oi.item.cloudId) ?? null : null,
+                  }
                 : null,
               imageUrl: oi.item.images[0]?.url ?? null,
             }
@@ -81,107 +288,19 @@ export const posOrdersRoutes: FastifyPluginAsync = async (app) => {
             : null,
         })),
       })),
+      linkedTransaction:
+        tab === "pending" && "transaction" in o && o.transaction
+          ? pendingTransactionCardFromPrisma(
+              o.transaction as unknown as Parameters<typeof pendingTransactionCardFromPrisma>[0],
+              itemCloudToCategoryCloud
+            )
+          : null,
     }));
 
-    // For pending tab, also return PAID transactions that don't have prep completed (pending order cards)
-    let pendingTransactions: Array<{
-      id: string;
-      transactionNo: number;
-      status: string;
-      source: string;
-      createdAt: string;
-      createdBy: string | null;
-      prepStartedAt: string | null;
-      prepReadyAt: string | null;
-      table: { id: string; label: string; zone: { code: string; name: string } | null } | null;
-      lineItems: Array<{
-        id: string;
-        qty: number;
-        unitPrice: number;
-        lineNote: string | null;
-        specialInstructions: string | null;
-        customerName: string | null;
-        name: string;
-        optionsJson: string | null;
-        categoryName: string | null;
-        subCategoryName: string | null;
-        displayLabel: string;
-        item: { id: string; name: string; imageUrl: string | null; category: { name: string; prepArea: string } | null } | null;
-      }>;
-    }> = [];
-
-    if (tab === "pending") {
-      const txList = await app.prisma.transaction.findMany({
-        where: {
-          storeId: STORE_ID,
-          status: "PAID",
-          prepCompletedAt: null,
-        },
-        orderBy: { createdAt: "asc" },
-        take: 100,
-        include: {
-          table: { select: { id: true, label: true, zone: { select: { code: true, name: true } } } },
-          lineItems: {
-            include: {
-              item: {
-                select: {
-                  id: true,
-                  name: true,
-                  category: { select: { name: true, prepArea: true } },
-                  images: { orderBy: [{ isPrimary: "desc" }, { sort: "asc" }], take: 1, select: { url: true } },
-                },
-              },
-            },
-          },
-        },
-      });
-
-      pendingTransactions = txList.map((tx) => ({
-        id: tx.id,
-        transactionNo: tx.transactionNo,
-        status: tx.status,
-        source: tx.source,
-        createdAt: tx.createdAt.toISOString(),
-        createdBy: tx.createdBy,
-        prepStartedAt: tx.prepStartedAt?.toISOString() ?? null,
-        prepReadyAt: tx.prepReadyAt?.toISOString() ?? null,
-        table: tx.table
-          ? {
-              id: tx.table.id,
-              label: tx.table.label,
-              zone: tx.table.zone ? { code: tx.table.zone.code, name: tx.table.zone.name } : null,
-            }
-          : null,
-        lineItems: tx.lineItems.map((li) => ({
-          id: li.id,
-          qty: li.qty,
-          unitPrice: li.unitPrice,
-          lineNote: li.note,
-          specialInstructions: li.specialInstructions,
-          customerName: li.customerName,
-          name: li.name,
-          optionsJson: li.optionsJson,
-          categoryName: li.categoryName,
-          subCategoryName: li.subCategoryName,
-          displayLabel: formatTransactionLineLabel({
-            name: li.name,
-            optionsJson: li.optionsJson,
-            categoryName: li.categoryName ?? li.item?.category?.name ?? undefined,
-            subCategoryName: li.subCategoryName ?? undefined,
-            qty: li.qty,
-            includeQuantity: true,
-          }),
-          item: li.item
-            ? {
-                id: li.item.id,
-                name: li.item.name,
-                imageUrl: li.item.images[0]?.url ?? null,
-                category: li.item.category ? { name: li.item.category.name, prepArea: li.item.category.prepArea } : null,
-              }
-            : null,
-        })),
-      }));
-    }
+    const pendingTransactions =
+      tab === "pending"
+        ? pendingTxRows.map((tx) => pendingTransactionCardFromPrisma(tx, itemCloudToCategoryCloud))
+        : [];
 
     return { orders: ordersPayload, pendingTransactions };
   });

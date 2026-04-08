@@ -33,6 +33,7 @@ import { orderCancelRoutes } from "./routes/orderCancel";
 import { qrAcceptRoutes } from "./routes/qrAccept";
 import { registerRoutes } from "./routes/register";
 import { posTransactionsRoutes } from "./routes/posTransactions";
+import { posCustomerDisplayRoutes } from "./routes/posCustomerDisplay";
 import { drawerRoutes } from "./routes/drawer";
 import { adminSyncRoutes } from "./routes/admin/adminSync";
 import { deviceCommandsRoutes } from "./routes/deviceCommands.js";
@@ -78,6 +79,7 @@ await app.register(orderCancelRoutes);
 await app.register(qrAcceptRoutes);
 await app.register(registerRoutes);
 await app.register(posTransactionsRoutes);
+await app.register(posCustomerDisplayRoutes);
 await app.register(drawerRoutes);
 await app.register(adminSyncRoutes);
 await app.register(deviceCommandsRoutes);
@@ -182,6 +184,12 @@ app.get("/menu", async (req, reply) => {
       }),
       app.prisma.storeConfig.findUnique({ where: { storeId: "store_1" } }),
     ]);
+    const drinkSizeItemRows = await app.prisma.cloudMenuItemDrinkSizeConfig.findMany({
+      where: { storeId: "store_1" },
+      select: { menuItemCloudId: true },
+      distinct: ["menuItemCloudId"],
+    });
+    const itemsWithDrinkSizeConfigs = new Set(drinkSizeItemRows.map((r) => r.menuItemCloudId));
     await preloadMissingMenuImages(
       (items ?? []).map((i) => ({ id: i.cloudId, imageUrl: i.imageUrl }))
     );
@@ -200,7 +208,7 @@ app.get("/menu", async (req, reply) => {
               description: null,
               imageUrl: await getImagePath({ id: i.cloudId, imageUrl: i.imageUrl }),
               series: i.subCategoryCloudId ? subCategoryMap.get(i.subCategoryCloudId) ?? "Other" : "Other",
-              hasSizes: i.hasSizes ?? false,
+              hasSizes: !!i.hasSizes && itemsWithDrinkSizeConfigs.has(i.cloudId),
             }))
         ),
       }))
@@ -218,7 +226,7 @@ app.get("/menu", async (req, reply) => {
           description: null,
           imageUrl: await getImagePath({ id: i.cloudId, imageUrl: i.imageUrl }),
           series: i.subCategoryCloudId ? subCategoryMap.get(i.subCategoryCloudId) ?? "Other" : "Other",
-          hasSizes: i.hasSizes ?? false,
+          hasSizes: !!i.hasSizes && itemsWithDrinkSizeConfigs.has(i.cloudId),
         }))
       ),
       });
@@ -234,7 +242,7 @@ app.get("/menu", async (req, reply) => {
           description: null,
           imageUrl: await getImagePath({ id: i.cloudId, imageUrl: i.imageUrl ?? null }),
           series: "Other",
-          hasSizes: i.hasSizes ?? false,
+          hasSizes: !!i.hasSizes && itemsWithDrinkSizeConfigs.has(i.cloudId),
         }))),
       }];
     }
@@ -410,7 +418,9 @@ app.get("/items/:id", async (req, reply) => {
         sizesByMode[modeKey].push({ id: c.optionCloudId, name, priceCents: priceCents ?? undefined });
       }
     }
-    const hasSizes = drinkConfigs.length > 0 || cloud.hasSizes;
+    // Drink-by-mode UI only when cloud admin hasSizes AND synced configs exist (avoids orphan configs or legacy option-group leakage).
+    const catalogHasSizes = cloud.hasSizes === true;
+    const hasSizes = catalogHasSizes && drinkConfigs.length > 0;
 
     const drinkModeDefaultsPayload =
       drinkModeDefaultRows.length > 0
@@ -420,7 +430,7 @@ app.get("/items/:id", async (req, reply) => {
           }))
         : undefined;
 
-    const itemOptionGroups = links.map((link) => {
+    const itemOptionGroupsRaw = links.map((link) => {
       const g = groupMap.get(link.groupCloudId);
       if (!g) return null;
       const groupSections = (sectionsByGroup.get(g.cloudId) ?? []).map((s) => ({ id: s.cloudId, key: s.key, label: s.label, sortOrder: s.sortOrder }));
@@ -445,17 +455,22 @@ app.get("/items/:id", async (req, reply) => {
           options: opts,
         },
       };
-    }).filter(Boolean) as Array<{ group: { id: string; name: string; type: "SINGLE" | "MULTI"; minSelect: number; maxSelect: number; isRequired: boolean; defaultOptionId: string | null; sections?: Array<{ id: string; key: string; label: string; sortOrder: number }>; options: Array<{ id: string; name: string; priceDelta: number; isDefault: boolean }> } }>;
+    }).filter(Boolean) as Array<{ group: { id: string; name: string; type: "SINGLE" | "MULTI"; minSelect: number; maxSelect: number; isRequired: boolean; isSizeGroup: boolean; defaultOptionId: string | null; sections?: Array<{ id: string; key: string; label: string; sortOrder: number }>; options: Array<{ id: string; name: string; priceDelta: number; isDefault: boolean }> } }>;
+    const itemOptionGroups = catalogHasSizes
+      ? itemOptionGroupsRaw
+      : itemOptionGroupsRaw.filter((row) => !row.group.isSizeGroup);
 
     const defaultShots = (cloud as { defaultShots?: number | null }).defaultShots ?? 0;
     const supportsShots = (cloud as { supportsShots?: boolean }).supportsShots ?? false;
 
-    // Included (free) shots per size+temp: from size prices, fallback to item defaultShots
+    // Included (free) shots per size+temp: only when item supports shots
     const includedShotsBySizeAndTemp: Record<string, number> = {};
-    for (const p of sizePrices) {
-      const key = `${p.baseType}|${p.sizeOptionCloudId}`;
-      const value = p.includedShots != null ? p.includedShots : defaultShots;
-      includedShotsBySizeAndTemp[key] = value;
+    if (supportsShots) {
+      for (const p of sizePrices) {
+        const key = `${p.baseType}|${p.sizeOptionCloudId}`;
+        const value = p.includedShots != null ? p.includedShots : defaultShots;
+        includedShotsBySizeAndTemp[key] = value;
+      }
     }
 
     // Active shot pricing rule (for cloud items: apply to shots above default)

@@ -34,12 +34,12 @@ describe("resolveInitialHasSizesModeAndSize", () => {
     expect(r.size).toEqual({ id: "12", name: "12oz" });
   });
 
-  it("without drinkModeDefaults, same id in HOT+ICED prefers ICED", () => {
+  it("without drinkModeDefaults, same id in HOT+ICED prefers HOT (avoids ICED tie-break when ICED is disabled)", () => {
     const r = resolveInitialHasSizesModeAndSize({
       defaultSizeOptionId: "16",
       sizesByMode: sm,
     });
-    expect(r.mode).toBe("ICED");
+    expect(r.mode).toBe("HOT");
     expect(r.size?.id).toBe("16");
   });
 

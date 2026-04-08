@@ -68,6 +68,7 @@ export default function TransactionSuccessClient() {
   const [error, setError] = useState<string | null>(null);
   const [showDetails, setShowDetails] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [printBusy, setPrintBusy] = useState<"receipt" | "sticker" | "orderSlip" | null>(null);
 
   useEffect(() => {
     if (!transactionId) {
@@ -110,8 +111,15 @@ export default function TransactionSuccessClient() {
     }
   }
 
-  async function handlePrint(type: "kitchen" | "order" | "sticker" | "receipt") {
+  async function handlePrint(type: "kitchen" | "sticker" | "receipt" | "orderSlip") {
     if (!transaction) return;
+    if (type === "kitchen") {
+      console.log(`[Print] kitchen for transaction ${transactionId}`);
+      alert("Print kitchen - Not implemented yet");
+      return;
+    }
+
+    setPrintBusy(type);
     let staffKey: string | null = null;
     try {
       const stored = typeof localStorage !== "undefined" ? localStorage.getItem("bfc_active_staff") : null;
@@ -122,41 +130,46 @@ export default function TransactionSuccessClient() {
     const headers: Record<string, string> = {};
     if (staffKey?.trim()) headers["x-staff-key"] = staffKey.trim();
 
-    if (type === "receipt") {
-      try {
+    try {
+      if (type === "receipt") {
         const res = await fetch(`/api/pos/transactions/${transaction.id}/print-receipt`, { method: "POST", headers });
         const data = await res.json();
         if (!res.ok) throw new Error(data.message || data.error || "Print failed");
         if (data.snapResiboError) {
-          const msg = data.snapResiboError === "NO_AVAILABLE_VOUCHERS"
-            ? "Receipt printed. SnapResibo: no vouchers available – import in Settings."
-            : "Receipt printed. SnapResibo voucher could not be allocated.";
+          const msg =
+            data.snapResiboError === "NO_AVAILABLE_VOUCHERS"
+              ? "Receipt printed. SnapResibo: no vouchers available – import in Settings."
+              : "Receipt printed. SnapResibo voucher could not be allocated.";
           setToastMessage(msg);
         } else {
           setToastMessage("Receipt sent to printer.");
         }
         setTimeout(() => setToastMessage(null), 4000);
-      } catch (e: any) {
-        setToastMessage(e?.message ?? "Print receipt failed");
-        setTimeout(() => setToastMessage(null), 4000);
-      }
-      return;
-    }
-    if (type === "sticker") {
-      try {
+      } else if (type === "sticker") {
         const res = await fetch(`/api/pos/transactions/${transaction.id}/print-stickers`, { method: "POST", headers });
         const data = await res.json();
         if (!res.ok) throw new Error(data.message || data.error || "Print failed");
         setToastMessage("Stickers sent to printer.");
         setTimeout(() => setToastMessage(null), 3000);
-      } catch (e: any) {
-        setToastMessage(e?.message ?? "Print sticker failed");
+      } else {
+        const res = await fetch(`/api/pos/transactions/${transaction.id}/print-order-slip`, { method: "POST", headers });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message || data.error || "Print failed");
+        setToastMessage("Order slip sent to printer.");
         setTimeout(() => setToastMessage(null), 4000);
       }
-      return;
+    } catch (e: any) {
+      const fallback =
+        type === "receipt"
+          ? "Print receipt failed"
+          : type === "sticker"
+            ? "Print sticker failed"
+            : "Order slip print failed";
+      setToastMessage(e?.message ?? fallback);
+      setTimeout(() => setToastMessage(null), 4000);
+    } finally {
+      setPrintBusy(null);
     }
-    console.log(`[Print] ${type} for transaction ${transactionId}`);
-    alert(`Print ${type} - Not implemented yet`);
   }
 
   function handleViewTransactions() {
@@ -477,94 +490,106 @@ export default function TransactionSuccessClient() {
           />
         </div>
 
-        {/* Print Buttons Grid (2x2) */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 24 }}>
+        {/* Print Buttons Grid (2x2) + order slip */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
           {/* Kitchen Button */}
           <button
-            onClick={() => handlePrint("kitchen")}
+            type="button"
+            onClick={() => void handlePrint("kitchen")}
+            disabled={!!printBusy}
             style={{
               padding: "20px",
-              background: "#f97316",
+              background: printBusy ? "#3f3f46" : "#f97316",
               color: "#fff",
               border: "none",
               borderRadius: 8,
-              cursor: "pointer",
+              cursor: printBusy ? "not-allowed" : "pointer",
               fontSize: 16,
               fontWeight: "600",
               display: "flex",
               flexDirection: "column",
               alignItems: "center",
               gap: 8,
+              opacity: printBusy ? 0.7 : 1,
             }}
           >
             <span style={{ fontSize: 24 }}>👨‍🍳</span>
             Kitchen
           </button>
 
-          {/* Order Button */}
+          {/* Print Order Slip — same API as Transactions reprint */}
           <button
-            onClick={() => handlePrint("order")}
+            type="button"
+            onClick={() => void handlePrint("orderSlip")}
+            disabled={!!printBusy}
             style={{
               padding: "20px",
-              background: "#84cc16",
+              background: printBusy ? "#3f3f46" : COLORS.primary,
               color: "#fff",
               border: "none",
               borderRadius: 8,
-              cursor: "pointer",
+              cursor: printBusy ? "not-allowed" : "pointer",
               fontSize: 16,
               fontWeight: "600",
               display: "flex",
               flexDirection: "column",
               alignItems: "center",
               gap: 8,
+              opacity: printBusy ? 0.7 : 1,
             }}
           >
             <span style={{ fontSize: 24 }}>🖨️</span>
-            Order
+            {printBusy === "orderSlip" ? "Printing…" : "Order Slip"}
           </button>
 
           {/* Sticker Button */}
           <button
-            onClick={() => handlePrint("sticker")}
+            type="button"
+            onClick={() => void handlePrint("sticker")}
+            disabled={!!printBusy}
             style={{
               padding: "20px",
-              background: "#06b6d4",
+              background: printBusy ? "#3f3f46" : "#06b6d4",
               color: "#fff",
               border: "none",
               borderRadius: 8,
-              cursor: "pointer",
+              cursor: printBusy ? "not-allowed" : "pointer",
               fontSize: 16,
               fontWeight: "600",
               display: "flex",
               flexDirection: "column",
               alignItems: "center",
               gap: 8,
+              opacity: printBusy ? 0.7 : 1,
             }}
           >
             <span style={{ fontSize: 24 }}>🖨️</span>
-            Sticker
+            {printBusy === "sticker" ? "Printing…" : "Sticker"}
           </button>
 
           {/* Receipt Button */}
           <button
-            onClick={() => handlePrint("receipt")}
+            type="button"
+            onClick={() => void handlePrint("receipt")}
+            disabled={!!printBusy}
             style={{
               padding: "20px",
-              background: COLORS.primary,
+              background: printBusy ? "#3f3f46" : COLORS.primary,
               color: "#fff",
               border: "none",
               borderRadius: 8,
-              cursor: "pointer",
+              cursor: printBusy ? "not-allowed" : "pointer",
               fontSize: 16,
               fontWeight: "600",
               display: "flex",
               flexDirection: "column",
               alignItems: "center",
               gap: 8,
+              opacity: printBusy ? 0.7 : 1,
             }}
           >
             <span style={{ fontSize: 24 }}>🖨️</span>
-            Receipt
+            {printBusy === "receipt" ? "Printing…" : "Receipt"}
           </button>
         </div>
       </div>

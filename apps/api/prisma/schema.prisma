@@ -54,6 +54,8 @@ model StoreConfig {
   splitPaymentEnabled     Boolean  @default(true)
   paymentMethodOrder      String?
   stickerPrintCategoryIds String?  // JSON array of category cloud ids; when set, only lines in these categories print stickers
+  /** JSON array of local Category.id values. When empty/null, all orders appear on KDS; when set, only orders with ≥1 line whose Item.categoryId is in the set. */
+  kitchenDisplayCategoryIds String?
   businessName            String?  // Receipt header; shown at top of receipt
   address                 String?  // Receipt header; each comma becomes a new line
   /** Synced from cloud ReceiptDetails; used with nonVatTin/vatTin to choose TIN line on receipt. */

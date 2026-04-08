@@ -32,3 +32,16 @@ apps/api/prisma/prisma/*.db-journal
 
 # Menu image cache (offline images)
 cache/
+
+# Chrome POS local profile (DO NOT TRACK)
+chrome-pos/
+apps/chrome-customer/
+
+# General browser junk
+*.log
+*.pma
+*.dat
+*.bin
+
+# Cursor IDE (local logs and state)
+.cursor/

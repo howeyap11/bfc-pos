@@ -54,6 +54,11 @@ export default function SettingsClient() {
   const [splitEnabled, setSplitEnabled] = useState(true);
   const [stickerPrintCategoryIds, setStickerPrintCategoryIds] = useState<string[]>([]);
   const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([]);
+  const [kitchenDisplayCategoryIds, setKitchenDisplayCategoryIds] = useState<string[]>([]);
+  const kitchenDisplayBaselineRef = useRef<string[] | null>(null);
+  const [kitchenCategoriesHint, setKitchenCategoriesHint] = useState<string | null>(null);
+  const [savingKitchen, setSavingKitchen] = useState(false);
+  const [kitchenSaveMessage, setKitchenSaveMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -84,6 +89,7 @@ export default function SettingsClient() {
   const [ownerPasswordModal, setOwnerPasswordModal] = useState(false);
   const [ownerPasswordInput, setOwnerPasswordInput] = useState("");
   const [ownerPasswordError, setOwnerPasswordError] = useState("");
+  const verifiedAdminPinRef = useRef("");
   const versionTapCount = useRef(0);
   const versionTapTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [snapResiboEnabled, setSnapResiboEnabled] = useState(false);
@@ -176,10 +182,16 @@ export default function SettingsClient() {
 
   const loadCategories = useCallback(async () => {
     try {
-      const res = await fetch("/api/menu", { cache: "no-store" });
-      const data = await res.json();
-      if (res.ok && Array.isArray(data)) {
-        setCategories(data.map((c: { id: string; name: string }) => ({ id: c.id, name: c.name })));
+      const staff = typeof window !== "undefined" ? localStorage.getItem("bfc_active_staff") : null;
+      const staffKey = staff ? (JSON.parse(staff) as { staffKey?: string }).staffKey : null;
+      const headers: Record<string, string> = {};
+      if (staffKey) headers["x-staff-key"] = staffKey;
+      const res = await fetch("/api/pos/catalog-categories", { cache: "no-store", headers });
+      const data = (await res.json()) as { categories?: Array<{ id: string; name: string }> };
+      if (res.ok && Array.isArray(data.categories)) {
+        setCategories(data.categories.map((c) => ({ id: c.id, name: c.name })));
+      } else {
+        setCategories([]);
       }
     } catch {
       setCategories([]);
@@ -239,6 +251,19 @@ export default function SettingsClient() {
   }, [isAuthenticated, loadStatus, loadPrinters, loadCategories, loadDeviceKeyConfig]);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
+    try {
+      const staff = typeof window !== "undefined" ? localStorage.getItem("bfc_active_staff") : null;
+      const staffKey = staff ? (JSON.parse(staff) as { staffKey?: string }).staffKey?.trim() ?? "" : "";
+      setKitchenCategoriesHint(
+        staffKey ? null : "Log in on Register (staff) on this device so synced categories can load from the POS."
+      );
+    } catch {
+      setKitchenCategoriesHint("Log in on Register (staff) on this device so synced categories can load from the POS.");
+    }
+  }, [isAuthenticated]);
+
+  useEffect(() => {
     if (isAuthenticated && config?.snapResiboEnabled) loadSnapResiboCount();
   }, [isAuthenticated, config?.snapResiboEnabled, loadSnapResiboCount]);
 
@@ -272,6 +297,10 @@ export default function SettingsClient() {
       setSnapResiboPriceCents(data.snapResiboPriceCents ?? "");
       setSnapResiboRewardMinimumCents(data.snapResiboRewardMinimumCents ?? "");
       setQrMenuEnabled(data.qrMenuEnabled !== false);
+      const kRaw = data.kitchenDisplayCategoryIds;
+      const kArr = Array.isArray(kRaw) ? kRaw.filter((x: unknown): x is string => typeof x === "string" && x.trim() !== "") : [];
+      setKitchenDisplayCategoryIds(kArr);
+      kitchenDisplayBaselineRef.current = [...kArr];
     } catch (e: any) {
       setError(e.message || String(e));
     } finally {
@@ -292,6 +321,7 @@ export default function SettingsClient() {
       const data = await res.json();
 
       if (res.ok && data.ok) {
+        verifiedAdminPinRef.current = pinInput;
         sessionStorage.setItem(SETTINGS_ADMIN_UNLOCK_KEY, "1");
         setIsAuthenticated(true);
         setPinError("");
@@ -508,6 +538,52 @@ export default function SettingsClient() {
       setStickerPrintCategoryIds(stickerPrintCategoryIds.filter((id) => id !== categoryId));
     } else {
       setStickerPrintCategoryIds([...stickerPrintCategoryIds, categoryId]);
+    }
+  }
+
+  function toggleKitchenDisplayCategory(id: string) {
+    setKitchenDisplayCategoryIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  const kitchenDirty =
+    kitchenDisplayBaselineRef.current != null &&
+    JSON.stringify([...kitchenDisplayCategoryIds].sort()) !==
+      JSON.stringify([...(kitchenDisplayBaselineRef.current ?? [])].sort());
+
+  async function handleSaveKitchenDisplay() {
+    const pin = verifiedAdminPinRef.current.trim();
+    if (!pin) {
+      setKitchenSaveMessage({
+        type: "error",
+        text: "Admin PIN session missing. Refresh this page, unlock settings again, then save.",
+      });
+      return;
+    }
+    setSavingKitchen(true);
+    setKitchenSaveMessage(null);
+    try {
+      const res = await fetch("/api/store-config/kitchen-display", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ adminPin: pin, kitchenDisplayCategoryIds: kitchenDisplayCategoryIds }),
+      });
+      const data = (await res.json()) as { ok?: boolean; kitchenDisplayCategoryIds?: string[]; message?: string; error?: string };
+      if (!res.ok) throw new Error(data.message || data.error || "Save failed");
+      const saved = Array.isArray(data.kitchenDisplayCategoryIds) ? data.kitchenDisplayCategoryIds : kitchenDisplayCategoryIds;
+      setKitchenDisplayCategoryIds(saved);
+      kitchenDisplayBaselineRef.current = [...saved];
+      setKitchenSaveMessage({
+        type: "success",
+        text:
+          saved.length === 0
+            ? "Kitchen display shows all orders (no category filter)."
+            : "Saved. Kitchen display will filter tickets by these categories.",
+      });
+      setTimeout(() => setKitchenSaveMessage(null), 5000);
+    } catch (e: unknown) {
+      setKitchenSaveMessage({ type: "error", text: e instanceof Error ? e.message : "Save failed" });
+    } finally {
+      setSavingKitchen(false);
     }
   }
 
@@ -1329,8 +1405,80 @@ export default function SettingsClient() {
                   ))}
                 </div>
                 {categories.length === 0 && !loading && (
-                  <p style={{ fontSize: 13, color: COLORS.textSecondary }}>No categories (sync menu first).</p>
+                  <p style={{ fontSize: 13, color: COLORS.textSecondary }}>
+                    No categories yet — use catalog sync (above) and sign in at Register so categories load from the POS database.
+                  </p>
                 )}
+              </div>
+
+              <div style={{ marginBottom: 24, paddingTop: 24, borderTop: `1px solid ${COLORS.borderLight}` }}>
+                <h3 style={{ fontSize: 16, marginBottom: 12, color: COLORS.textSecondary }}>Kitchen display categories</h3>
+                <p style={{ color: COLORS.textSecondary, marginBottom: 12, fontSize: 14, lineHeight: 1.5 }}>
+                  Only tickets that include at least one item from a selected synced category appear on Kitchen Display. Leave none
+                  selected to show every ticket. Uses the same cloud-synced category list as the rest of the POS catalog.
+                </p>
+                {kitchenCategoriesHint && (
+                  <p style={{ fontSize: 13, color: COLORS.warning, marginBottom: 12 }}>{kitchenCategoriesHint}</p>
+                )}
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {categories.map((cat) => (
+                    <label
+                      key={`k-${cat.id}`}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        padding: "8px 12px",
+                        background: kitchenDisplayCategoryIds.includes(cat.id) ? "rgba(13,148,136,0.25)" : COLORS.bgDark,
+                        border: `2px solid ${kitchenDisplayCategoryIds.includes(cat.id) ? "#0d9488" : COLORS.borderLight}`,
+                        borderRadius: 6,
+                        cursor: "pointer",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={kitchenDisplayCategoryIds.includes(cat.id)}
+                        onChange={() => toggleKitchenDisplayCategory(cat.id)}
+                        style={{ width: 18, height: 18, marginRight: 8, cursor: "pointer" }}
+                      />
+                      <span style={{ fontWeight: "500", color: COLORS.textPrimary }}>{cat.name}</span>
+                    </label>
+                  ))}
+                </div>
+                {categories.length === 0 && !loading && (
+                  <p style={{ fontSize: 13, color: COLORS.textSecondary, marginTop: 8 }}>
+                    Categories load from the local synced catalog (same source as sticker categories above).
+                  </p>
+                )}
+                {kitchenSaveMessage && (
+                  <p
+                    style={{
+                      marginTop: 12,
+                      fontSize: 14,
+                      fontWeight: 600,
+                      color: kitchenSaveMessage.type === "success" ? COLORS.success : COLORS.error,
+                    }}
+                  >
+                    {kitchenSaveMessage.text}
+                  </p>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void handleSaveKitchenDisplay()}
+                  disabled={savingKitchen || !kitchenDirty}
+                  style={{
+                    marginTop: 14,
+                    padding: "12px 20px",
+                    fontSize: 15,
+                    fontWeight: 700,
+                    background: kitchenDirty ? "#0d9488" : COLORS.bgDark,
+                    color: kitchenDirty ? "#fff" : COLORS.textMuted,
+                    border: `2px solid ${kitchenDirty ? "#0d9488" : COLORS.borderLight}`,
+                    borderRadius: 6,
+                    cursor: savingKitchen ? "wait" : kitchenDirty ? "pointer" : "not-allowed",
+                  }}
+                >
+                  {savingKitchen ? "Saving…" : "Save kitchen categories"}
+                </button>
               </div>
 
               <div style={{ display: "flex", gap: 12 }}>

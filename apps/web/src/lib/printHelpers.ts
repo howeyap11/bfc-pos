@@ -46,6 +46,10 @@ export type LineItemDisplayInput = {
   optionsJson?: string | null;
   baseType?: string | null;
   sizeLabel?: string | null;
+  /** When false, hide structured size (direct fields + optionsJson type "size"). */
+  catalogAllowsStructuredSize?: boolean;
+  /** When false, hide optionsJson type "shots". */
+  catalogAllowsShots?: boolean;
 };
 
 /** Parse item for display: size/temp from either shape, then optionsJson for milk, shots, add-ons. Exported for reuse (e.g. register summary). */
@@ -53,7 +57,9 @@ export function lineItemDisplayParts(item: LineItemDisplayInput): {
   primary: string;
   secondary: string[];
 } {
-  const primary = formatSizeTempLine(extractSizeTemp(item));
+  const allowSz = item.catalogAllowsStructuredSize !== false;
+  const allowShot = item.catalogAllowsShots !== false;
+  const primary = allowSz ? formatSizeTempLine(extractSizeTemp(item)) : "";
   const secondary: string[] = [];
   if (!item.optionsJson) return { primary, secondary };
   try {
@@ -66,13 +72,13 @@ export function lineItemDisplayParts(item: LineItemDisplayInput): {
     }>;
     for (const o of opts) {
       if (o.type === "size") {
-        // already in primary via extractSizeTemp
+        // Primary uses extractSizeTemp when allowSz; never surface type:size for !allowSz
       } else if (o.type === "milk" && o.choice) {
         const label =
           o.choice === "OAT" ? "Oat milk" : o.choice === "SOY" ? "Soy milk" : o.choice === "ALMOND" ? "Almond milk" : "Full cream";
         secondary.push(label);
       } else if (o.type === "shots" && o.qty != null) {
-        secondary.push(`${o.qty} shot${o.qty !== 1 ? "s" : ""}`);
+        if (allowShot) secondary.push(`${o.qty} shot${o.qty !== 1 ? "s" : ""}`);
       } else if (!o.type && o.name) {
         secondary.push(o.name);
       }

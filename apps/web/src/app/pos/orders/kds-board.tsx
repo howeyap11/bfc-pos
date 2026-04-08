@@ -2,7 +2,11 @@
 
 import { useMemo } from "react";
 import { COLORS } from "@/lib/theme";
-import { lineItemDisplayParts } from "@/lib/printHelpers";
+import {
+  formatPendingTransactionLine,
+  formatQrOrderLine,
+  transactionTypeUi,
+} from "@/lib/orderLineDisplay";
 import type { PendingItem, PendingTransactionLineItem, PosOrder } from "./kitchen-types";
 
 const COL_NEW = "#1e3a5f";
@@ -25,38 +29,6 @@ function formatElapsed(createdAt: string): string {
   const mm = m % 60;
   if (h <= 0) return `${mm}m`;
   return `${h}h ${mm}m`;
-}
-
-function groupItemsByCategory(
-  items: PosOrder["items"]
-): [string, PosOrder["items"]][] {
-  const map = new Map<string, PosOrder["items"]>();
-  const order: string[] = [];
-  for (const li of items) {
-    const name = (li.item?.category?.name ?? "").trim() || "Other";
-    if (!map.has(name)) {
-      map.set(name, []);
-      order.push(name);
-    }
-    map.get(name)!.push(li);
-  }
-  return order.map((name) => [name, map.get(name)!]);
-}
-
-function groupTransactionLinesByCategory(
-  lineItems: PendingTransactionLineItem[]
-): [string, PendingTransactionLineItem[]][] {
-  const map = new Map<string, PendingTransactionLineItem[]>();
-  const order: string[] = [];
-  for (const li of lineItems) {
-    const name = (li.item?.category?.name ?? li.categoryName ?? "").trim() || "Other";
-    if (!map.has(name)) {
-      map.set(name, []);
-      order.push(name);
-    }
-    map.get(name)!.push(li);
-  }
-  return order.map((name) => [name, map.get(name)!]);
 }
 
 function orderKitchenColumn(order: PosOrder): 0 | 1 | 2 {
@@ -112,45 +84,8 @@ export default function KdsBoard({
   }, [pendingItems]);
 
   function renderOrderLines(order: PosOrder) {
-    const groups = groupItemsByCategory(order.items);
-    return groups.map(([cat, items]) => (
-      <div key={cat} style={{ marginBottom: 14 }}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: COLORS.textSecondary, letterSpacing: 1, marginBottom: 8 }}>{cat}</div>
-        {items.map((li) => (
-          <div
-            key={li.id}
-            style={{
-              padding: "12px 14px",
-              marginBottom: 8,
-              background: "rgba(0,0,0,0.35)",
-              borderRadius: 10,
-              border: "1px solid rgba(255,255,255,0.08)",
-            }}
-          >
-            <div style={{ fontSize: 22, fontWeight: 700, color: "#fff", lineHeight: 1.25 }}>
-              <span style={{ color: COLORS.primary, marginRight: 8 }}>{li.qty}×</span>
-              {li.item?.name ?? "Item"}
-            </div>
-            {li.options.length > 0 && (
-              <div style={{ fontSize: 17, color: "#cbd5e1", marginTop: 6, lineHeight: 1.35 }}>
-                {li.options.map((x) => x.option?.name).filter(Boolean).join(" · ")}
-              </div>
-            )}
-            {li.lineNote && (
-              <div style={{ fontSize: 18, fontWeight: 600, color: "#fcd34d", marginTop: 8, padding: 10, background: "rgba(251,191,36,0.12)", borderRadius: 8 }}>
-                Note: {li.lineNote}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-    ));
-  }
-
-  function renderTxLines(lines: PendingTransactionLineItem[]) {
-    return lines.map((li) => {
-      const { primary, secondary } = lineItemDisplayParts({ optionsJson: li.optionsJson });
-      const addons = [primary, ...secondary].filter(Boolean).join(" · ");
+    return order.items.map((li) => {
+      const { qtyLine, nameWithSizeTemp, detailLine } = formatQrOrderLine(li);
       return (
         <div
           key={li.id}
@@ -162,13 +97,77 @@ export default function KdsBoard({
             border: "1px solid rgba(255,255,255,0.08)",
           }}
         >
-          <div style={{ fontSize: 22, fontWeight: 700, color: "#fff", lineHeight: 1.25 }}>{li.displayLabel}</div>
+          <div style={{ fontSize: 19, fontWeight: 800, color: "#fff", lineHeight: 1.3 }}>
+            <span style={{ color: COLORS.primary, marginRight: 8 }}>{qtyLine}</span>
+          </div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: "#fff", lineHeight: 1.25, marginTop: 4 }}>{nameWithSizeTemp}</div>
+          {detailLine ? (
+            <div style={{ fontSize: 17, color: "#cbd5e1", marginTop: 6, lineHeight: 1.35 }}>{detailLine}</div>
+          ) : null}
+          {li.lineNote && (
+            <div
+              style={{
+                fontSize: 18,
+                fontWeight: 600,
+                color: "#fcd34d",
+                marginTop: 8,
+                padding: 10,
+                background: "rgba(251,191,36,0.12)",
+                borderRadius: 8,
+              }}
+            >
+              Note: {li.lineNote}
+            </div>
+          )}
+        </div>
+      );
+    });
+  }
+
+  function renderTxLines(lines: PendingTransactionLineItem[], serviceType?: string | null) {
+    const tt = serviceType ? transactionTypeUi(serviceType) : null;
+    return lines.map((li) => {
+      const { qtyLine, nameWithSizeTemp, detailLine } = formatPendingTransactionLine(li);
+      const showMeta = Boolean(detailLine || tt);
+      return (
+        <div
+          key={li.id}
+          style={{
+            padding: "12px 14px",
+            marginBottom: 8,
+            background: "rgba(0,0,0,0.35)",
+            borderRadius: 10,
+            border: "1px solid rgba(255,255,255,0.08)",
+          }}
+        >
+          <div style={{ fontSize: 19, fontWeight: 800, color: "#fff", lineHeight: 1.3 }}>
+            <span style={{ color: COLORS.primary, marginRight: 8 }}>{qtyLine}</span>
+          </div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: "#fff", lineHeight: 1.25, marginTop: 4 }}>{nameWithSizeTemp}</div>
           {li.customerName && (
             <div style={{ fontSize: 20, fontWeight: 600, color: "#93c5fd", marginTop: 4 }}>{li.customerName}</div>
           )}
-          {addons && <div style={{ fontSize: 17, color: "#cbd5e1", marginTop: 6 }}>{addons}</div>}
+          {showMeta && (
+            <div style={{ fontSize: 17, color: "#cbd5e1", marginTop: 6, lineHeight: 1.35 }}>
+              {detailLine}
+              {detailLine && tt ? <span> · </span> : null}
+              {tt ? (
+                <span style={{ color: "#fff", fontWeight: 800 }}>{tt.label}</span>
+              ) : null}
+            </div>
+          )}
           {(li.lineNote || li.specialInstructions) && (
-            <div style={{ fontSize: 18, fontWeight: 600, color: "#fcd34d", marginTop: 8, padding: 10, background: "rgba(251,191,36,0.12)", borderRadius: 8 }}>
+            <div
+              style={{
+                fontSize: 18,
+                fontWeight: 600,
+                color: "#fcd34d",
+                marginTop: 8,
+                padding: 10,
+                background: "rgba(251,191,36,0.12)",
+                borderRadius: 8,
+              }}
+            >
               {li.lineNote && <span>Note: {li.lineNote}</span>}
               {li.lineNote && li.specialInstructions && " · "}
               {li.specialInstructions && <span>Prep: {li.specialInstructions}</span>}
@@ -273,14 +272,7 @@ export default function KdsBoard({
         <div style={{ fontSize: 15, fontWeight: 600, color: COLORS.textSecondary }}>Receipt · {tx.source}</div>
         {tx.createdBy && <div style={{ fontSize: 20, fontWeight: 600, color: "#a5b4fc" }}>{tx.createdBy}</div>}
         {tableLabel && <div style={{ fontSize: 24, fontWeight: 700, color: "#fff" }}>Table {tableLabel}</div>}
-        <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
-          {groupTransactionLinesByCategory(tx.lineItems).map(([cat, lines]) => (
-            <div key={cat} style={{ marginBottom: 14 }}>
-              <div style={{ fontSize: 13, fontWeight: 800, color: COLORS.textSecondary, letterSpacing: 1, marginBottom: 8 }}>{cat}</div>
-              {renderTxLines(lines)}
-            </div>
-          ))}
-        </div>
+        <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>{renderTxLines(tx.lineItems, tx.serviceType ?? null)}</div>
         <button
           type="button"
           disabled={busy}
@@ -315,40 +307,42 @@ export default function KdsBoard({
         WebkitOverflowScrolling: "touch",
       }}
     >
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(3, minmax(min(100%, 300px), 1fr))",
-        gap: 16,
-        minHeight: "100%",
-        alignContent: "start",
-      }}
-    >
-      {columns.map((items, i) => (
-        <div key={titles[i]} style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
-          <div
-            style={{
-              position: "sticky",
-              top: 0,
-              zIndex: 1,
-              padding: "12px 8px",
-              background: COLORS.bgDarkest,
-              borderBottom: `3px solid ${i === 0 ? COL_NEW : i === 1 ? COL_PREP : COL_READY}`,
-            }}
-          >
-            <h2 style={{ margin: 0, fontSize: 26, fontWeight: 800, color: "#fff" }}>{titles[i]}</h2>
-            <div style={{ fontSize: 16, color: COLORS.textSecondary, marginTop: 4 }}>{items.length} ticket{items.length !== 1 ? "s" : ""}</div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(3, minmax(min(100%, 300px), 1fr))",
+          gap: 16,
+          minHeight: "100%",
+          alignContent: "start",
+        }}
+      >
+        {columns.map((items, i) => (
+          <div key={titles[i]} style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
+            <div
+              style={{
+                position: "sticky",
+                top: 0,
+                zIndex: 1,
+                padding: "12px 8px",
+                background: COLORS.bgDarkest,
+                borderBottom: `3px solid ${i === 0 ? COL_NEW : i === 1 ? COL_PREP : COL_READY}`,
+              }}
+            >
+              <h2 style={{ margin: 0, fontSize: 26, fontWeight: 800, color: "#fff" }}>{titles[i]}</h2>
+              <div style={{ fontSize: 16, color: COLORS.textSecondary, marginTop: 4 }}>
+                {items.length} ticket{items.length !== 1 ? "s" : ""}
+              </div>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 16, paddingBottom: 24 }}>
+              {items.length === 0 ? (
+                <div style={{ padding: 24, textAlign: "center", color: COLORS.textSecondary, fontSize: 18 }}>—</div>
+              ) : (
+                items.map((item) => renderCard(item, i as 0 | 1 | 2))
+              )}
+            </div>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 16, paddingBottom: 24 }}>
-            {items.length === 0 ? (
-              <div style={{ padding: 24, textAlign: "center", color: COLORS.textSecondary, fontSize: 18 }}>—</div>
-            ) : (
-              items.map((item) => renderCard(item, i as 0 | 1 | 2))
-            )}
-          </div>
-        </div>
-      ))}
-    </div>
+        ))}
+      </div>
     </div>
   );
 }

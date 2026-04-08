@@ -26,6 +26,7 @@ import {
   resolveChargeableExtraShots,
 } from "@/lib/shotHelpers";
 import { resolveInitialHasSizesModeAndSize } from "@/lib/posItemInitialSize";
+import { isDrinkLineStillAllowed, type ItemDetailForDrinkGuard } from "@/lib/posDrinkCartGuard";
 import { enqueueSyncItem, addSyncQueueUpdatedListener } from "@/lib/syncQueue";
 
 /**
@@ -178,6 +179,10 @@ type CartItem = {
   note?: string; // Discount note — audit only, not printed on sticker
   specialInstructions?: string; // Special instructions — printed on sticker for bar prep
   customerName?: string; // Per-item name for cup/sticker (left of temp/size)
+  /** From catalog: item has CloudMenuItem.hasSizes + sizesByMode (structured drink sizes). */
+  catalogAllowsStructuredSize?: boolean;
+  /** From catalog: CloudMenuItem.supportsShots */
+  catalogAllowsShots?: boolean;
 };
 
 function toPosServiceType(code: string | undefined): PosServiceType {
@@ -1375,7 +1380,10 @@ function formatLineItemModifiers(item: CartItem & { optionsJson?: string | null 
   const primaryParts: string[] = []; // Bold/prominent (size, temp)
   const secondaryParts: string[] = []; // Regular text (milk sub, shots, extras)
 
-  const sizeTemp = extractSizeTemp(item);
+  const allowStructuredSize = item.catalogAllowsStructuredSize !== false;
+  const allowShots = item.catalogAllowsShots !== false;
+
+  const sizeTemp = allowStructuredSize ? extractSizeTemp(item) : { temp: "", size: "" };
   let sizeText = sizeTemp.size;
   let tempText = sizeTemp.temp;
 
@@ -1395,7 +1403,19 @@ function formatLineItemModifiers(item: CartItem & { optionsJson?: string | null 
   const iceParts: string[] = [];
   const otherParts: string[] = [];
 
-  if (!sizeText || !tempText) {
+  if (!allowStructuredSize) {
+    item.selectedOptions?.forEach((opt) => {
+      const groupName = (opt.groupName ?? "").toUpperCase();
+      const optName = (opt.name ?? "").toUpperCase();
+      if (isTempGroup(groupName) || isSizeGroup(groupName) || optName.includes("OZ")) return;
+      const name = opt.name;
+      if (!name) return;
+      if (isSweetnessGroup(groupName)) sweetnessParts.push(name);
+      else if (isIceGroup(groupName) || isIceName(name)) iceParts.push(name);
+      else if (isAddOnGroup(groupName) || /SYRUP|SAUCE|ICE CREAM|WHIPPED|CREAM|DRIZZLE/.test(optName)) addOnParts.push(name);
+      else otherParts.push(name);
+    });
+  } else if (!sizeText || !tempText) {
     item.selectedOptions?.forEach((opt) => {
       const optName = (opt.name ?? "").toUpperCase();
       const groupName = (opt.groupName ?? "").trim().toUpperCase();
@@ -1439,8 +1459,8 @@ function formatLineItemModifiers(item: CartItem & { optionsJson?: string | null 
     secondaryParts.push(milkLabel);
   }
 
-  // 3) Shots: always show when item supports shots
-  if (item.shotsQty !== undefined && item.shotsQty >= 0) {
+  // 3) Shots: only when catalog allows shots
+  if (allowShots && item.shotsQty !== undefined && item.shotsQty >= 0) {
     const shotsText = `${item.shotsQty} shot${item.shotsQty !== 1 ? "s" : ""}`;
     const isDefault = item.defaultShotsForSize !== undefined && item.shotsQty === item.defaultShotsForSize;
     secondaryParts.push(isDefault ? shotsText : `**${shotsText}**`);
@@ -2152,6 +2172,46 @@ export default function PosRegisterClient() {
     }
   }
 
+  async function assertCartMatchesSyncedDrinkMenu(
+    cartItems: CartItem[]
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
+    const needIds = [
+      ...new Set(
+        cartItems
+          .filter(
+            (ci) =>
+              ci.baseType &&
+              ci.sizeLabel != null &&
+              String(ci.sizeLabel).trim() !== ""
+          )
+          .map((ci) => ci.itemId)
+      ),
+    ];
+    if (needIds.length === 0) return { ok: true };
+
+    const details: ItemDetailForDrinkGuard[] = await Promise.all(
+      needIds.map(async (id) => fetchJson(`/api/items/${id}`, { cache: "no-store" }) as Promise<ItemDetailForDrinkGuard>)
+    );
+    const detailById = new Map(details.map((d) => [d.id, d]));
+    for (const line of cartItems) {
+      if (!line.baseType || line.sizeLabel == null || String(line.sizeLabel).trim() === "") continue;
+      const d = detailById.get(line.itemId);
+      if (!d) {
+        return {
+          ok: false,
+          message: `Menu changed: could not reload "${line.itemName}". Remove it from the cart and add it again.`,
+        };
+      }
+      if (!isDrinkLineStillAllowed(line, d)) {
+        return {
+          ok: false,
+          message: `Menu changed: ${line.itemName} is no longer available as ${line.baseType} / ${line.sizeLabel}. Remove the line or pick a valid temperature and size.`,
+        };
+      }
+    }
+    return { ok: true };
+  }
+
   async function queueOfflineTransactionSync(params: {
     txBody: Record<string, unknown>;
     payments: Array<{ method: string; amountCents: number }>;
@@ -2308,12 +2368,14 @@ export default function PosRegisterClient() {
               group.options[0];
             if (modeOpt) defaults[group.id] = [modeOpt.id];
           } else {
-            const icedOption = group.options.find((o) => o.name.toLowerCase().includes("iced"));
-            if (icedOption) {
-              defaults[group.id] = [icedOption.id];
+            const byDefault = group.options.find((o) => o.isDefault);
+            if (byDefault) {
+              defaults[group.id] = [byDefault.id];
             } else {
-              const defaultOpts = group.options.filter((o) => o.isDefault).map((o) => o.id);
-              if (defaultOpts.length > 0) defaults[group.id] = defaultOpts;
+              const hotOption = group.options.find((o) => /\bhot\b/i.test(o.name ?? ""));
+              const icedOption = group.options.find((o) => /\biced\b/i.test(o.name ?? ""));
+              const pick = hotOption ?? icedOption ?? group.options[0];
+              if (pick) defaults[group.id] = [pick.id];
             }
           }
         } else if (groupNameLower.includes("size")) {
@@ -2616,7 +2678,15 @@ export default function PosRegisterClient() {
     if (configuringItem.hasSizes && configuringItem.sizesByMode) {
       if (!configBaseType || !configSizeOption) return;
       const sizeEntry = configuringItem.sizesByMode[configBaseType]?.find((s) => s.id === configSizeOption.id);
-      const unitPrice = sizeEntry?.priceCents ?? configuringItem.basePrice;
+      if (!sizeEntry) {
+        console.warn("[addToCart] Rejected: size not allowed for this temperature", {
+          itemId: configuringItem.id,
+          baseType: configBaseType,
+          sizeId: configSizeOption.id,
+        });
+        return;
+      }
+      const unitPrice = sizeEntry.priceCents ?? configuringItem.basePrice;
       const selectedSubstituteForQuickAdd = configuringItem.substitutes?.length && selectedSubstituteId
         ? configuringItem.substitutes.find((s) => s.id === selectedSubstituteId)
         : null;
@@ -2661,13 +2731,14 @@ export default function PosRegisterClient() {
         const delta = selectedPrice - defaultPriceForDelta;
         optionTotalCentsHasSizes += delta;
       }
+      const lineShotsQtyHasSizes = configuringItem.supportsShots ? configShotsQty : 0;
       const includedShotsHasSizes = resolveIncludedShots({
         item: configuringItem,
         selectedSizeId: configSizeOption.id,
         selectedTemp: configBaseType,
       });
       const shotsUpchargeHasSizes = calculateShotsUpcharge(
-        configShotsQty,
+        lineShotsQtyHasSizes,
         configuringItem.shotsPricingMode,
         includedShotsHasSizes,
         configuringItem.shotPricingRule
@@ -2675,7 +2746,7 @@ export default function PosRegisterClient() {
       debugShotPricing({
         context: "hasSizes",
         itemName: configuringItem.name,
-        shotCount: configShotsQty,
+        shotCount: lineShotsQtyHasSizes,
         includedShots: includedShotsHasSizes,
         shotPricingRule: configuringItem.shotPricingRule,
         computedShotTotalCents: shotsUpchargeHasSizes,
@@ -2693,11 +2764,13 @@ export default function PosRegisterClient() {
         qty: configQty,
         baseType: configBaseType,
         sizeLabel: configSizeOption.name,
+        catalogAllowsStructuredSize: true,
+        catalogAllowsShots: configuringItem.supportsShots === true,
         selectedOptions: optsHasSizes,
         milkChoice: selectedSubstituteForQuickAdd?.name,
         selectedSubstituteCloudId: selectedSubstituteForQuickAdd?.id,
         defaultMilk: configuringItem.substitutes && configuringItem.substitutes.length > 0 ? configuringItem.defaultMilk : undefined,
-        shotsQty: configShotsQty,
+        shotsQty: lineShotsQtyHasSizes,
         defaultShotsForSize: includedShotsHasSizes,
         shotsUpchargeCents: shotsUpchargeHasSizes,
         transactionTypeCode: toPosServiceType(configTransactionType?.code),
@@ -2807,8 +2880,9 @@ export default function PosRegisterClient() {
           selectedSizeId: selectedSize?.id,
           sizeName: selectedSize?.name,
         });
+    const lineShotsQtyNoSizes = configuringItem.supportsShots ? configShotsQty : 0;
     const shotsUpchargeCents = calculateShotsUpcharge(
-      configShotsQty,
+      lineShotsQtyNoSizes,
       configuringItem.shotsPricingMode,
       includedShotsNoSizes,
       configuringItem.shotPricingRule
@@ -2816,7 +2890,7 @@ export default function PosRegisterClient() {
     debugShotPricing({
       context: "noSizes",
       itemName: configuringItem.name,
-      shotCount: configShotsQty,
+      shotCount: lineShotsQtyNoSizes,
       includedShots: includedShotsNoSizes,
       shotPricingRule: configuringItem.shotPricingRule,
       computedShotTotalCents: shotsUpchargeCents,
@@ -2838,13 +2912,15 @@ export default function PosRegisterClient() {
       itemName: configuringItem.name,
       basePrice: configuringItem.basePrice,
       qty: configQty,
+      catalogAllowsStructuredSize: !!(configuringItem.hasSizes && configuringItem.sizesByMode),
+      catalogAllowsShots: configuringItem.supportsShots === true,
       ...(derivedBaseType && { baseType: derivedBaseType }),
       ...(derivedSizeLabel && { sizeLabel: derivedSizeLabel }),
       selectedOptions: opts,
       milkChoice: selectedSubstitute?.name,
       selectedSubstituteCloudId: selectedSubstitute?.id,
       defaultMilk: configuringItem.substitutes && configuringItem.substitutes.length > 0 ? configuringItem.defaultMilk : undefined,
-      shotsQty: configShotsQty,
+      shotsQty: lineShotsQtyNoSizes,
       defaultShotsForSize: includedShotsNoSizes,
       shotsUpchargeCents, // Snapshot the calculated upcharge
       transactionTypeCode: toPosServiceType(configTransactionType?.code),
@@ -3003,6 +3079,20 @@ export default function PosRegisterClient() {
     } catch {
       // ignore
     }
+
+    const staffKey = activeStaff?.staffKey?.trim();
+    if (staffKey) {
+      void fetch("/api/pos/customer-display/state", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-staff-key": staffKey,
+        },
+        body: JSON.stringify(snapshot),
+      }).catch(() => {
+        // non-blocking; kiosk sync uses API when available
+      });
+    }
   }, [
     registerView,
     configuringItem,
@@ -3018,6 +3108,7 @@ export default function PosRegisterClient() {
     cart,
     cartPanelMode,
     lastAddedForDisplay,
+    activeStaff?.staffKey,
   ]);
 
   async function handleCheckout() {
@@ -3028,6 +3119,12 @@ export default function PosRegisterClient() {
     }
 
     if (cart.length === 0) return;
+
+    const drinkGuard = await assertCartMatchesSyncedDrinkMenu(cart);
+    if (!drinkGuard.ok) {
+      setError(drinkGuard.message);
+      return;
+    }
 
     setBusy(true);
     setError(null);
@@ -3054,6 +3151,11 @@ export default function PosRegisterClient() {
         e?.message?.toLowerCase().includes("network") ||
         e?.name === "TypeError";
       if (isNetworkError) {
+        const offlineGuard = await assertCartMatchesSyncedDrinkMenu(cart);
+        if (!offlineGuard.ok) {
+          setError(offlineGuard.message);
+          return;
+        }
         const totalCents = calculateTotal();
         const paymentAmountCents = Math.round((parseFloat(amountReceivedPesos) || 0) * 100);
         const hasPayment = paymentAmountCents > 0 || paymentMethod === "CASH";
@@ -3257,6 +3359,14 @@ export default function PosRegisterClient() {
 
       console.log("[SplitPayment] Starting charge with", payments.length, "payments");
 
+      const splitDrinkGuard = await assertCartMatchesSyncedDrinkMenu(cart);
+      if (!splitDrinkGuard.ok) {
+        setError(splitDrinkGuard.message);
+        setShowSplitPaymentModal(false);
+        setBusy(false);
+        return;
+      }
+
       // Build headers - only include x-staff-key if valid
       const buildHeaders = () => {
         console.log("[SplitPayment] Building headers - activeStaff state:", {
@@ -3355,6 +3465,13 @@ export default function PosRegisterClient() {
         e?.message?.toLowerCase().includes("network") ||
         e?.name === "TypeError";
       if (isNetworkError) {
+        const splitOfflineGuard = await assertCartMatchesSyncedDrinkMenu(cart);
+        if (!splitOfflineGuard.ok) {
+          setError(splitOfflineGuard.message);
+          setShowSplitPaymentModal(false);
+          setBusy(false);
+          return;
+        }
         const serviceType = cart[0]?.transactionTypeCode ?? "FOR_HERE";
         const body = buildCreateTransactionBody({ cart, discountCents: 0, serviceType, ...(qrOrderId && { orderId: qrOrderId }) });
         await queueOfflineTransactionSync({
@@ -3402,6 +3519,12 @@ export default function PosRegisterClient() {
     const hasValidStaff = await requireStaffForPayment();
     if (!hasValidStaff) {
       console.warn("[PAY] Staff authentication required - aborting");
+      return;
+    }
+
+    const payDrinkGuard = await assertCartMatchesSyncedDrinkMenu(cart);
+    if (!payDrinkGuard.ok) {
+      setError(payDrinkGuard.message);
       return;
     }
 
@@ -3536,6 +3659,12 @@ export default function PosRegisterClient() {
         err?.message?.toLowerCase().includes("fetch") ||
         err?.message?.toLowerCase().includes("network");
       if (isNetworkError && !err?.code) {
+        const finalizeOfflineGuard = await assertCartMatchesSyncedDrinkMenu(cartSnapshot);
+        if (!finalizeOfflineGuard.ok) {
+          setError(finalizeOfflineGuard.message);
+          setBusy(false);
+          return;
+        }
         const offlineTotalCents = calculateTotal();
         const txBody = buildCreateTransactionBody({
           cart: cartSnapshot,
@@ -5644,6 +5773,8 @@ function TransactionSuccessPanel({
     receiptBirSerialNo?: string | null;
   } | null;
 }) {
+  const [printBusy, setPrintBusy] = useState<"receipt" | "sticker" | "orderSlip" | null>(null);
+
   console.log("[SUCCESS PANEL RENDER]", { transaction });
 
   // Guard: Ensure transaction exists
@@ -5777,15 +5908,19 @@ function TransactionSuccessPanel({
       </div>
 
       {/* Print Buttons - UTAK Style (ABOVE items). Work offline from local data when queued. */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
         <button
+          type="button"
+          disabled={!!printBusy}
           onClick={async () => {
+            if (printBusy) return;
             if (isQueuedOffline) {
               handlePrintFromLocal("receipt");
               return;
             }
             const headers: Record<string, string> = {};
             if (activeStaff?.staffKey?.trim()) headers["x-staff-key"] = activeStaff.staffKey.trim();
+            setPrintBusy("receipt");
             try {
               const res = await fetch(`/api/pos/transactions/${transaction.id}/print-receipt`, {
                 method: "POST",
@@ -5804,29 +5939,35 @@ function TransactionSuccessPanel({
               }
             } catch (e: any) {
               alert(e?.message ?? "Print receipt failed");
+            } finally {
+              setPrintBusy(null);
             }
           }}
           style={{
             padding: "12px",
             fontSize: 13,
             fontWeight: "600",
-            background: "#3a3a3a",
+            background: printBusy ? "#2a2a2a" : "#3a3a3a",
             color: "#fff",
             border: "1px solid #4a4a4a",
             borderRadius: 6,
-            cursor: "pointer",
+            cursor: printBusy ? "not-allowed" : "pointer",
           }}
         >
-          🧾 Receipt
+          {printBusy === "receipt" ? "Printing…" : "🧾 Receipt"}
         </button>
         <button
+          type="button"
+          disabled={!!printBusy}
           onClick={async () => {
+            if (printBusy) return;
             if (isQueuedOffline) {
               handlePrintFromLocal("sticker");
               return;
             }
             const headers: Record<string, string> = {};
             if (activeStaff?.staffKey?.trim()) headers["x-staff-key"] = activeStaff.staffKey.trim();
+            setPrintBusy("sticker");
             try {
               const res = await fetch(`/api/pos/transactions/${transaction.id}/print-stickers`, {
                 method: "POST",
@@ -5837,20 +5978,57 @@ function TransactionSuccessPanel({
               alert("Stickers sent to printer.");
             } catch (e: any) {
               alert(e?.message ?? "Print sticker failed");
+            } finally {
+              setPrintBusy(null);
             }
           }}
           style={{
             padding: "12px",
             fontSize: 13,
             fontWeight: "600",
-            background: "#3a3a3a",
+            background: printBusy ? "#2a2a2a" : "#3a3a3a",
             color: "#fff",
             border: "1px solid #4a4a4a",
             borderRadius: 6,
-            cursor: "pointer",
+            cursor: printBusy ? "not-allowed" : "pointer",
           }}
         >
-          🏷️ Sticker
+          {printBusy === "sticker" ? "Printing…" : "🏷️ Sticker"}
+        </button>
+        <button
+          type="button"
+          disabled={!!printBusy}
+          onClick={async () => {
+            if (printBusy) return;
+            const headers: Record<string, string> = {};
+            if (activeStaff?.staffKey?.trim()) headers["x-staff-key"] = activeStaff.staffKey.trim();
+            setPrintBusy("orderSlip");
+            try {
+              const res = await fetch(`/api/pos/transactions/${transaction.id}/print-order-slip`, {
+                method: "POST",
+                headers,
+              });
+              const data = await res.json();
+              if (!res.ok) throw new Error(data.message || data.error || "Print failed");
+              alert("Order slip sent to printer.");
+            } catch (e: any) {
+              alert(e?.message ?? "Order slip print failed");
+            } finally {
+              setPrintBusy(null);
+            }
+          }}
+          style={{
+            padding: "12px",
+            fontSize: 13,
+            fontWeight: "600",
+            background: printBusy ? "#2a2a2a" : "#3a3a3a",
+            color: "#fff",
+            border: "1px solid #4a4a4a",
+            borderRadius: 6,
+            cursor: printBusy ? "not-allowed" : "pointer",
+          }}
+        >
+          {printBusy === "orderSlip" ? "Printing…" : "🖨️ Order Slip"}
         </button>
       </div>
 

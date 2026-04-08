@@ -10,6 +10,7 @@ const DEFAULT_CONFIG = {
   splitPaymentEnabled: true,
   paymentMethodOrder: null,
   stickerPrintCategoryIds: [] as string[],
+  kitchenDisplayCategoryIds: [] as string[],
   snapResiboEnabled: false,
   snapResiboPriceCents: null as number | null,
   snapResiboRewardMinimumCents: null as number | null,
@@ -57,6 +58,9 @@ export async function GET(req: NextRequest) {
     /* Always expose a full tabletNav shape for /tablet (backend or proxy may omit before migration). */
     const merged = {
       ...data,
+      kitchenDisplayCategoryIds: Array.isArray(data?.kitchenDisplayCategoryIds)
+        ? data.kitchenDisplayCategoryIds
+        : DEFAULT_CONFIG.kitchenDisplayCategoryIds,
       tabletNav: normalizeTabletNav(data?.tabletNav ?? DEFAULT_CONFIG.tabletNav),
     };
     console.log("[API /store-config] Success, returning data:", merged);

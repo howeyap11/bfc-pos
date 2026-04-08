@@ -297,6 +297,11 @@ export default function TabletSettingsClient() {
       {row("showKitchen", "Kitchen display", "KDS columns, sounds, and bump flow.")}
       {row("showStaff", "Staff", "Staff login for this device (same session as register).")}
 
+      <p style={{ color: COLORS.textSecondary, fontSize: 15, lineHeight: 1.5, marginTop: 20, marginBottom: 8 }}>
+        Kitchen display category filtering is configured in <strong style={{ color: COLORS.textPrimary }}>POS → Settings</strong>{" "}
+        (admin PIN), not here.
+      </p>
+
       {saveBanner && (
         <div
           role={saveBanner.kind === "error" ? "alert" : "status"}

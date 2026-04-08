@@ -110,7 +110,7 @@ export default function TransactionsClient() {
   const [zReadingDate, setZReadingDate] = useState<string>("");
   const [zReadingBusy, setZReadingBusy] = useState(false);
   const [selectedTransaction, setSelectedTransaction] = useState<Transaction | null>(null);
-  const [reprintBusy, setReprintBusy] = useState<"receipt" | "sticker" | null>(null);
+  const [reprintBusy, setReprintBusy] = useState<"receipt" | "sticker" | "orderSlip" | null>(null);
 
   useEffect(() => {
     // Load active staff from localStorage
@@ -597,6 +597,24 @@ export default function TransactionsClient() {
       alert("Stickers sent to printer.");
     } catch (e: any) {
       alert("Reprint failed: " + (e?.message ?? String(e)));
+    } finally {
+      setReprintBusy(null);
+    }
+  }
+
+  async function handlePrintOrderSlip(transactionId: string) {
+    if (!activeStaff?.staffKey) return;
+    setReprintBusy("orderSlip");
+    try {
+      const res = await fetch(`/api/pos/transactions/${transactionId}/print-order-slip`, {
+        method: "POST",
+        headers: { "x-staff-key": activeStaff.staffKey },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.message || data?.error || "Print failed");
+      alert("Order slip sent to printer.");
+    } catch (e: any) {
+      alert("Order slip print failed: " + (e?.message ?? String(e)));
     } finally {
       setReprintBusy(null);
     }
@@ -1340,42 +1358,71 @@ export default function TransactionsClient() {
                 </div>
 
                 {/* Reprint actions */}
-                <div style={{ display: "flex", gap: 8, marginTop: 12, paddingTop: 12, borderTop: "1px solid #1f2937" }}>
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 8,
+                    marginTop: 12,
+                    paddingTop: 12,
+                    borderTop: "1px solid #1f2937",
+                  }}
+                >
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button
+                      type="button"
+                      onClick={handleReprintReceipt}
+                      disabled={!!reprintBusy}
+                      style={{
+                        flex: 1,
+                        padding: "10px 14px",
+                        fontSize: 13,
+                        fontWeight: 600,
+                        borderRadius: 6,
+                        border: "1px solid #4b5563",
+                        background: reprintBusy ? "#1f2937" : COLORS.primary,
+                        color: "#fff",
+                        cursor: reprintBusy ? "not-allowed" : "pointer",
+                      }}
+                    >
+                      {reprintBusy === "receipt" ? "Printing…" : "Reprint Receipt"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleReprintStickers}
+                      disabled={!!reprintBusy}
+                      style={{
+                        flex: 1,
+                        padding: "10px 14px",
+                        fontSize: 13,
+                        fontWeight: 600,
+                        borderRadius: 6,
+                        border: "1px solid #4b5563",
+                        background: reprintBusy ? "#1f2937" : "#0891b2",
+                        color: "#fff",
+                        cursor: reprintBusy ? "not-allowed" : "pointer",
+                      }}
+                    >
+                      {reprintBusy === "sticker" ? "Printing…" : "Reprint Stickers"}
+                    </button>
+                  </div>
                   <button
                     type="button"
-                    onClick={handleReprintReceipt}
+                    onClick={() => void handlePrintOrderSlip(selectedTransaction.id)}
                     disabled={!!reprintBusy}
                     style={{
-                      flex: 1,
+                      width: "100%",
                       padding: "10px 14px",
                       fontSize: 13,
                       fontWeight: 600,
                       borderRadius: 6,
                       border: "1px solid #4b5563",
-                      background: reprintBusy ? "#1f2937" : COLORS.primary,
+                      background: reprintBusy ? "#1f2937" : "#7c3aed",
                       color: "#fff",
                       cursor: reprintBusy ? "not-allowed" : "pointer",
                     }}
                   >
-                    {reprintBusy === "receipt" ? "Printing…" : "Reprint Receipt"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleReprintStickers}
-                    disabled={!!reprintBusy}
-                    style={{
-                      flex: 1,
-                      padding: "10px 14px",
-                      fontSize: 13,
-                      fontWeight: 600,
-                      borderRadius: 6,
-                      border: "1px solid #4b5563",
-                      background: reprintBusy ? "#1f2937" : "#0891b2",
-                      color: "#fff",
-                      cursor: reprintBusy ? "not-allowed" : "pointer",
-                    }}
-                  >
-                    {reprintBusy === "sticker" ? "Printing…" : "Reprint Stickers"}
+                    {reprintBusy === "orderSlip" ? "Printing…" : "Print Order Slip"}
                   </button>
                 </div>
               </div>

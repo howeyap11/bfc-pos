@@ -6,7 +6,7 @@
 // Staff login (cashier PIN) is sufficient for auditing.
 // When cash reconciliation is ready, re-enable the NO_OPEN_REGISTER check in POST /pos/transactions.
 //
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import type { MilkType, ServiceType, ShotsPricingMode } from "@prisma/client";
 import type { PrismaClient } from "@prisma/client";
 import { requireStaffHook } from "../plugins/staffGuard";
@@ -17,8 +17,11 @@ import { syncTransactionToCloudOrEnqueue } from "../services/transactionSync.ser
 import {
   printReceiptToDevice,
   printStickersToDevice,
+  printOrderSlip,
   formatTransactionLineLabel,
+  filterOptionsJsonByItemCaps,
   type ReceiptHeaderOptions,
+  type TransactionForPrint,
 } from "../services/print.service";
 import {
   allocateVouchersForTransaction,
@@ -50,6 +53,107 @@ export type CreateTransactionStep = (typeof CREATE_TX_STEPS)[keyof typeof CREATE
 function getPrismaErrorInfo(err: unknown): { code?: string; meta?: unknown } {
   const e = err as { code?: string; meta?: unknown };
   return typeof e === "object" && e !== null ? { code: e.code, meta: e.meta } : {};
+}
+
+/** Reject cart lines whose baseType/size no longer match synced CloudMenuItemDrinkSizeConfig (offline catalog updates). */
+async function assertDrinkSizeSelectionsAllowed(
+  prisma: PrismaClient,
+  storeId: string,
+  log: FastifyInstance["log"],
+  regularItems: Array<{
+    itemId: string;
+    baseType?: "HOT" | "ICED" | "CONCENTRATED";
+    sizeLabel?: string;
+    optionIds?: string[];
+  }>
+) {
+  const sizedLines = regularItems.filter(
+    (it) => it.baseType && it.sizeLabel != null && String(it.sizeLabel).trim() !== ""
+  );
+  if (sizedLines.length === 0) return;
+
+  const cloudIds = [...new Set(sizedLines.map((i) => i.itemId))];
+  const configs = await prisma.cloudMenuItemDrinkSizeConfig.findMany({
+    where: { storeId, menuItemCloudId: { in: cloudIds } },
+    select: { menuItemCloudId: true, mode: true, optionCloudId: true },
+  });
+  const configsByItem = new Map<string, typeof configs>();
+  for (const c of configs) {
+    const list = configsByItem.get(c.menuItemCloudId) ?? [];
+    list.push(c);
+    configsByItem.set(c.menuItemCloudId, list);
+  }
+
+  const allOptIds = [...new Set(configs.map((c) => c.optionCloudId))];
+  const optRows =
+    allOptIds.length > 0
+      ? await prisma.cloudMenuOption.findMany({
+          where: { storeId, cloudId: { in: allOptIds } },
+          select: { cloudId: true, name: true },
+        })
+      : [];
+  const optNameById = new Map(optRows.map((o) => [o.cloudId, o.name ?? ""]));
+
+  const normLabel = (s: string) => s.trim().toLowerCase().replace(/\s+/g, "");
+
+  for (const it of sizedLines) {
+    const itemCfgs = configsByItem.get(it.itemId) ?? [];
+    if (itemCfgs.length === 0) continue;
+
+    const mode = String(it.baseType ?? "").toUpperCase();
+    const allowedIds = new Set(
+      itemCfgs.filter((c) => String(c.mode ?? "").toUpperCase() === mode).map((c) => c.optionCloudId)
+    );
+
+    if (allowedIds.size === 0) {
+      log.error(
+        {
+          tag: "[createTransaction]",
+          step: CREATE_TX_STEPS.resolve_items,
+          reason: "DRINK_MODE_NOT_ALLOWED",
+          itemId: it.itemId,
+          baseType: it.baseType,
+          sizeLabel: it.sizeLabel,
+          optionIds: it.optionIds ?? [],
+        },
+        "Cart drink selection invalid for synced menu"
+      );
+      throw new Error(
+        `DRINK_MODE_NOT_ALLOWED itemId=${it.itemId} baseType=${it.baseType} sizeLabel=${it.sizeLabel ?? ""}`
+      );
+    }
+
+    const lineOptIds = it.optionIds ?? [];
+    if (lineOptIds.some((id) => allowedIds.has(id))) continue;
+
+    const labelNorm = normLabel(String(it.sizeLabel ?? ""));
+    let matched = false;
+    for (const oid of allowedIds) {
+      const nm = normLabel(optNameById.get(oid) ?? "");
+      if (nm && (nm === labelNorm || nm.includes(labelNorm) || labelNorm.includes(nm))) {
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) {
+      log.error(
+        {
+          tag: "[createTransaction]",
+          step: CREATE_TX_STEPS.resolve_items,
+          reason: "DRINK_SIZE_OPTION_NOT_ALLOWED_FOR_MODE",
+          itemId: it.itemId,
+          baseType: it.baseType,
+          sizeLabel: it.sizeLabel,
+          optionIds: lineOptIds,
+          allowedOptionIdsForMode: [...allowedIds],
+        },
+        "Cart drink selection invalid for synced menu"
+      );
+      throw new Error(
+        `DRINK_SIZE_NOT_ALLOWED itemId=${it.itemId} baseType=${it.baseType} sizeLabel=${it.sizeLabel ?? ""}`
+      );
+    }
+  }
 }
 
 function logCreateTransactionError(
@@ -219,6 +323,8 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
             refundItems: true,
             item: {
               select: {
+                cloudId: true,
+                supportsShots: true,
                 category: {
                   select: {
                     id: true,
@@ -253,19 +359,43 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       });
     }
 
+    const listCloudIds = new Set<string>();
+    for (const tx of rawItems) {
+      for (const li of tx.lineItems) {
+        const cid = li.item?.cloudId;
+        if (cid) listCloudIds.add(cid);
+      }
+    }
+    const listCloudRows =
+      listCloudIds.size > 0
+        ? await app.prisma.cloudMenuItem.findMany({
+            where: { storeId: STORE_ID, cloudId: { in: [...listCloudIds] } },
+            select: { cloudId: true, name: true, hasSizes: true, supportsShots: true },
+          })
+        : [];
+    const listCloudCapMap = new Map(listCloudRows.map((r) => [r.cloudId, r]));
+
     const items = rawItems.map((tx) => ({
       ...tx,
-      lineItems: tx.lineItems.map((li) => ({
-        ...li,
-        displayLabel: formatTransactionLineLabel({
-          name: li.name,
-          optionsJson: li.optionsJson,
-          categoryName: li.categoryName ?? li.item?.category?.name ?? undefined,
-          subCategoryName: li.subCategoryName ?? undefined,
-          qty: li.qty,
-          includeQuantity: true,
-        }),
-      })),
+      lineItems: tx.lineItems.map((li) => {
+        const cloudId = li.item?.cloudId ?? null;
+        const cap = cloudId ? listCloudCapMap.get(cloudId) : undefined;
+        const allowStructuredSize = cloudId ? cap?.hasSizes === true : true;
+        const allowShots = cloudId ? cap?.supportsShots === true : li.item?.supportsShots !== false;
+        const oj = filterOptionsJsonByItemCaps(li.optionsJson, { allowStructuredSize, allowShots });
+        return {
+          ...li,
+          optionsJson: oj ?? li.optionsJson,
+          displayLabel: formatTransactionLineLabel({
+            name: li.name,
+            optionsJson: oj,
+            categoryName: li.categoryName ?? li.item?.category?.name ?? undefined,
+            subCategoryName: li.subCategoryName ?? undefined,
+            qty: li.qty,
+            includeQuantity: true,
+          }),
+        };
+      }),
     }));
 
     return {
@@ -430,8 +560,20 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       try {
         const itemId = await ensureItemForCloudId(app.prisma, cid);
         resolvedIds.push(itemId);
-      } catch {
-        throw new Error(`Invalid itemId: ${cid}`);
+      } catch (cause) {
+        const causeMsg = cause instanceof Error ? cause.message : String(cause);
+        app.log.error(
+          {
+            tag: "[createTransaction]",
+            step: CREATE_TX_STEPS.resolve_items,
+            storeId: STORE_ID,
+            deviceId,
+            cloudItemId: cid,
+            cause: causeMsg,
+          },
+          "ensureItemForCloudId failed (invalid or missing catalog item)"
+        );
+        throw new Error(`Invalid itemId: ${cid} (${causeMsg})`);
       }
     }
 
@@ -464,6 +606,8 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         defaultSubstituteCloudId: true,
         categoryCloudId: true,
         subCategoryCloudId: true,
+        hasSizes: true,
+        supportsShots: true,
       },
     });
     const cloudItemMap = new Map(cloudItems.map((c) => [c.cloudId, c]));
@@ -594,6 +738,8 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       }
     }
 
+    await assertDrinkSizeSelectionsAllowed(app.prisma, STORE_ID, app.log, regularItems);
+
     // Determine service type, source
     // NOTE: Service fees are now per-line (lineSurchargeCents), not transaction-level
     const serviceTypeInput = String(body.serviceType ?? "DINE_IN").trim().toUpperCase();
@@ -646,29 +792,72 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       const dbItem = itemMap.get(it.itemId);
       if (!dbItem) throw new Error(`Invalid itemId: ${it.itemId}`);
 
+      const cloudItemRow = cloudItemMap.get(it.itemId);
+      const allowsSizes = cloudItemRow?.hasSizes === true;
+      const allowsShots = cloudItemRow?.supportsShots === true;
+      const effectiveBaseType = allowsSizes ? it.baseType : undefined;
+      const effectiveSizeLabel = allowsSizes ? it.sizeLabel : undefined;
+      const effectiveShotsQty = allowsShots ? Math.max(0, Math.trunc(it.shotsQty ?? 0)) : 0;
+
+      if (process.env.BFC_POS_CATALOG_CAPS_DEBUG === "1") {
+        if (!allowsSizes && (it.baseType || it.sizeLabel)) {
+          app.log.warn(
+            {
+              event: "catalog_caps_strip_size",
+              itemCloudId: it.itemId,
+              itemName: dbItem.name,
+              localHasSizes: cloudItemRow?.hasSizes,
+              sentBaseType: it.baseType,
+              sentSizeLabel: it.sizeLabel,
+            },
+            "[CATALOG_CAPS_DEBUG] Item hasSizes=false but POS sent size fields — normalized server-side"
+          );
+        }
+        if (!allowsShots && (it.shotsQty ?? 0) > 0) {
+          app.log.warn(
+            {
+              event: "catalog_caps_strip_shots",
+              itemCloudId: it.itemId,
+              itemName: dbItem.name,
+              localSupportsShots: cloudItemRow?.supportsShots,
+              sentShotsQty: it.shotsQty,
+            },
+            "[CATALOG_CAPS_DEBUG] Item supportsShots=false but POS sent shots — normalized server-side"
+          );
+        }
+      }
+
       const qty = Math.max(1, Math.trunc(it.qty || 1));
       const optIds = it.optionIds ?? [];
-      const shotsQty = it.shotsQty ?? 0;
-      const hasSizeSelection = !!(it.baseType && it.sizeLabel);
+      const hasSizeSelection = !!(effectiveBaseType && effectiveSizeLabel);
+      const sizeish = (s: string) => {
+        const n = s.toLowerCase();
+        return n.includes("size") || n.includes("temperature") || /\btemp\b/.test(n);
+      };
       const deltas = optIds.map((oid) => {
         const o = optionMap.get(oid);
         const co = cloudOptionMap.get(oid);
         const addOn = addOnMap.get(oid);
         if (o) {
+          if (!allowsSizes && sizeish(o.group?.name ?? "")) return 0;
           if (hasSizeSelection && (o.group?.name ?? "").toLowerCase().includes("size")) return 0;
           const name = (o.name ?? "").toLowerCase();
+          if (!allowsShots && (name.includes("shot") || name.includes("espresso shot"))) return 0;
           if (name.includes("shot") || name.includes("espresso shot")) return 0;
           return o.priceDelta ?? 0;
         }
         if (co) {
+          if (!allowsSizes && sizeish(co.groupName)) return 0;
           if (hasSizeSelection && co.groupName.toLowerCase().includes("size")) return 0;
           if (co.groupName.toLowerCase().includes("shot")) return 0;
           const name = (co.name ?? "").toLowerCase();
+          if (!allowsShots && (name.includes("shot") || name.includes("espresso shot"))) return 0;
           if (name.includes("shot") || name.includes("espresso shot")) return 0;
           return co.priceDelta ?? 0;
         }
         if (addOn) {
           const name = (addOn.name ?? "").toLowerCase();
+          if (!allowsShots && (name.includes("shot") || name.includes("espresso shot"))) return 0;
           if (name.includes("shot") || name.includes("espresso shot")) return 0;
           return addOn.priceDelta ?? 0;
         }
@@ -679,16 +868,16 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       // Add espresso shots upcharge (server-side recalculation for money safety)
       // Resolve included shots: per size+temp from CloudMenuItemSizePrice, else item defaultShots
       const cloudItem = cloudItemMap.get(it.itemId);
-      let includedShots: number | null = cloudItem?.defaultShots ?? null;
-      if (it.baseType && it.sizeLabel) {
-        const sizeKey = `${it.itemId}|${it.baseType}|${it.sizeLabel}`;
+      let includedShots: number | null = allowsShots ? (cloudItem?.defaultShots ?? null) : 0;
+      if (allowsShots && effectiveBaseType && effectiveSizeLabel) {
+        const sizeKey = `${it.itemId}|${effectiveBaseType}|${effectiveSizeLabel}`;
         const fromSizePrice = includedShotsMap.get(sizeKey);
         if (typeof fromSizePrice === "number") {
           includedShots = fromSizePrice;
         }
       }
       const shotsUpchargeCents = calculateShotsUpcharge(
-        shotsQty,
+        effectiveShotsQty,
         dbItem.shotsPricingMode,
         includedShots,
         shotRule
@@ -704,9 +893,9 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         let selectedPrice = substitutePriceMap.get(it.selectedSubstituteCloudId) ?? 0;
         let defaultPrice = defaultSubId != null ? substitutePriceMap.get(defaultSubId) ?? 0 : 0;
         let sizeCloudId = optIds.find((id) => sizeCloudIdsSet.has(id)) ?? null;
-        const mode = (it.baseType ?? "").toUpperCase();
-        if (!sizeCloudId && it.sizeLabel && mode) {
-          const fromLabel = sizeLabelToCloudId.get(it.sizeLabel.trim().toLowerCase());
+        const mode = (effectiveBaseType ?? "").toUpperCase();
+        if (!sizeCloudId && effectiveSizeLabel && mode) {
+          const fromLabel = sizeLabelToCloudId.get(effectiveSizeLabel.trim().toLowerCase());
           if (fromLabel) sizeCloudId = fromLabel;
         }
         if (sizeCloudId && mode) {
@@ -731,11 +920,11 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
 
       // Base unit price: if line has size selection and per-size price exists, use it; otherwise fall back to item basePrice.
       let unitPrice = dbItem.basePrice;
-      if (it.baseType && it.sizeLabel) {
-        const sizeLabelNorm = it.sizeLabel.trim().toLowerCase();
-        const sizeCodeResolved = sizeLabelToCloudId.get(sizeLabelNorm) ?? it.sizeLabel;
-        const key = `${it.itemId}|${it.baseType}|${it.sizeLabel}`;
-        const keyByCode = `${it.itemId}|${it.baseType}|${sizeCodeResolved}`;
+      if (effectiveBaseType && effectiveSizeLabel) {
+        const sizeLabelNorm = effectiveSizeLabel.trim().toLowerCase();
+        const sizeCodeResolved = sizeLabelToCloudId.get(sizeLabelNorm) ?? effectiveSizeLabel;
+        const key = `${it.itemId}|${effectiveBaseType}|${effectiveSizeLabel}`;
+        const keyByCode = `${it.itemId}|${effectiveBaseType}|${sizeCodeResolved}`;
         const sizedPrice = sizePriceMap.get(key) ?? sizePriceMap.get(keyByCode);
         if (typeof sizedPrice === "number" && sizedPrice >= 0) {
           unitPrice = sizedPrice;
@@ -755,16 +944,16 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         return { id: oid, missing: true };
       });
 
-      if (shotsQty > 0) {
-        optionsData.push({ 
-          type: "shots", 
-          qty: shotsQty, 
-          upchargeCents: shotsUpchargeCents 
+      if (effectiveShotsQty > 0) {
+        optionsData.push({
+          type: "shots",
+          qty: effectiveShotsQty,
+          upchargeCents: shotsUpchargeCents,
         });
       }
 
-      if (it.baseType && it.sizeLabel) {
-        optionsData.push({ type: "size", baseType: it.baseType, sizeLabel: it.sizeLabel });
+      if (effectiveBaseType && effectiveSizeLabel) {
+        optionsData.push({ type: "size", baseType: effectiveBaseType, sizeLabel: effectiveSizeLabel });
       }
 
       if (it.selectedSubstituteCloudId) {
@@ -796,7 +985,10 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         });
       }
 
-      const optionsJson = JSON.stringify(optionsData);
+      const optionsJson = filterOptionsJsonByItemCaps(JSON.stringify(optionsData), {
+        allowStructuredSize: allowsSizes,
+        allowShots: allowsShots,
+      }) as string;
 
       const categoryName =
         cloudItem?.categoryCloudId != null ? categoryNameByCloudId.get(cloudItem.categoryCloudId) ?? null : null;
@@ -1319,7 +1511,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         lineItems: {
           include: {
             refundItems: true,
-            item: { select: { cloudId: true } },
+            item: { select: { cloudId: true, supportsShots: true } },
           },
         },
         payments: true,
@@ -1351,13 +1543,30 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     const subCategoryNameByCloudId = new Map<string, string>();
     const categoryNameByMenuItemCloudId = new Map<string, string>();
     const subCategoryNameByMenuItemCloudId = new Map<string, string>();
+    let cloudCapsByCloudId = new Map<
+      string,
+      { cloudId: string; name: string; hasSizes: boolean; supportsShots: boolean }
+    >();
     if (cloudIds.length > 0) {
       const cloudItems = await app.prisma.cloudMenuItem.findMany({
-        where: { cloudId: { in: cloudIds } },
-        select: { cloudId: true, categoryCloudId: true, subCategoryCloudId: true },
+        where: { cloudId: { in: cloudIds }, storeId: STORE_ID },
+        select: {
+          cloudId: true,
+          name: true,
+          categoryCloudId: true,
+          subCategoryCloudId: true,
+          hasSizes: true,
+          supportsShots: true,
+        },
       });
       for (const row of cloudItems) {
         categoryByCloudId.set(row.cloudId, row.categoryCloudId);
+        cloudCapsByCloudId.set(row.cloudId, {
+          cloudId: row.cloudId,
+          name: row.name,
+          hasSizes: row.hasSizes,
+          supportsShots: row.supportsShots,
+        });
       }
       const catIds = [...new Set(cloudItems.map((r) => r.categoryCloudId).filter((c): c is string => !!c))];
       const subIds = [...new Set(cloudItems.map((r) => r.subCategoryCloudId).filter((c): c is string => !!c))];
@@ -1380,14 +1589,37 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         if (mi.subCategoryCloudId) subCategoryNameByMenuItemCloudId.set(mi.cloudId, subCategoryNameByCloudId.get(mi.subCategoryCloudId) ?? "");
       }
     }
+
     const lineItemsWithCategory = transaction.lineItems.map((li) => {
       const cloudId = li.item?.cloudId ?? null;
       const categoryCloudId = cloudId ? categoryByCloudId.get(cloudId) ?? null : null;
       const categoryName = li.categoryName ?? (cloudId ? categoryNameByMenuItemCloudId.get(cloudId) ?? null : null);
       const subCategoryName = li.subCategoryName ?? (cloudId ? subCategoryNameByMenuItemCloudId.get(cloudId) ?? null : null);
+      const capRow = cloudId ? cloudCapsByCloudId.get(cloudId) : undefined;
+      const allowStructuredSize = cloudId ? capRow?.hasSizes === true : true;
+      const allowShots = cloudId ? capRow?.supportsShots === true : (li.item as { supportsShots?: boolean } | null)?.supportsShots !== false;
+      const optionsJsonForDisplay = filterOptionsJsonByItemCaps(li.optionsJson, {
+        allowStructuredSize,
+        allowShots,
+      });
+      if (process.env.BFC_POS_CATALOG_CAPS_DEBUG === "1" && cloudId && capRow) {
+        app.log.info(
+          {
+            event: "receipt_view_caps",
+            lineItemId: li.id,
+            itemCloudId: cloudId,
+            cloudName: capRow.name,
+            localHasSizes: capRow.hasSizes,
+            localSupportsShots: capRow.supportsShots,
+            allowStructuredSize,
+            allowShots,
+          },
+          "[CATALOG_CAPS_DEBUG] receipt line caps"
+        );
+      }
       const displayLabel = formatTransactionLineLabel({
         name: li.name,
-        optionsJson: li.optionsJson,
+        optionsJson: optionsJsonForDisplay,
         categoryName: categoryName ?? undefined,
         subCategoryName: subCategoryName ?? undefined,
         qty: li.qty,
@@ -1395,6 +1627,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       });
       return {
         ...li,
+        optionsJson: optionsJsonForDisplay ?? li.optionsJson,
         categoryCloudId,
         categoryName: categoryName ?? undefined,
         subCategoryName: subCategoryName ?? undefined,
@@ -1482,7 +1715,9 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       await printReceiptToDevice(
         txForPrint,
         receiptHeader,
-        vouchersForPrint.length > 0 ? vouchersForPrint : undefined
+        vouchersForPrint.length > 0 ? vouchersForPrint : undefined,
+        app.prisma,
+        STORE_ID
       );
       return snapResiboError ? { ok: true, snapResiboError } : { ok: true };
     } catch (err: unknown) {
@@ -1493,9 +1728,86 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     }
   });
 
+  // Order slip (receipt printer, ESC/POS); kitchen copy — no prices, no SnapResibo, no drawer.
+  async function runPrintOrderSlip(
+    transactionId: string,
+    reply: FastifyReply,
+    lineItemIds?: string[] | null
+  ) {
+    const transaction = await app.prisma.transaction.findUnique({
+      where: { id: transactionId },
+      include: { lineItems: true, payments: true },
+    });
+    if (!transaction) {
+      reply.code(404);
+      return { error: "TRANSACTION_NOT_FOUND" };
+    }
+    let lineRows = transaction.lineItems;
+    if (lineItemIds && lineItemIds.length > 0) {
+      const allowed = new Set(lineItemIds);
+      lineRows = lineRows.filter((li) => allowed.has(li.id));
+      if (lineRows.length === 0) {
+        reply.code(400);
+        return { error: "NO_LINE_ITEMS", message: "No matching line items for print" };
+      }
+    }
+    const txForPrint: TransactionForPrint = {
+      transactionNo: transaction.transactionNo,
+      totalCents: transaction.totalCents,
+      createdAt:
+        transaction.createdAt instanceof Date
+          ? transaction.createdAt.toISOString()
+          : String(transaction.createdAt),
+      createdBy: transaction.createdBy,
+      serviceType: transaction.serviceType,
+      lineItems: lineRows.map((li) => ({
+        itemId: li.itemId,
+        name: li.name,
+        qty: li.qty,
+        unitPrice: li.unitPrice,
+        lineTotal: li.lineTotal,
+        note: li.note,
+        optionsJson: li.optionsJson,
+        categoryName: li.categoryName,
+        subCategoryName: li.subCategoryName,
+        specialInstructions: li.specialInstructions,
+        customerName: li.customerName,
+      })),
+      payments: transaction.payments.map((p) => ({
+        method: p.method,
+        amountCents: p.amountCents,
+      })),
+    };
+    try {
+      await printOrderSlip(txForPrint, app.prisma, STORE_ID);
+      return { ok: true };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err ?? "Order slip print failed");
+      app.log.error({ err, transactionId }, "Print order slip failed");
+      reply.code(500);
+      return { error: "PRINT_FAILED", message };
+    }
+  }
+
+  app.post("/pos/transactions/:id/print-order-slip", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = (req.body ?? {}) as { lineItemIds?: string[] };
+    const lineItemIds = Array.isArray(body.lineItemIds) ? body.lineItemIds : undefined;
+    return runPrintOrderSlip(id, reply, lineItemIds);
+  });
+
+  app.post("/print/order-slip/:transactionId", async (req, reply) => {
+    const { transactionId } = req.params as { transactionId: string };
+    const body = (req.body ?? {}) as { lineItemIds?: string[] };
+    const lineItemIds = Array.isArray(body.lineItemIds) ? body.lineItemIds : undefined;
+    return runPrintOrderSlip(transactionId, reply, lineItemIds);
+  });
+
   // Direct print stickers (local printer, no browser); uses store stickerPrintCategoryIds and line categoryCloudId
   app.post("/pos/transactions/:id/print-stickers", async (req, reply) => {
     const { id } = req.params as { id: string };
+    const body = (req.body ?? {}) as { lineItemIds?: string[] };
+    const lineItemIds = Array.isArray(body.lineItemIds) ? body.lineItemIds : undefined;
     const transaction = await app.prisma.transaction.findUnique({
       where: { id },
       include: {
@@ -1507,6 +1819,15 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       reply.code(404);
       return { error: "TRANSACTION_NOT_FOUND" };
     }
+    let stickerLines = transaction.lineItems;
+    if (lineItemIds && lineItemIds.length > 0) {
+      const allowed = new Set(lineItemIds);
+      stickerLines = stickerLines.filter((li) => allowed.has(li.id));
+      if (stickerLines.length === 0) {
+        reply.code(400);
+        return { error: "NO_LINE_ITEMS", message: "No matching line items for sticker print" };
+      }
+    }
     const storeConfig = await app.prisma.storeConfig.findUnique({
       where: { storeId: STORE_ID },
     });
@@ -1515,7 +1836,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       : [];
     const cloudIds = [
       ...new Set(
-        transaction.lineItems.map((li) => li.item?.cloudId).filter((c): c is string => !!c)
+        stickerLines.map((li) => li.item?.cloudId).filter((c): c is string => !!c)
       ),
     ];
     const categoryByCloudId = new Map<string, string | null>();
@@ -1542,7 +1863,8 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         subCategoryNameByMenuItemCloudId.set(row.cloudId, name);
       }
     }
-    const enrichedLineItems = transaction.lineItems.map((li) => ({
+    const enrichedLineItems = stickerLines.map((li) => ({
+      itemId: li.itemId,
       name: li.name,
       qty: li.qty,
       unitPrice: li.unitPrice,
@@ -1564,7 +1886,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       lineItems: enrichedLineItems,
     };
     try {
-      const result = await printStickersToDevice(txForPrint, { stickerPrintCategoryIds });
+      const result = await printStickersToDevice(txForPrint, { stickerPrintCategoryIds }, app.prisma, STORE_ID);
       if (result.printed === 0) {
         reply.code(400);
         return { error: "NO_STICKER_ITEMS", message: "No sticker items in this transaction" };

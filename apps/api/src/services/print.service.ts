@@ -12,6 +12,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import os from "os";
 import crypto from "crypto";
+import type { PrismaClient } from "@prisma/client";
 import { getPrinterConfig } from "./printerConfig.service";
 import { enumerateWindowsPrinters, type PrinterEnumerationResult } from "./printerDiscovery.service";
 import {
@@ -257,6 +258,32 @@ function requireResolvedWindowsQueue(
   return s.queueName;
 }
 
+/**
+ * Remove structured size / shots entries from optionsJson when the catalog item does not support them.
+ * Used at print time and in API responses so legacy or spoofed client payloads do not leak to UI/receipts.
+ */
+export function filterOptionsJsonByItemCaps(
+  optionsJson: string | null | undefined,
+  caps: { allowStructuredSize: boolean; allowShots: boolean }
+): string | null | undefined {
+  if (optionsJson == null || optionsJson === "") return optionsJson;
+  if (caps.allowStructuredSize && caps.allowShots) return optionsJson;
+  try {
+    const arr = JSON.parse(optionsJson) as unknown[];
+    if (!Array.isArray(arr)) return optionsJson;
+    const out = arr.filter((raw) => {
+      if (!raw || typeof raw !== "object") return true;
+      const o = raw as { type?: string };
+      if (!caps.allowStructuredSize && o.type === "size") return false;
+      if (!caps.allowShots && o.type === "shots") return false;
+      return true;
+    });
+    return JSON.stringify(out);
+  } catch {
+    return optionsJson;
+  }
+}
+
 function lineItemDisplayParts(optionsJson: string | null | undefined): { primary: string; secondary: string[] } {
   const primary: string[] = [];
   const secondary: string[] = [];
@@ -300,7 +327,7 @@ export function formatTransactionLineLabel(opts: {
   categoryName?: string | null;
   subCategoryName?: string | null;
   qty: number;
-  /** If true, append " xN" when qty > 1 (for receipt/display). */
+  /** If true, prefix with "Nx " (plain ASCII x, no space before x). */
   includeQuantity?: boolean;
 }): string {
   const { name, optionsJson, categoryName, subCategoryName, qty, includeQuantity } = opts;
@@ -313,8 +340,8 @@ export function formatTransactionLineLabel(opts: {
   if (cat && sub) prefix = `${cat.toUpperCase()}: ${sub.toUpperCase()} `;
   else if (cat) prefix = `${cat.toUpperCase()} `;
   const base = prefix ? prefix + bracket : (bracket || name.trim());
-  const qtySuffix = includeQuantity && qty > 1 ? ` x${qty}` : "";
-  return base + qtySuffix;
+  const qn = Math.max(1, Math.trunc(qty || 1));
+  return includeQuantity ? `${qn}x ${base}` : base;
 }
 
 function formatPesos(cents: number): string {
@@ -359,13 +386,14 @@ function wrapReceiptText(text: string, maxCharsPerLine: number, maxLines = 200):
   return out;
 }
 
-/** Left side of receipt main line: quantity (if >1), item name, size/temperature. */
+/** Left side of receipt main line: quantity + item name + size/temperature ({@code Nx Name ...}). */
 function buildReceiptItemMainLeft(qty: number, name: string, sizeTempPrimary: string): string {
-  const q = qty > 1 ? `${qty}× ` : "";
+  const qn = Math.max(1, Math.trunc(qty || 1));
+  const prefix = `${qn}x `;
   const st = sizeTempPrimary.trim();
   const n = name.trim();
-  if (st && n) return `${q}${n} ${st}`.trim();
-  return `${q}${n}`.trim();
+  if (st && n) return `${prefix}${n} ${st}`.trim();
+  return `${prefix}${n}`.trim();
 }
 
 /** When DB line name already embeds size/temp (e.g. display label), do not append primary again. */
@@ -454,6 +482,102 @@ function parseOptionsJson(optionsJson: string | null | undefined): ParsedOpt[] {
   } catch {
     return [];
   }
+}
+
+function orderSlipSizeTempParen(optionsJson: string | null | undefined): string | null {
+  const opts = parseOptionsJson(optionsJson);
+  const sizeOpt = opts.find((o) => o && (o as ParsedOpt).type === "size") as
+    | { baseType?: string; sizeLabel?: string }
+    | undefined;
+  if (!sizeOpt) return null;
+  const parts: string[] = [];
+  if (sizeOpt.sizeLabel?.trim()) parts.push(sizeOpt.sizeLabel.trim());
+  if (sizeOpt.baseType?.trim()) {
+    const bt = sizeOpt.baseType.trim();
+    parts.push(bt.charAt(0) + bt.slice(1).toLowerCase());
+  }
+  if (parts.length === 0) return null;
+  return `(${parts.join(", ")})`;
+}
+
+/** Readable modifier list for order slip (milk, sweetness, ice, shots, add-ons, then any remaining named options). */
+function collectOrderSlipModifierLabels(optionsJson: string | null | undefined): string[] {
+  const opts = parseOptionsJson(optionsJson);
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  function push(s: string) {
+    const t = s.trim();
+    if (!t) return;
+    const k = t.toLowerCase();
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push(t);
+  }
+
+  const milkOpt = opts.find((o) => o && (o as ParsedOpt).type === "milk") as { choice?: string } | undefined;
+  if (milkOpt?.choice) {
+    const c = milkOpt.choice.toUpperCase().replace(/\s+/g, "_");
+    if (c !== "FULL_CREAM") {
+      const label =
+        c === "OAT"
+          ? "Oat Milk"
+          : c === "SOY"
+            ? "Soy Milk"
+            : c === "ALMOND"
+              ? "Almond Milk"
+              : milkOpt.choice.replace(/_/g, " ");
+      push(label);
+    }
+  }
+
+  for (const o of opts) {
+    if (!o || (o as ParsedOpt).type) continue;
+    const g = ((o as { group?: string }).group ?? "").toUpperCase();
+    const n = ((o as { name?: string }).name ?? "").trim();
+    if (!n || !/SUGAR|SWEET/.test(g)) continue;
+    push(n);
+  }
+
+  for (const o of opts) {
+    if (!o || (o as ParsedOpt).type) continue;
+    const g = ((o as { group?: string }).group ?? "").toUpperCase();
+    const n = ((o as { name?: string }).name ?? "").trim();
+    if (!n) continue;
+    const nUp = n.toUpperCase();
+    if (!/ICE/.test(g) && !/(LESS|NO ICE|LIGHT ICE|EXTRA ICE|REGULAR ICE)/.test(nUp)) continue;
+    if (/ICED$/.test(nUp) && /SUGAR|SWEET/.test(g)) continue;
+    push(n);
+  }
+
+  const shotsOpt = opts.find((o) => o && (o as ParsedOpt).type === "shots") as { qty?: number } | undefined;
+  if (shotsOpt && (shotsOpt.qty ?? 0) >= 1) {
+    const q = Math.max(1, Math.trunc(shotsOpt.qty ?? 1));
+    push(q === 1 ? "Extra Shot" : `${q} Shots`);
+  }
+
+  for (const o of opts) {
+    if (!o || (o as ParsedOpt).type) continue;
+    const g = ((o as { group?: string }).group ?? "").toUpperCase().replace(/\s+/g, " ");
+    const n = ((o as { name?: string }).name ?? "").trim();
+    if (!n) continue;
+    if (
+      !/ADD|SYRUP|SAUCE|EXTRA|OPTION|TOPPING|DRIZZLE|CREAM|DESSERT/.test(g) &&
+      !/SYRUP|SAUCE|ICE CREAM|WHIPPED|CREAM|DRIZZLE/.test(n.toUpperCase())
+    ) {
+      continue;
+    }
+    push(n);
+  }
+
+  for (const o of opts) {
+    if (!o || (o as ParsedOpt).type) continue;
+    const n = ((o as { name?: string }).name ?? "").trim();
+    if (!n) continue;
+    push(n);
+  }
+
+  return out;
 }
 
 /** Soft-wrap text into up to maxLines lines of ~maxCharsPerLine. Breaks at space when possible; else breaks mid-word so the word continues on the next line. Truncates with "..." only if still over after maxLines. */
@@ -649,6 +773,8 @@ export type TransactionForPrint = {
   createdBy?: string | null;
   serviceType?: string | null;
   lineItems: Array<{
+    /** Local Item.id when present (for catalog cap lookup on print). */
+    itemId?: string | null;
     name: string;
     qty: number;
     unitPrice: number;
@@ -669,6 +795,57 @@ export type TransactionForPrint = {
   }>;
   payments: Array<{ method: string; amountCents: number }>;
 };
+
+/** Same shape as {@link TransactionForPrint}; alias for kitchen / order-slip printing call sites. */
+export type TransactionFull = TransactionForPrint;
+
+const DEFAULT_PRINT_STORE_ID = "store_1";
+
+/** Apply catalog caps to each line's optionsJson using Item → CloudMenuItem (local DB). */
+export async function applyCatalogCapsToTransactionForPrint(
+  prisma: PrismaClient,
+  storeId: string,
+  tx: TransactionForPrint
+): Promise<TransactionForPrint> {
+  const itemIds = [
+    ...new Set(
+      tx.lineItems
+        .map((l) => (l as { itemId?: string | null }).itemId)
+        .filter((id): id is string => typeof id === "string" && id.length > 0)
+    ),
+  ];
+  if (itemIds.length === 0) return tx;
+
+  const items = await prisma.item.findMany({
+    where: { id: { in: itemIds }, storeId },
+    select: { id: true, cloudId: true, supportsShots: true },
+  });
+  const byItemId = new Map(items.map((i) => [i.id, i]));
+  const cloudIds = [...new Set(items.map((i) => i.cloudId).filter((c): c is string => !!c))];
+  const clouds =
+    cloudIds.length > 0
+      ? await prisma.cloudMenuItem.findMany({
+          where: { storeId, cloudId: { in: cloudIds } },
+          select: { cloudId: true, hasSizes: true, supportsShots: true },
+        })
+      : [];
+  const byCloudId = new Map(clouds.map((c) => [c.cloudId, c]));
+
+  return {
+    ...tx,
+    lineItems: tx.lineItems.map((li) => {
+      const itemId = (li as { itemId?: string | null }).itemId;
+      if (!itemId) return li;
+      const row = byItemId.get(itemId);
+      const cloud = row?.cloudId ? byCloudId.get(row.cloudId) : undefined;
+      const allowStructuredSize = cloud ? cloud.hasSizes === true : true;
+      const allowShots = cloud ? cloud.supportsShots === true : row?.supportsShots === true;
+      const filtered = filterOptionsJsonByItemCaps(li.optionsJson, { allowStructuredSize, allowShots });
+      if (filtered === li.optionsJson) return li;
+      return { ...li, optionsJson: filtered };
+    }),
+  };
+}
 
 /** Optional receipt header from cloud-synced Business Details + Receipt Details (local StoreConfig). */
 export type ReceiptHeaderOptions = {
@@ -782,6 +959,72 @@ function birInputTaxDisclaimerEscPosBytes(): Buffer {
  * Footer: centered BIR disclaimer after body/SnapResibo, always, then feed + cut.
  * Chain: POST /pos/transactions/:id/print-receipt → printReceiptToDevice → buildReceiptEscPos → printReceiptESC
  */
+
+function formatOrderSlipServiceTypeLabel(serviceType: string | null | undefined): string {
+  const s = String(serviceType ?? "").trim().toUpperCase();
+  if (!s) return "DINE IN";
+  const labelMap: Record<string, string> = {
+    DINE_IN: "DINE IN",
+    TO_GO: "TAKE OUT",
+    DELIVERY: "DELIVERY",
+    FOODPANDA: "FOODPANDA",
+  };
+  return labelMap[s] ?? s.replace(/_/g, " ");
+}
+
+/** ESC/POS order slip: kitchen-focused line list, receipt printer, no prices. */
+export function buildOrderSlipEscPos(tx: TransactionForPrint): Buffer {
+  const lines: string[] = [];
+  const width = RECEIPT_LINE_WIDTH;
+  const sep = "-".repeat(width);
+
+  lines.push(sep);
+  lines.push(centerReceiptLine("ORDER SLIP", width));
+  lines.push(sep);
+  lines.push("");
+  lines.push(formatOrderSlipServiceTypeLabel(tx.serviceType ?? undefined));
+  lines.push("");
+
+  for (const item of tx.lineItems) {
+    const qty = Math.max(1, Math.trunc(item.qty || 1));
+    const sub =
+      item.subCategoryName != null && item.subCategoryName.trim() !== ""
+        ? item.subCategoryName.trim()
+        : null;
+    const name = item.name.trim();
+    const sizeParen = orderSlipSizeTempParen(item.optionsJson);
+    let mainBody = sub ? `${sub}: ${name}` : name;
+    if (sizeParen) mainBody = `${mainBody} ${sizeParen}`;
+    const mainLeft = `(${qty}x) ${mainBody}`;
+    for (const w of wrapReceiptText(mainLeft, width)) {
+      lines.push(w);
+    }
+
+    const mods = collectOrderSlipModifierLabels(item.optionsJson);
+    if (mods.length > 0) {
+      for (const w of wrapReceiptAddons(mods.join(", "), width)) {
+        lines.push(w);
+      }
+    }
+
+    const prep = item.specialInstructions != null ? item.specialInstructions.trim() : "";
+    if (prep) {
+      const inner = prep.replace(/^["']+|["']+$/g, "").replace(/"/g, "'");
+      const quoted = `"${inner}"`;
+      for (const w of wrapReceiptText(quoted, width)) {
+        lines.push(w);
+      }
+    }
+
+    lines.push("");
+  }
+
+  lines.push(sep);
+
+  const textBody = lines.join(LF);
+  return Buffer.concat([Buffer.from(INIT + textBody + LF, "utf8"), FEED_LINES_BEFORE_CUT, Buffer.from(FULL_CUT, "binary")]);
+}
+
 export function buildReceiptEscPos(
   tx: TransactionForPrint,
   header?: ReceiptHeaderOptions | null,
@@ -1010,7 +1253,9 @@ export function buildTestStickerTspl(
 export async function printReceiptToDevice(
   tx: TransactionForPrint,
   header?: ReceiptHeaderOptions | null,
-  snapResiboVouchers?: SnapResiboVoucherForPrint[] | null
+  snapResiboVouchers?: SnapResiboVoucherForPrint[] | null,
+  prisma?: PrismaClient | null,
+  storeId: string = DEFAULT_PRINT_STORE_ID
 ): Promise<void> {
   const config = await getPrinterConfig();
   const name = requireResolvedWindowsQueue(config.receiptPrinter, "receipt", config.receiptPrinter);
@@ -1022,22 +1267,39 @@ export async function printReceiptToDevice(
     });
   }
 
-  const data = buildReceiptEscPos(tx, header, snapResiboVouchers);
+  const txPrint = prisma ? await applyCatalogCapsToTransactionForPrint(prisma, storeId, tx) : tx;
+  const data = buildReceiptEscPos(txPrint, header, snapResiboVouchers);
+  await printReceiptESC(data, name);
+}
+
+/** Order slip on the configured receipt printer (ESC/POS RAW); does not open the cash drawer. */
+export async function printOrderSlip(
+  transaction: TransactionFull,
+  prisma?: PrismaClient | null,
+  storeId: string = DEFAULT_PRINT_STORE_ID
+): Promise<void> {
+  const config = await getPrinterConfig();
+  const name = requireResolvedWindowsQueue(config.receiptPrinter, "receipt", config.receiptPrinter);
+  const txPrint = prisma ? await applyCatalogCapsToTransactionForPrint(prisma, storeId, transaction) : transaction;
+  const data = buildOrderSlipEscPos(txPrint);
   await printReceiptESC(data, name);
 }
 
 /** Print stickers. stickerPrintCategoryIds must be passed; lines must include categoryCloudId for category-based printing. */
 export async function printStickersToDevice(
   tx: TransactionForPrint,
-  opts: { stickerPrintCategoryIds: string[] | null | undefined }
+  opts: { stickerPrintCategoryIds: string[] | null | undefined },
+  prisma?: PrismaClient | null,
+  storeId: string = DEFAULT_PRINT_STORE_ID
 ): Promise<{ printed: number }> {
   const config = await getPrinterConfig();
   const name = requireResolvedWindowsQueue(config.stickerPrinter, "sticker", config.receiptPrinter);
-  const stickerLines = tx.lineItems.filter((line) => shouldPrintSticker(line, opts.stickerPrintCategoryIds));
+  const txPrint = prisma ? await applyCatalogCapsToTransactionForPrint(prisma, storeId, tx) : tx;
+  const stickerLines = txPrint.lineItems.filter((line) => shouldPrintSticker(line, opts.stickerPrintCategoryIds));
   const totalStickerCopies = stickerLines.reduce((sum, line) => sum + Math.max(1, Math.trunc(line.qty || 1)), 0);
   if (totalStickerCopies === 0) return { printed: 0 };
   const tspl = buildStickerTspl(
-    { ...tx, lineItems: stickerLines },
+    { ...txPrint, lineItems: stickerLines },
     config.stickerWidthMm,
     config.stickerHeightMm
   );
@@ -1045,7 +1307,7 @@ export async function printStickersToDevice(
   // Verification: log actual input and generated TSPL for first sticker (run one real print and inspect logs)
   const firstLine = stickerLines[0];
   const { lines: firstLineLabels, topRowCount, topRoles } = getStickerLineLabel(firstLine);
-  const transactionTypeLabel = formatTransactionTypeLabel(tx.serviceType ?? undefined);
+  const transactionTypeLabel = formatTransactionTypeLabel(txPrint.serviceType ?? undefined);
   const widthDots = Math.round(config.stickerWidthMm * TSPL_DOTS_PER_MM);
   const heightDots = Math.round(config.stickerHeightMm * TSPL_DOTS_PER_MM);
   const stickerVerifyInput = {
@@ -1062,7 +1324,7 @@ export async function printStickersToDevice(
       unitPrice: firstLine.unitPrice,
       lineTotal: firstLine.lineTotal,
     },
-    serviceType: tx.serviceType,
+    serviceType: txPrint.serviceType,
     transactionTypeLabel,
     getStickerLineLabelResult: { lines: firstLineLabels, topRowCount, topRoles },
     boundsDots: { widthDots, heightDots },
