@@ -69,7 +69,7 @@ export type TxLineInput = {
 export function buildTxLineInputs(cart: CartItem[]): TxLineInput[] {
   return cart.map((item) => {
     const output: TxLineInput = {
-      itemId: item.itemId,
+      itemId: typeof item.itemId === "string" ? item.itemId.trim() : String(item.itemId ?? "").trim(),
       qty: Math.max(1, Math.trunc(item.qty || 1)),
       optionIds: item.selectedOptions.map((o) => o.id),
       note: item.note?.trim() || undefined,

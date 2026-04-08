@@ -489,14 +489,23 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         items: Array.isArray(rawBody.items) ? rawBody.items : [],
       };
       for (const it of body.items) {
-        if (it && typeof it === "object" && !Array.isArray(it.optionIds)) {
-          (it as ItemInput).optionIds = it.optionIds ?? [];
+        if (it && typeof it === "object") {
+          if (!Array.isArray(it.optionIds)) {
+            (it as ItemInput).optionIds = it.optionIds ?? [];
+          }
+          const idRaw = (it as ItemInput).itemId;
+          (it as ItemInput).itemId =
+            typeof idRaw === "string" ? idRaw.trim() : idRaw != null ? String(idRaw).trim() : "";
         }
       }
 
       if (body.items.length === 0) {
         reply.code(400);
         return { error: "EMPTY_ITEMS" };
+      }
+      if (body.items.some((it) => !it?.itemId)) {
+        reply.code(400);
+        return { error: "MISSING_ITEM_ID", message: "One or more lines are missing a valid item id." };
       }
 
       let orderIdForCreate: string | null = null;
@@ -583,15 +592,15 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     const nextNo = (last?.transactionNo ?? 0) + 1;
 
     step = CREATE_TX_STEPS.resolve_items;
-    // itemId from POS is cloudId (from CloudMenuItem); resolve to Item.id for storage + inventory (exclude SnapResibo virtual item)
+    // itemId from POS is menu cloudId or legacy Item.id; resolve to Item.id for storage + inventory (exclude SnapResibo virtual item)
     const cloudIds = [...new Set(regularItems.map((i) => i.itemId))];
     const optionIds = [...new Set(regularItems.flatMap((i) => i.optionIds ?? []))];
 
-    const resolvedIds: string[] = [];
+    const requestItemIdToLocalId = new Map<string, string>();
     for (const cid of cloudIds) {
       try {
-        const itemId = await ensureItemForCloudId(app.prisma, cid);
-        resolvedIds.push(itemId);
+        const localId = await ensureItemForCloudId(app.prisma, cid);
+        requestItemIdToLocalId.set(cid, localId);
       } catch (cause) {
         const causeMsg = cause instanceof Error ? cause.message : String(cause);
         app.log.error(
@@ -609,8 +618,9 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       }
     }
 
+    const uniqueLocalIds = [...new Set(requestItemIdToLocalId.values())];
     const dbItems = await app.prisma.item.findMany({
-      where: { id: { in: resolvedIds } },
+      where: { id: { in: uniqueLocalIds } },
       select: {
         id: true,
         cloudId: true,
@@ -626,6 +636,10 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
     for (const i of dbItems) {
       itemMap.set(i.id, i);
       if (i.cloudId) itemMap.set(i.cloudId, i);
+    }
+    for (const [requestId, localId] of requestItemIdToLocalId) {
+      const row = itemMap.get(localId);
+      if (row) itemMap.set(requestId, row);
     }
 
     const cloudItems = await app.prisma.cloudMenuItem.findMany({
@@ -1131,10 +1145,16 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
 
       if (errMsg.startsWith("Invalid itemId:") || errMsg.includes("CloudMenuItem not found:")) {
         logCreateTransactionError(app.log, { storeId: STORE_ID, step, deviceId }, err);
+        const fromWrapped = errMsg.match(/^Invalid itemId:\s*(\S+)\s*\(/);
+        const fromBare = errMsg.match(/^Invalid itemId:\s*(\S+)\s*$/);
+        const fromCloud = errMsg.match(/CloudMenuItem not found:\s*(.+)$/);
+        const badItemId =
+          (fromWrapped?.[1] ?? fromBare?.[1] ?? fromCloud?.[1]?.trim()) || undefined;
         reply.code(400);
         return {
           code: "INVALID_CART_ITEM",
           message: "A cart item is not on the menu anymore. Remove it or sync catalog and try again.",
+          ...(badItemId ? { itemId: badItemId } : {}),
         };
       }
 

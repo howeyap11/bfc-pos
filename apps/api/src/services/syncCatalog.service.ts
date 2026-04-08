@@ -672,6 +672,22 @@ export async function syncCatalogFromCloud(
       });
     }
 
+    const menuItemIdsFromCloud = data.items.map((i) => i.id);
+    const uniqueMenuItemIds = new Set(menuItemIdsFromCloud);
+    if (uniqueMenuItemIds.size !== menuItemIdsFromCloud.length) {
+      console.error(
+        "[SyncCatalog] Cloud menu payload has DUPLICATE item ids — multiple rows share the same `id`. " +
+          "Only one CloudMenuItem row exists per id after upsert (last write wins), which can make every POS tile look identical or break checkout. " +
+          "Fix MenuItem primary keys in the cloud database/API.",
+        {
+          storeId,
+          totalRows: menuItemIdsFromCloud.length,
+          uniqueIds: uniqueMenuItemIds.size,
+          sampleDuplicate: menuItemIdsFromCloud.find((id, idx) => menuItemIdsFromCloud.indexOf(id) !== idx),
+        }
+      );
+    }
+
     await prisma.$transaction(async (tx) => {
       // Ensure Store exists before Staff sync (Staff.storeId FK -> Store.id)
       await tx.store.upsert({

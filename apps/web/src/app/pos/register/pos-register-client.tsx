@@ -3576,10 +3576,14 @@ export default function PosRegisterClient() {
           (txData && (txData.message || txData.error || txData.code)) ?
             String(txData.message || txData.error || txData.code)
           : "";
+        const idHint =
+          typeof txData?.itemId === "string" && txData.itemId.trim() !== "" ?
+            ` [menu item id: ${txData.itemId.trim()}]`
+          : "";
         setError(
           detail ?
-            `Transaction failed (${txRes.status}): ${detail}`
-          : `Transaction failed (${txRes.status})`
+            `Transaction failed (${txRes.status}): ${detail}${idHint}`
+          : `Transaction failed (${txRes.status})${idHint}`
         );
         setBusy(false);
         return;
