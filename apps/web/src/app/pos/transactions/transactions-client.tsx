@@ -781,7 +781,7 @@ export default function TransactionsClient() {
 
   if (loading) {
     return (
-      <div style={{ padding: 24, color: "#fff", background: "#1f1f1f", height: "100vh" }}>
+      <div style={{ padding: 24, color: "#fff", background: "#1f1f1f", height: "100%", minHeight: 0 }}>
         <p>Loading transactions...</p>
       </div>
     );
@@ -791,7 +791,8 @@ export default function TransactionsClient() {
     <div
       className="pos-transactions-root"
       style={{
-        height: "100vh",
+        height: "100%",
+        minHeight: 0,
         display: "flex",
         flexDirection: "column",
         background: "#1f1f1f",
@@ -846,6 +847,7 @@ export default function TransactionsClient() {
       {/* Scrollable Transactions Table + Reporting Panel */}
       <div style={{ 
         flex: "1 1 auto",
+        minHeight: 0,
         overflowY: "auto",
         paddingLeft: 24,
         paddingRight: 24,
@@ -1172,17 +1174,21 @@ export default function TransactionsClient() {
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
-              padding: "12px 16px",
+              flexWrap: "wrap",
+              rowGap: 12,
+              columnGap: 16,
+              padding: "14px 16px 16px",
               borderTop: "1px solid #3a3a3a",
               background: "#1a1a1a",
-              gap: 16,
+              position: "relative",
+              zIndex: 2,
             }}
           >
-            <span style={{ fontSize: 13, color: "#888" }}>
+            <span style={{ fontSize: 13, color: "#888", flex: "1 1 auto", minWidth: 0, marginRight: 8 }}>
               {transactions.length} transaction{transactions.length !== 1 ? "s" : ""} on this page
               {prevCursors.length > 0 || hasMore ? " · 30 per page" : ""}
             </span>
-            <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ display: "flex", gap: 12, alignItems: "center", flexShrink: 0, marginLeft: 8 }}>
               <button
                 type="button"
                 onClick={goToPrevPage}
@@ -1203,16 +1209,16 @@ export default function TransactionsClient() {
               <button
                 type="button"
                 onClick={goToNextPage}
-                disabled={!hasMore}
+                disabled={!hasMore || nextCursor == null}
                 style={{
                   padding: "8px 16px",
                   fontSize: 14,
                   fontWeight: "600",
-                  background: !hasMore ? "#2a2a2a" : COLORS.primary,
-                  color: !hasMore ? "#555" : "#fff",
+                  background: !hasMore || nextCursor == null ? "#2a2a2a" : COLORS.primary,
+                  color: !hasMore || nextCursor == null ? "#555" : "#fff",
                   border: "none",
                   borderRadius: 6,
-                  cursor: !hasMore ? "not-allowed" : "pointer",
+                  cursor: !hasMore || nextCursor == null ? "not-allowed" : "pointer",
                 }}
               >
                 Next →
