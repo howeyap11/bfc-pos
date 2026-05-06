@@ -1146,6 +1146,8 @@ model CloudSubstitute {
   name                 String
   priceCents           Int                             @default(0)
   sortOrder            Int                             @default(0)
+  /// Mirrors Cloud catalog substitute.isActive; inactive substitutes hidden on POS.
+  isActive             Boolean                         @default(true)
   createdAt            DateTime                        @default(now())
   updatedAt            DateTime                        @updatedAt
   prices               CloudSubstitutePrice[]

@@ -87,6 +87,8 @@ type SubstituteOption = {
   id: string;
   name: string;
   priceCents: number;
+  /** Resolved from recipe ingredient image (Cloud `/menu-settings/substitutes` recipe matrix). */
+  imageUrl?: string | null;
   /** Per-size/mode prices from cloud (70 regular, 180 1-liter, etc.). Used when size is known. */
   prices?: SubstitutePriceBySize[];
 };
@@ -165,6 +167,8 @@ type CartItem = {
   shotsQty?: number; // Espresso shots quantity
   defaultShotsForSize?: number; // Default shots for selected size (for comparison)
   shotsUpchargeCents?: number; // Espresso shots upcharge (snapshot)
+  /** Milk substitute incremental charge over default milk at selected size (centavos). */
+  milkUpgradeCents?: number;
   /** Transaction type (cloud-synced). Replaces legacy fulfillment. */
   transactionTypeCode: PosServiceType;
   transactionTypeLabel: string;
@@ -578,11 +582,20 @@ function CartItemEditorModal({
   const importantModifiers: string[] = [];
   const regularModifiers: string[] = [];
 
-  // Add milk choice (cloud substitute name or legacy code)
+  // Add milk choice (cloud substitute name or legacy code) + incremental price snapshot
   if (item.milkChoice) {
     const milkLabel =
-      item.milkChoice === "FULL_CREAM" ? "Full Cream" : item.milkChoice === "OAT" ? "Oat Milk" : item.milkChoice === "ALMOND" ? "Almond Milk" : item.milkChoice === "SOY" ? "Soy Milk" : item.milkChoice;
-    importantModifiers.push(milkLabel);
+      item.milkChoice === "FULL_CREAM"
+        ? "Full Cream"
+        : item.milkChoice === "OAT"
+          ? "Oat Milk"
+          : item.milkChoice === "ALMOND"
+            ? "Almond Milk"
+            : item.milkChoice === "SOY"
+              ? "Soy Milk"
+              : item.milkChoice;
+    const up = item.milkUpgradeCents ?? 0;
+    importantModifiers.push(`Milk: ${milkLabel} (+${formatPesos(up)})`);
   }
 
   // Add shots if any
@@ -1376,6 +1389,60 @@ function SplitPaymentModal({
  * Used by both cart items and success screen items.
  * Uses extractSizeTemp so temp/size come from either baseType/sizeLabel or optionsJson.
  */
+function pesosFromCentsLine(cents: number): string {
+  return `₱${(Math.max(0, Math.round(cents)) / 100).toFixed(2)}`;
+}
+
+function MilkSubstituteImage({ name, imageUrl }: { name: string; imageUrl?: string | null }) {
+  const [broken, setBroken] = useState(false);
+  return (
+    <div
+      style={{
+        width: 68,
+        height: 68,
+        borderRadius: 10,
+        overflow: "hidden",
+        background: "#2a2a2a",
+        marginBottom: 8,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0,
+        border: "1px solid #3a3a3a",
+      }}
+    >
+      {imageUrl && !broken ? (
+        <img
+          src={imageUrl}
+          alt=""
+          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+          onError={() => setBroken(true)}
+        />
+      ) : (
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path
+            d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v11A2.5 2.5 0 0 1 17.5 20h-11A2.5 2.5 0 0 1 4 17.5v-11Z"
+            stroke="#777"
+            strokeWidth="1.5"
+          />
+          <path
+            d="M8 14l2-2 2 2 3-3 3 3"
+            stroke="#777"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M9 9.25a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5Z"
+            stroke="#777"
+            strokeWidth="1.5"
+          />
+        </svg>
+      )}
+    </div>
+  );
+}
+
 function formatLineItemModifiers(item: CartItem & { optionsJson?: string | null }) {
   const primaryParts: string[] = []; // Bold/prominent (size, temp)
   const secondaryParts: string[] = []; // Regular text (milk sub, shots, extras)
@@ -1453,10 +1520,20 @@ function formatLineItemModifiers(item: CartItem & { optionsJson?: string | null 
   if (tempText) primaryParts.push(tempText);
   if (sizeText) primaryParts.push(sizeText);
 
-  // 2) Milk: show selected substitute when present
+  // 2) Milk: label + incremental substitute charge (matches customization breakdown)
   if (item.milkChoice) {
-    const milkLabel = item.milkChoice === "FULL_CREAM" ? "Full cream" : item.milkChoice === "OAT" ? "Oat milk" : item.milkChoice === "ALMOND" ? "Almond milk" : item.milkChoice === "SOY" ? "Soy milk" : String(item.milkChoice);
-    secondaryParts.push(milkLabel);
+    const milkLabel =
+      item.milkChoice === "FULL_CREAM"
+        ? "Full cream"
+        : item.milkChoice === "OAT"
+          ? "Oat milk"
+          : item.milkChoice === "ALMOND"
+            ? "Almond milk"
+            : item.milkChoice === "SOY"
+              ? "Soy milk"
+              : String(item.milkChoice);
+    const up = item.milkUpgradeCents ?? 0;
+    secondaryParts.push(`Milk: ${milkLabel} +${pesosFromCentsLine(up)}`);
   }
 
   // 3) Shots: only when catalog allows shots
@@ -2651,7 +2728,7 @@ export default function PosRegisterClient() {
   ): number {
     if (!sub) return 0;
     const prices = sub.prices;
-    if (!prices || prices.length === 0) return sub.priceCents ?? 0;
+    if (!prices || prices.length === 0) return 0;
 
     const modeNorm = mode?.toUpperCase();
     const modeMatches = (p: SubstitutePriceBySize) => {
@@ -2686,10 +2763,19 @@ export default function PosRegisterClient() {
     }
     if (bySize != null) return bySize.priceCents;
 
-    const byModeOnly = modeNorm ? prices.find(modeMatches) : null;
-    if (byModeOnly != null) return byModeOnly.priceCents;
-
-    return sub.priceCents ?? 0;
+    // Strict behavior: when size/mode is known but no matching matrix row exists, return 0 and log once
+    // so missing Cloud matrix rows are obvious during ops/testing.
+    if (modeNorm && ((sizeCloudId && String(sizeCloudId).trim() !== "") || (sizeLabel && String(sizeLabel).trim() !== ""))) {
+      console.warn("[MilkSubstitute] Missing matrix row", {
+        substituteId: sub.id,
+        substituteName: sub.name,
+        mode: modeNorm,
+        sizeCloudId: sizeCloudId ?? null,
+        sizeLabel: sizeLabel ?? null,
+        matrixRowCount: prices.length,
+      });
+    }
+    return 0;
   }
 
   function addToCart() {
@@ -2740,15 +2826,16 @@ export default function PosRegisterClient() {
           }
         });
       }
+      let milkUpgradeSnap = 0;
       if (selectedSubstituteForQuickAdd) {
         const defaultId = configuringItem.defaultSubstituteCloudId ?? configuringItem.substitutes?.[0]?.id;
-        const defaultSub = defaultId ? configuringItem.substitutes?.find((s) => s.id === defaultId) : configuringItem.substitutes?.[0];
         const sizeId = configSizeOption?.id;
         const mode = configBaseType ?? undefined;
         const sizeLabel = configSizeOption?.name;
         const selectedPrice = getSubstitutePriceCents(selectedSubstituteForQuickAdd, sizeId, mode, sizeLabel);
-        const defaultMilkPrice = getSubstitutePriceCents(defaultSub ?? undefined, sizeId, mode, sizeLabel);
-        optionTotalCentsHasSizes += Math.max(0, selectedPrice - defaultMilkPrice);
+        // Hard rule: default milk always costs 0; non-default charges its matrix tier price for selected size+mode.
+        milkUpgradeSnap = defaultId && selectedSubstituteForQuickAdd.id === defaultId ? 0 : Math.max(0, selectedPrice);
+        optionTotalCentsHasSizes += milkUpgradeSnap;
       }
       const lineShotsQtyHasSizes = configuringItem.supportsShots ? configShotsQty : 0;
       const includedShotsHasSizes = resolveIncludedShots({
@@ -2788,6 +2875,7 @@ export default function PosRegisterClient() {
         selectedOptions: optsHasSizes,
         milkChoice: selectedSubstituteForQuickAdd?.name,
         selectedSubstituteCloudId: selectedSubstituteForQuickAdd?.id,
+        milkUpgradeCents: milkUpgradeSnap,
         defaultMilk: configuringItem.substitutes && configuringItem.substitutes.length > 0 ? configuringItem.defaultMilk : undefined,
         shotsQty: lineShotsQtyHasSizes,
         defaultShotsForSize: includedShotsHasSizes,
@@ -2878,12 +2966,10 @@ export default function PosRegisterClient() {
     if (configuringItem.substitutes && configuringItem.substitutes.length > 0 && selectedSubstituteId) {
       const selectedSub = configuringItem.substitutes.find((s) => s.id === selectedSubstituteId);
       const defaultId = configuringItem.defaultSubstituteCloudId ?? configuringItem.substitutes?.[0]?.id;
-      const defaultSub = defaultId ? configuringItem.substitutes.find((s) => s.id === defaultId) : configuringItem.substitutes[0];
       const sizeId = selectedSize?.id;
       const sizeLabel = selectedSize?.name;
       const selectedPrice = getSubstitutePriceCents(selectedSub ?? undefined, sizeId, derivedBaseType, sizeLabel);
-      const defaultMilkPrice = getSubstitutePriceCents(defaultSub ?? undefined, sizeId, derivedBaseType, sizeLabel);
-      milkPriceDelta = Math.max(0, selectedPrice - defaultMilkPrice);
+      milkPriceDelta = defaultId && selectedSub?.id === defaultId ? 0 : Math.max(0, selectedPrice);
     }
     optionTotalCents += milkPriceDelta;
 
@@ -2938,6 +3024,7 @@ export default function PosRegisterClient() {
       selectedOptions: opts,
       milkChoice: selectedSubstitute?.name,
       selectedSubstituteCloudId: selectedSubstitute?.id,
+      milkUpgradeCents: milkPriceDelta,
       defaultMilk: configuringItem.substitutes && configuringItem.substitutes.length > 0 ? configuringItem.defaultMilk : undefined,
       shotsQty: lineShotsQtyNoSizes,
       defaultShotsForSize: includedShotsNoSizes,
@@ -4542,7 +4629,7 @@ export default function PosRegisterClient() {
                 </div>
               )}
 
-              {/* Milk Substitute Section: cloud-synced only; show only when substitutes exist */}
+              {/* Milk substitute: menu matrix pricing (separate from add-ons). Images from recipe ingredients when synced. */}
               {configuringItem.substitutes && configuringItem.substitutes.length > 0 &&
                 (() => {
                   const defaultId = configuringItem.defaultSubstituteCloudId ?? configuringItem.substitutes?.[0]?.id;
@@ -4575,42 +4662,57 @@ export default function PosRegisterClient() {
                     else if (tn.includes("CONCENTRATED")) md = "CONCENTRATED";
                   }
                   return (
-                    <div style={{ marginBottom: 20 }}>
-                      <h3 style={{ fontSize: 16, marginBottom: 10, color: "#ddd", fontWeight: "600" }}>
-                        Milk Substitute
-                      </h3>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    <div
+                      style={{
+                        marginBottom: 20,
+                        padding: 12,
+                        borderRadius: 8,
+                        border: "1px solid #3a3a3a",
+                        background: "#151515",
+                      }}
+                    >
+                      <div style={{ marginBottom: 10 }}>
+                        <h3 style={{ fontSize: 16, margin: 0, color: "#ddd", fontWeight: "600" }}>Milk Substitute</h3>
+                      </div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
                         {configuringItem.substitutes!.map((s) => {
                           const id = s.id;
                           const name = s.name;
                           const isDefault = defaultId != null && id === defaultId;
                           const isSelected = selectedSubstituteId === id;
                           const tierSel = getSubstitutePriceCents(s, szId, md, szLab);
-                          const tierDef = getSubstitutePriceCents(defaultSubForLabel ?? undefined, szId, md, szLab);
-                          const milkExtra = Math.max(0, tierSel - tierDef);
+                          const milkExtra = isDefault ? 0 : Math.max(0, tierSel);
                           return (
                             <button
                               key={id}
                               type="button"
                               onClick={() => setSelectedSubstituteId(id)}
                               style={{
-                                padding: "10px 16px",
-                                border: `2px solid ${isSelected ? COLORS.primary : "#444"}`,
-                                borderRadius: 6,
+                                width: 112,
+                                padding: "10px 8px",
+                                border: `2px solid ${isSelected ? COLORS.primary : "#475569"}`,
+                                borderRadius: 10,
                                 cursor: "pointer",
-                                background: isSelected ? COLORS.primary : "#2a2a2a",
+                                background: isSelected ? "#2a2a2a" : "#1f1f1f",
                                 color: "#fff",
                                 fontWeight: isSelected ? "bold" : "normal",
                                 transition: "all 0.2s",
-                                fontSize: 14,
-                                position: "relative",
+                                fontSize: 12,
+                                display: "flex",
+                                flexDirection: "column",
+                                alignItems: "center",
+                                textAlign: "center",
+                                lineHeight: 1.25,
                               }}
                             >
-                              {name}
+                              <MilkSubstituteImage name={name} imageUrl={s.imageUrl} />
+                              <span>{name}</span>
                               {isDefault && (
-                                <span style={{ fontSize: 11, color: "#aaa", marginLeft: 4 }}>(default)</span>
+                                <span style={{ fontSize: 10, color: "#aaa", marginTop: 4 }}>(Default)</span>
                               )}
-                              {milkExtra > 0 && ` (+${formatPesos(milkExtra)})`}
+                              <span style={{ fontSize: 11, color: milkExtra > 0 ? "#fff" : "#aaa", marginTop: 4 }}>
+                                +{formatPesos(milkExtra)}
+                              </span>
                             </button>
                           );
                         })}
@@ -4906,7 +5008,6 @@ export default function PosRegisterClient() {
                     ? (() => {
                         const selectedSub = configuringItem.substitutes.find((s) => s.id === selectedSubstituteId);
                         const defaultId = configuringItem.defaultSubstituteCloudId ?? configuringItem.substitutes?.[0]?.id;
-                        const defaultSub = defaultId ? configuringItem.substitutes.find((s) => s.id === defaultId) : configuringItem.substitutes[0];
                         const sizeId = (configuringItem.hasSizes && configSizeOption) ? configSizeOption.id : (() => {
                           const sizeGroup = configuringItem.itemOptionGroups?.find((ig) => ig.group.name.toLowerCase().includes("size") || ig.group.name.toUpperCase().includes("OZ"));
                           const sizeOptId = sizeGroup ? selectedOptions[sizeGroup.group.id]?.[0] : null;
@@ -4929,8 +5030,7 @@ export default function PosRegisterClient() {
                           return sizeOpt?.name ?? undefined;
                         })();
                         const selectedPrice = getSubstitutePriceCents(selectedSub ?? undefined, sizeId, mode, sizeLabelBreakdown);
-                        const defaultMilkPrice = getSubstitutePriceCents(defaultSub ?? undefined, sizeId, mode, sizeLabelBreakdown);
-                        return Math.max(0, selectedPrice - defaultMilkPrice);
+                        return defaultId && selectedSub?.id === defaultId ? 0 : Math.max(0, selectedPrice);
                       })()
                     : 0;
 
@@ -4979,15 +5079,21 @@ export default function PosRegisterClient() {
                           <span style={{ color: "#fff" }}>+{formatPesos(addOnsTotal)}</span>
                         </div>
                       )}
-                      {milkDelta > 0 && (() => {
-                        const selSub = configuringItem.substitutes?.find((s) => s.id === selectedSubstituteId);
-                        return (
-                          <div key="milk" style={{ display: "flex", justifyContent: "space-between", fontSize: 14, color: "#aaa" }}>
-                            <span>Milk Upgrade ({selSub?.name ?? "Milk"}):</span>
-                            <span style={{ color: "#fff" }}>+{formatPesos(milkDelta)}</span>
-                          </div>
-                        );
-                      })()}
+                      {configuringItem.substitutes &&
+                        configuringItem.substitutes.length > 0 &&
+                        selectedSubstituteId &&
+                        (() => {
+                          const selSub = configuringItem.substitutes?.find((s) => s.id === selectedSubstituteId);
+                          return (
+                            <div key="milk" style={{ display: "flex", justifyContent: "space-between", fontSize: 14, color: "#aaa" }}>
+                              <span>
+                                Milk: {selSub?.name ?? "Milk"}
+                                <span style={{ fontSize: 11, color: "#64748b", marginLeft: 6 }}>(vs default)</span>
+                              </span>
+                              <span style={{ color: milkDelta > 0 ? "#fde68a" : "#94a3b8" }}>+{formatPesos(milkDelta)}</span>
+                            </div>
+                          );
+                        })()}
                       {configShotsQty > 0 && (
                         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, color: "#aaa" }}>
                           <span>

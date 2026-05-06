@@ -542,7 +542,44 @@ app.get("/items/:id", async (req, reply) => {
               .map((a) => ({ id: a.cloudId, name: a.name, priceCents: a.priceCents })),
           }))
         : undefined;
-    const itemSubstitutes = substitutes.filter((s) => substituteIds.has(s.cloudId)).map((s) => {
+    const linkedSubIds = [...substituteIds];
+    const recipeRows =
+      linkedSubIds.length > 0
+        ? await app.prisma.cloudSubstituteRecipeConsumption.findMany({
+            where: { storeId, substituteCloudId: { in: linkedSubIds } },
+            select: { substituteCloudId: true, ingredientCloudId: true },
+            orderBy: { id: "asc" },
+          })
+        : [];
+    const firstIngredientBySub = new Map<string, string>();
+    for (const r of recipeRows) {
+      if (!firstIngredientBySub.has(r.substituteCloudId)) {
+        firstIngredientBySub.set(r.substituteCloudId, r.ingredientCloudId);
+      }
+    }
+    const ingIdsForSubs = [...new Set([...firstIngredientBySub.values()])];
+    const ingredientsForSubs =
+      ingIdsForSubs.length > 0
+        ? await app.prisma.cloudIngredient.findMany({
+            where: { storeId, cloudId: { in: ingIdsForSubs } },
+            select: { cloudId: true, imageUrl: true },
+          })
+        : [];
+    const rawUrlByIngredient = new Map(ingredientsForSubs.map((i) => [i.cloudId, i.imageUrl]));
+    const substituteImageByCloudId = new Map<string, string | null>();
+    await Promise.all(
+      [...firstIngredientBySub.entries()].map(async ([subCloudId, ingCloudId]) => {
+        const raw = rawUrlByIngredient.get(ingCloudId) ?? null;
+        substituteImageByCloudId.set(
+          subCloudId,
+          raw ? await getImagePath({ id: ingCloudId, imageUrl: raw }) : null
+        );
+      })
+    );
+
+    const itemSubstitutes = substitutes
+      .filter((s) => substituteIds.has(s.cloudId) && s.isActive)
+      .map((s) => {
       const sub = s as {
         cloudId: string;
         name: string;
@@ -558,6 +595,7 @@ app.get("/items/:id", async (req, reply) => {
         id: sub.cloudId,
         name: sub.name,
         priceCents: sub.priceCents,
+        imageUrl: substituteImageByCloudId.get(sub.cloudId) ?? null,
         prices: (sub.prices ?? []).map((p) => ({
           sizeCloudId: p.sizeCloudId,
           sizeLabel: p.size?.label ?? null,

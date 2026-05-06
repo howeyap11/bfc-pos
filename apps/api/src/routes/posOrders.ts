@@ -198,7 +198,9 @@ export const posOrdersRoutes: FastifyPluginAsync = async (app) => {
               status: "PAID",
               prepCompletedAt: null,
             },
-            orderBy: { createdAt: "asc" },
+            // Newest-first so recent orders are visible and don't get pushed out by old backlog.
+            // Frontends also apply "older than 24h" filters; returning oldest-first can make screens look empty.
+            orderBy: { createdAt: "desc" },
             take: 100,
             include: {
               table: { select: { id: true, label: true, zone: { select: { code: true, name: true } } } },

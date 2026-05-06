@@ -301,6 +301,8 @@ function lineItemDisplayParts(optionsJson: string | null | undefined): { primary
       if (o.type === "size" && o.baseType && o.sizeLabel) {
         const temp = (o.baseType ?? "").charAt(0) + (o.baseType ?? "").slice(1).toLowerCase();
         primary.push(`${temp} ${o.sizeLabel}`);
+      } else if (o.type === "substitute" && o.name) {
+        secondary.push(o.name);
       } else if (o.type === "milk" && o.choice) {
         const c = (o.choice ?? "").toUpperCase().replace(/\s+/g, "_");
         if (c !== "FULL_CREAM") {
@@ -471,6 +473,7 @@ function shouldPrintSticker(
 
 type ParsedOpt =
   | { type: "size"; baseType: string; sizeLabel: string }
+  | { type: "substitute"; cloudId?: string; name?: string; upchargeCents?: number }
   | { type: "milk"; choice: string; upchargeCents?: number }
   | { type: "shots"; qty: number; upchargeCents?: number }
   | { type?: string; group?: string; name?: string };
@@ -515,19 +518,24 @@ function collectOrderSlipModifierLabels(optionsJson: string | null | undefined):
     out.push(t);
   }
 
-  const milkOpt = opts.find((o) => o && (o as ParsedOpt).type === "milk") as { choice?: string } | undefined;
-  if (milkOpt?.choice) {
-    const c = milkOpt.choice.toUpperCase().replace(/\s+/g, "_");
-    if (c !== "FULL_CREAM") {
-      const label =
-        c === "OAT"
-          ? "Oat Milk"
-          : c === "SOY"
-            ? "Soy Milk"
-            : c === "ALMOND"
-              ? "Almond Milk"
-              : milkOpt.choice.replace(/_/g, " ");
-      push(label);
+  const subOptSlip = opts.find((o) => o && (o as ParsedOpt).type === "substitute") as { name?: string } | undefined;
+  if (subOptSlip?.name?.trim()) {
+    push(subOptSlip.name.trim());
+  } else {
+    const milkOpt = opts.find((o) => o && (o as ParsedOpt).type === "milk") as { choice?: string } | undefined;
+    if (milkOpt?.choice) {
+      const c = milkOpt.choice.toUpperCase().replace(/\s+/g, "_");
+      if (c !== "FULL_CREAM") {
+        const label =
+          c === "OAT"
+            ? "Oat Milk"
+            : c === "SOY"
+              ? "Soy Milk"
+              : c === "ALMOND"
+                ? "Almond Milk"
+                : milkOpt.choice.replace(/_/g, " ");
+        push(label);
+      }
     }
   }
 
@@ -607,7 +615,9 @@ function wrapStickerText(text: string, maxLines: number, maxCharsPerLine: number
 }
 
 function isStandardDrinkOptions(opts: ParsedOpt[]): boolean {
-  const hasMilk = opts.some((o) => o && (o as ParsedOpt).type === "milk");
+  const hasMilk =
+    opts.some((o) => o && (o as ParsedOpt).type === "milk") ||
+    opts.some((o) => o && (o as ParsedOpt).type === "substitute");
   const hasShotsUpcharge = opts.some((o) => {
     if (!o || (o as ParsedOpt).type !== "shots") return false;
     return ((o as { upchargeCents?: number }).upchargeCents ?? 0) > 0;
@@ -666,22 +676,27 @@ function getStickerLineLabel(line: { name: string; optionsJson?: string | null; 
     lines.push(qty > 1 ? `${qty} SHOTS` : "1 SHOT");
   }
 
-  const milkOpt = opts.find((o) => o && (o as ParsedOpt).type === "milk") as { choice?: string } | undefined;
-  if (milkOpt?.choice) {
-    const choice = milkOpt.choice;
-    const label =
-      choice === "OAT"
-        ? "OAT MILK"
-        : choice === "SOY"
-          ? "SOY MILK"
-          : choice === "ALMOND"
-            ? "ALMOND MILK"
-            : choice === "FULL_CREAM"
-              ? "FULL CREAM"
-              : choice
-                ? choice.toUpperCase()
-                : "";
-    if (label) lines.push(label);
+  const subSticker = opts.find((o) => o && (o as ParsedOpt).type === "substitute") as { name?: string } | undefined;
+  if (subSticker?.name?.trim()) {
+    lines.push(subSticker.name.trim().toUpperCase().replace(/\s+/g, " "));
+  } else {
+    const milkOpt = opts.find((o) => o && (o as ParsedOpt).type === "milk") as { choice?: string } | undefined;
+    if (milkOpt?.choice) {
+      const choice = milkOpt.choice;
+      const label =
+        choice === "OAT"
+          ? "OAT MILK"
+          : choice === "SOY"
+            ? "SOY MILK"
+            : choice === "ALMOND"
+              ? "ALMOND MILK"
+              : choice === "FULL_CREAM"
+                ? "FULL CREAM"
+                : choice
+                  ? choice.toUpperCase()
+                  : "";
+      if (label) lines.push(label);
+    }
   }
 
   function normalizeModifierLabel(s: string): string {

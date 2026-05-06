@@ -936,8 +936,8 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       if (it.selectedSubstituteCloudId) {
         const cloudItem = cloudItemMap.get(it.itemId);
         const defaultSubId = cloudItem?.defaultSubstituteCloudId ?? null;
-        let selectedPrice = substitutePriceMap.get(it.selectedSubstituteCloudId) ?? 0;
-        let defaultPrice = defaultSubId != null ? substitutePriceMap.get(defaultSubId) ?? 0 : 0;
+        let selectedPrice = 0;
+        let defaultPrice = 0;
         let sizeCloudId = optIds.find((id) => sizeCloudIdsSet.has(id)) ?? null;
         const mode = (effectiveBaseType ?? "").toUpperCase();
         if (!sizeCloudId && effectiveSizeLabel && mode) {
@@ -946,12 +946,30 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         }
         if (sizeCloudId && mode) {
           const keySelected = `${it.selectedSubstituteCloudId}|${sizeCloudId}|${mode}`;
-          const keyDefault = defaultSubId != null ? `${defaultSubId}|${sizeCloudId}|${mode}` : null;
           if (substitutePriceBySizeMap.has(keySelected)) selectedPrice = substitutePriceBySizeMap.get(keySelected)!;
-          if (keyDefault != null && substitutePriceBySizeMap.has(keyDefault)) defaultPrice = substitutePriceBySizeMap.get(keyDefault)!;
+          if (!substitutePriceBySizeMap.has(keySelected)) {
+            app.log.warn(
+              {
+                event: "milk_matrix_missing",
+                substituteCloudId: it.selectedSubstituteCloudId,
+                defaultSubId,
+                sizeCloudId,
+                sizeLabel: effectiveSizeLabel,
+                mode,
+              },
+              "[Milk] Missing substitute matrix row (selected)"
+            );
+          }
         }
-        // Increment over default milk at this size/mode (must not zero default price when a premium substitute is chosen)
-        milkUpchargeCents = Math.max(0, selectedPrice - defaultPrice);
+        // Strict: when size+mode is known but matrix row is missing, treat as 0 (avoid accidental fallback charges).
+        if (!sizeCloudId || !mode) {
+          selectedPrice = substitutePriceMap.get(it.selectedSubstituteCloudId) ?? 0;
+          defaultPrice = defaultSubId != null ? substitutePriceMap.get(defaultSubId) ?? 0 : 0;
+        }
+
+        // Hard rule: default milk always adds 0; otherwise use selected tier price (matrix) directly.
+        milkUpchargeCents =
+          defaultSubId && it.selectedSubstituteCloudId === defaultSubId ? 0 : Math.max(0, selectedPrice);
       } else {
         milkUpchargeCents = calculateMilkUpcharge(it.milkChoice as MilkType | undefined, effectiveDefaultMilk);
       }
@@ -1002,10 +1020,13 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       }
 
       if (it.selectedSubstituteCloudId) {
-        optionsData.push({ type: "substitute", cloudId: it.selectedSubstituteCloudId });
-      }
-      
-      if (it.milkChoice && (it.selectedSubstituteCloudId != null || (effectiveDefaultMilk != null && it.milkChoice !== effectiveDefaultMilk))) {
+        optionsData.push({
+          type: "substitute",
+          cloudId: it.selectedSubstituteCloudId,
+          name: it.milkChoice ?? undefined,
+          upchargeCents: milkUpchargeCents,
+        });
+      } else if (it.milkChoice && effectiveDefaultMilk != null && it.milkChoice !== effectiveDefaultMilk) {
         optionsData.push({
           type: "milk",
           choice: it.milkChoice,

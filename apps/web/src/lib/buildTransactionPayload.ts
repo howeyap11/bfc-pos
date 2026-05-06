@@ -33,6 +33,8 @@ export type CartItem = {
   transactionTypeCode?: string;
   transactionTypeLabel?: string;
   optionTotalCents: number;
+  /** Incremental milk substitute charge over default milk at selected size (centavos); audit/display. */
+  milkUpgradeCents?: number;
   surchargeCents: number;
   discountPct: number;
   discountAmount: number;

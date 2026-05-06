@@ -73,6 +73,8 @@ export function lineItemDisplayParts(item: LineItemDisplayInput): {
     for (const o of opts) {
       if (o.type === "size") {
         // Primary uses extractSizeTemp when allowSz; never surface type:size for !allowSz
+      } else if (o.type === "substitute" && o.name) {
+        secondary.push(String(o.name));
       } else if (o.type === "milk" && o.choice) {
         const label =
           o.choice === "OAT" ? "Oat milk" : o.choice === "SOY" ? "Soy milk" : o.choice === "ALMOND" ? "Almond milk" : "Full cream";
@@ -307,6 +309,8 @@ export type CartItemForPrint = {
   baseType?: string;
   sizeLabel?: string;
   milkChoice?: string;
+  selectedSubstituteCloudId?: string;
+  milkUpgradeCents?: number;
   shotsQty?: number;
   optionTotalCents: number;
   surchargeCents?: number;
@@ -351,7 +355,16 @@ export function cartToReceiptTransaction(
     if (item.baseType || item.sizeLabel) {
       opts.push({ type: "size", baseType: item.baseType ?? "", sizeLabel: item.sizeLabel ?? "" });
     }
-    if (item.milkChoice) opts.push({ type: "milk", choice: item.milkChoice });
+    if (item.selectedSubstituteCloudId) {
+      opts.push({
+        type: "substitute",
+        cloudId: item.selectedSubstituteCloudId,
+        name: item.milkChoice,
+        upchargeCents: item.milkUpgradeCents ?? 0,
+      });
+    } else if (item.milkChoice) {
+      opts.push({ type: "milk", choice: item.milkChoice });
+    }
     if ((item.shotsQty ?? 0) >= 1) opts.push({ type: "shots", qty: item.shotsQty ?? 0 });
     (item.selectedOptions ?? []).forEach((o) => {
       if (o.name) opts.push({ name: o.name, group: o.groupName });

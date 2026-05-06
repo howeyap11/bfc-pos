@@ -1110,6 +1110,8 @@ export async function syncCatalogFromCloud(
       // Sync substitutes: prefer flat substitutes over groups
       const flatSubstitutes = data.substitutes ?? [];
       const substituteGroups = data.substituteGroups ?? [];
+      const substitutePricesPayloadDebug = data.substitutePrices ?? [];
+      const substituteRecipePayloadDebug = data.substituteRecipeConsumptions ?? [];
 
       // Flat SubstituteRecipeConsumption rows reference flat Substitute ids only. Clear every sync so group-only
       // catalogs do not leave stale legacy consumption rows from a previous flat-substitute menu.
@@ -1119,8 +1121,15 @@ export async function syncCatalogFromCloud(
         for (const s of flatSubstitutes) {
           await tx.cloudSubstitute.upsert({
             where: { cloudId: s.id },
-            create: { cloudId: s.id, storeId, name: s.name, priceCents: 0, sortOrder: s.sortOrder ?? 0 },
-            update: { name: s.name, sortOrder: s.sortOrder ?? 0 },
+            create: {
+              cloudId: s.id,
+              storeId,
+              name: s.name,
+              priceCents: 0,
+              sortOrder: s.sortOrder ?? 0,
+              isActive: s.isActive ?? true,
+            },
+            update: { name: s.name, sortOrder: s.sortOrder ?? 0, isActive: s.isActive ?? true },
           });
         }
         await tx.cloudSubstitutePrice.deleteMany({ where: { storeId } });
@@ -1215,8 +1224,20 @@ export async function syncCatalogFromCloud(
           for (const o of g.options ?? []) {
             await tx.cloudSubstitute.upsert({
               where: { cloudId: o.id },
-              create: { cloudId: o.id, storeId, name: o.name, priceCents: o.priceCents ?? 0, sortOrder: o.sortOrder ?? 0 },
-              update: { name: o.name, priceCents: o.priceCents ?? 0, sortOrder: o.sortOrder ?? 0 },
+              create: {
+                cloudId: o.id,
+                storeId,
+                name: o.name,
+                priceCents: o.priceCents ?? 0,
+                sortOrder: o.sortOrder ?? 0,
+                isActive: o.isActive ?? true,
+              },
+              update: {
+                name: o.name,
+                priceCents: o.priceCents ?? 0,
+                sortOrder: o.sortOrder ?? 0,
+                isActive: o.isActive ?? true,
+              },
             });
           }
         }
@@ -1248,12 +1269,16 @@ export async function syncCatalogFromCloud(
        */
       if (flatSubstitutes.length === 0 && substituteGroups.length > 0 && (data.substitutePrices ?? []).length > 0) {
         await tx.cloudSubstitutePrice.deleteMany({ where: { storeId } });
-        const substituteIdsForMatrix = new Set<string>();
+        // IMPORTANT: substitutePrices/substituteRecipeConsumptions are configured in Cloud `/menu-settings/substitutes`
+        // and reference the flat Substitute ids. In delta-syncs, `data.substitutes` can be empty even though the
+        // substitutes already exist in the local DB, so we must accept matrix rows whose substituteId appears in
+        // the matrix payload (not only in substituteGroups).
+        const substitutePricesPayload = data.substitutePrices ?? [];
+        const substituteIdsForMatrix = new Set<string>(substitutePricesPayload.map((p: { substituteId: string }) => p.substituteId));
         for (const g of substituteGroups) {
           for (const o of g.options ?? []) substituteIdsForMatrix.add(o.id);
         }
         const validSizeCloudIdsMatrix = new Set((data.menuSizes ?? []).map((s: { id: string }) => s.id));
-        const substitutePricesPayload = data.substitutePrices ?? [];
         const validPriceRows = substitutePricesPayload.filter(
           (p: { substituteId: string; sizeId: string }) =>
             substituteIdsForMatrix.has(p.substituteId) && validSizeCloudIdsMatrix.has(p.sizeId)
@@ -1291,6 +1316,30 @@ export async function syncCatalogFromCloud(
               });
             }
           }
+        }
+
+        // Also persist the recipe-consumption matrix so POS can resolve substitute images via ingredient imageUrl.
+        await tx.cloudSubstituteRecipeConsumption.deleteMany({ where: { storeId } });
+        const recipeConsumptions = data.substituteRecipeConsumptions ?? [];
+        const validIngredientCloudIds = new Set((data.ingredients ?? []).map((i: { id: string }) => i.id));
+        const validRecipeRows = recipeConsumptions.filter(
+          (r: { substituteId: string; sizeId: string; ingredientId: string }) =>
+            substituteIdsForMatrix.has(r.substituteId) &&
+            validSizeCloudIdsMatrix.has(r.sizeId) &&
+            validIngredientCloudIds.has(r.ingredientId)
+        );
+        if (validRecipeRows.length > 0) {
+          await tx.cloudSubstituteRecipeConsumption.createMany({
+            data: validRecipeRows.map((r: { substituteId: string; sizeId: string; mode: string; ingredientId: string; qtyPerItem: string | number; unitCode: string }) => ({
+              storeId,
+              substituteCloudId: r.substituteId,
+              sizeCloudId: r.sizeId,
+              mode: r.mode,
+              ingredientCloudId: r.ingredientId,
+              qtyPerItem: String(r.qtyPerItem),
+              unitCode: r.unitCode,
+            })),
+          });
         }
       }
 
