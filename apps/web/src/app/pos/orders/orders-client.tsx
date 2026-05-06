@@ -174,6 +174,8 @@ export default function OrdersClient({
   const [printActionBusy, setPrintActionBusy] = useState<"order" | "sticker" | null>(null);
   const loadOrdersInFlight = useRef(false);
   const kdsPrevIdsRef = useRef<Set<string> | null>(null);
+  /** Avoid stale badge logic and keep loadOrders() stable (do not depend on hasLoadedOnce state). */
+  const priorOrdersSuccessRef = useRef(false);
 
   const effectiveTab =
     isKds || isTabletPending ? "pending" : isTabletQr ? "qr" : qrMenuEnabled ? innerTab : "pending";
@@ -210,6 +212,10 @@ export default function OrdersClient({
     }
   }, []);
 
+  useEffect(() => {
+    priorOrdersSuccessRef.current = false;
+  }, [activeStaff?.staffKey]);
+
   const loadCartFromStorage = useCallback(() => {
     setCart(parseStoredCart());
   }, []);
@@ -229,6 +235,7 @@ export default function OrdersClient({
     loadOrdersInFlight.current = true;
 
     try {
+      console.log("[OrdersPoll] tick → GET /api/pos/orders", { tab: effectiveTab, variant });
       setError(null);
       const res = await fetch(`/api/pos/orders?tab=${effectiveTab}`, {
         cache: "no-store",
@@ -244,7 +251,7 @@ export default function OrdersClient({
         } catch {
           /* keep errMsg */
         }
-        console.warn("[Orders] load failed (HTTP)", { status: res.status, statusText: res.statusText, bodyPreview: text?.slice?.(0, 200) });
+        console.warn("[OrdersPoll] fetch failed (HTTP)", { status: res.status, statusText: res.statusText, bodyPreview: text?.slice?.(0, 200) });
         throw new Error(errMsg);
       }
 
@@ -252,13 +259,19 @@ export default function OrdersClient({
       const orderList = Array.isArray(data) ? data : (data.orders ?? []);
       const pendingTxList = Array.isArray(data) ? [] : (data.pendingTransactions ?? []);
       setOrders((prev) => {
-        if (!isKds && !isTabletOrders && hasLoadedOnce && orderList.length > prev.length) {
+        if (!isKds && !isTabletOrders && priorOrdersSuccessRef.current && orderList.length > prev.length) {
           setNewOrderBadge((b) => b + (orderList.length - prev.length));
         }
         return orderList;
       });
       setPendingTransactions(pendingTxList);
+      priorOrdersSuccessRef.current = true;
       setHasLoadedOnce(true);
+      console.log("[OrdersPoll] fetch ok", {
+        tab: effectiveTab,
+        qrOrders: orderList.length,
+        pendingTransactions: pendingTxList.length,
+      });
 
       if (isKds) {
         setLastSyncAt(Date.now());
@@ -279,9 +292,9 @@ export default function OrdersClient({
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       if (e instanceof TypeError) {
-        console.warn("[Orders] load failed (network)", { message: msg });
+        console.warn("[OrdersPoll] fetch failed (network)", { tab: effectiveTab, message: msg });
       } else {
-        console.warn("[Orders] load failed", { message: msg });
+        console.warn("[OrdersPoll] fetch failed", { tab: effectiveTab, message: msg });
       }
       setError(msg);
       // Keep last successful orders / pending data visible during transient API issues
@@ -290,7 +303,7 @@ export default function OrdersClient({
       loadOrdersInFlight.current = false;
       setLoading(false);
     }
-  }, [activeStaff?.staffKey, effectiveTab, hasLoadedOnce, isKds, isTabletOrders]);
+  }, [activeStaff?.staffKey, effectiveTab, isKds, isTabletOrders, variant]);
 
   useEffect(() => {
     if (!activeStaff?.staffKey) {
@@ -300,11 +313,24 @@ export default function OrdersClient({
     setNewOrderBadge(0);
     loadOrders();
     const pollMs = isKds ? POLL_INTERVAL_KDS_MS : POLL_INTERVAL_MS;
-    const t = setInterval(loadOrders, pollMs);
+    const t = setInterval(() => void loadOrders(), pollMs);
     return () => clearInterval(t);
   }, [activeStaff?.staffKey, effectiveTab, loadOrders, isKds]);
 
-  /** All pending-tab tickets (no age filter). KDS may filter by kitchen categories. */
+  /** Browsers throttle timers in background tabs; refresh when the user returns. */
+  useEffect(() => {
+    if (!activeStaff?.staffKey) return;
+    const onVis = () => {
+      if (document.visibilityState === "visible") {
+        console.log("[OrdersPoll] tab visible → refresh");
+        void loadOrders();
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [activeStaff?.staffKey, loadOrders]);
+
+  /** Pending-tab tickets before age/category filters (lists below apply 24h and kitchen category rules). */
   const pendingItemsRaw: PendingItem[] = useMemo(() => {
     if (effectiveTab !== "pending") return [];
     const items: PendingItem[] = [
@@ -319,7 +345,7 @@ export default function OrdersClient({
     return items;
   }, [effectiveTab, orders, pendingTransactions]);
 
-  /** Pending orders list / tablet cards: hide tickets older than 24h (KDS uses full raw + category filter). */
+  /** Pending orders / tablet: hide tickets older than 24h (UI only; by order or transaction createdAt). */
   const pendingItemsList: PendingItem[] = useMemo(() => {
     if (isKds) return [];
     return pendingItemsRaw.filter((p) => {
@@ -328,10 +354,13 @@ export default function OrdersClient({
     });
   }, [pendingItemsRaw, isKds]);
 
-  const pendingItemsForKds = useMemo(
-    () => filterPendingForKitchen(pendingItemsRaw, kitchenDisplayCategoryIds),
-    [pendingItemsRaw, kitchenDisplayCategoryIds]
-  );
+  const pendingItemsForKds = useMemo(() => {
+    const kitchen = filterPendingForKitchen(pendingItemsRaw, kitchenDisplayCategoryIds);
+    return kitchen.filter((p) => {
+      const t = p.kind === "order" ? p.order.createdAt : p.transaction.createdAt;
+      return !isPendingOlderThan24Hours(t);
+    });
+  }, [pendingItemsRaw, kitchenDisplayCategoryIds]);
 
   useEffect(() => {
     if (effectiveTab === "qr") {
@@ -372,6 +401,7 @@ export default function OrdersClient({
     try {
       const res = await fetch(`/api/qr/orders/${o.id}/accept`, {
         method: "POST",
+        cache: "no-store",
         headers: { "x-staff-key": activeStaff.staffKey },
       });
       const data = await res.json();
@@ -424,6 +454,7 @@ export default function OrdersClient({
     try {
       const res = await fetch(`/api/orders/${o.id}/cancel`, {
         method: "POST",
+        cache: "no-store",
         headers: {
           "Content-Type": "application/json",
           "x-staff-key": activeStaff.staffKey,
@@ -447,6 +478,7 @@ export default function OrdersClient({
     try {
       const res = await fetch(`/api/pos/transactions/${tx.id}/prep-complete`, {
         method: "PATCH",
+        cache: "no-store",
         headers: { "x-staff-key": activeStaff.staffKey },
       });
       const data = await res.json();
@@ -466,6 +498,7 @@ export default function OrdersClient({
     try {
       const res = await fetch(`/api/order-status/${o.id}`, {
         method: "PATCH",
+        cache: "no-store",
         headers: {
           "Content-Type": "application/json",
           "x-staff-key": activeStaff.staffKey,
@@ -489,6 +522,7 @@ export default function OrdersClient({
     try {
       const res = await fetch(`/api/pos/transactions/${txId}/kds-bump`, {
         method: "PATCH",
+        cache: "no-store",
         headers: { "x-staff-key": activeStaff.staffKey },
       });
       const data = (await res.json()) as { error?: string; message?: string };
@@ -540,6 +574,7 @@ export default function OrdersClient({
     try {
       const res = await fetch(`/api/pos/transactions/${printModalTx.id}/print-order-slip`, {
         method: "POST",
+        cache: "no-store",
         headers: { "content-type": "application/json", "x-staff-key": activeStaff.staffKey },
         body: JSON.stringify({ lineItemIds: ids }),
       });
@@ -564,6 +599,7 @@ export default function OrdersClient({
     try {
       const res = await fetch(`/api/pos/transactions/${printModalTx.id}/print-stickers`, {
         method: "POST",
+        cache: "no-store",
         headers: { "content-type": "application/json", "x-staff-key": activeStaff.staffKey },
         body: JSON.stringify({ lineItemIds: ids }),
       });

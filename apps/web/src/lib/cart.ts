@@ -15,11 +15,11 @@ export type CartLine = {
   note?: string;
 };
 
-const KEY = "bfc_cart_v1";
+export const BFC_CART_STORAGE_KEY = "bfc_cart_v1";
 
 export function loadCart(): CartLine[] {
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = localStorage.getItem(BFC_CART_STORAGE_KEY);
     if (!raw) return [];
     return JSON.parse(raw) as CartLine[];
   } catch {
@@ -28,5 +28,5 @@ export function loadCart(): CartLine[] {
 }
 
 export function saveCart(lines: CartLine[]) {
-  localStorage.setItem(KEY, JSON.stringify(lines));
+  localStorage.setItem(BFC_CART_STORAGE_KEY, JSON.stringify(lines));
 }

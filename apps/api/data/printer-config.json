@@ -1,6 +1,6 @@
 {
   "receiptPrinter": "Generic / Text Only",
-  "stickerPrinter": "",
+  "stickerPrinter": "Xprinter XP-365B",
   "stickerWidthMm": 80,
   "stickerHeightMm": 60
 }

@@ -260,9 +260,19 @@ export default function HealthGate({ children }: { children: React.ReactNode }) 
     return () => clearTimeout(t);
   }, [softDisconnected, check]);
 
-  if (gateState === "ready" && everReady) {
-    return <HealthGateReady systemStatus={systemStatus}>{children}</HealthGateReady>;
-  }
+  /**
+   * Once we've gone "ready", keep route UI mounted when we flip to maintenance/reconnecting.
+   * Replacing `children` with the fullscreen gate used to unmount POS/tablet entirely — closing
+   * transaction-success, interrupting print flows, and feeling like every tab "refreshed" when
+   * `/api/system/status` reported updating/restarting or all tabs hit the same API blip.
+   */
+  const [contentPinned, setContentPinned] = useState(false);
+  useEffect(() => {
+    if (gateState === "ready" && everReady) setContentPinned(true);
+  }, [gateState, everReady]);
+
+  const blocking = !(gateState === "ready" && everReady);
+  const showChildren = contentPinned || !blocking;
 
   const { title, sub } = getMessage(
     gateState,
@@ -272,31 +282,27 @@ export default function HealthGate({ children }: { children: React.ReactNode }) 
   );
 
   return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: COLORS.bgDarkest,
-        color: COLORS.textPrimary,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 16,
-        zIndex: 9999,
-      }}
-    >
-      <div style={{ fontSize: 20, fontWeight: 600 }}>{title}</div>
-      <div style={{ fontSize: 14, color: COLORS.textSecondary }}>{sub}</div>
-    </div>
+    <>
+      {showChildren ? children : null}
+      {blocking ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: COLORS.bgDarkest,
+            color: COLORS.textPrimary,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 16,
+            zIndex: 9999,
+          }}
+        >
+          <div style={{ fontSize: 20, fontWeight: 600 }}>{title}</div>
+          <div style={{ fontSize: 14, color: COLORS.textSecondary }}>{sub}</div>
+        </div>
+      ) : null}
+    </>
   );
-}
-
-function HealthGateReady({
-  children,
-}: {
-  children: React.ReactNode;
-  systemStatus: SystemStatus | null;
-}) {
-  return <>{children}</>;
 }

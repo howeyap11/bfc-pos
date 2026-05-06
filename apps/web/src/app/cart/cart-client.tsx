@@ -1,13 +1,16 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { loadCart } from "@/lib/cart";
+import { BFC_CART_STORAGE_KEY, loadCart } from "@/lib/cart";
 
 export default function CartClient() {
   const [lines, setLines] = useState(loadCart());
 
   useEffect(() => {
-    const onStorage = () => setLines(loadCart());
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== null && e.key !== BFC_CART_STORAGE_KEY) return;
+      setLines(loadCart());
+    };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);

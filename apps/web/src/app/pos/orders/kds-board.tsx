@@ -55,6 +55,9 @@ function stableId(item: PendingItem): string {
   return item.kind === "order" ? `o:${item.order.id}` : `t:${item.transaction.id}`;
 }
 
+/** Match pending-orders horizontal strip density (narrow cards = more visible tickets). */
+const KITCHEN_CARD_WIDTH = "clamp(220px, min(26vw, 320px), 380px)";
+
 type KdsBoardProps = {
   pendingItems: PendingItem[];
   bumpingOrderId: string | null;
@@ -70,17 +73,13 @@ export default function KdsBoard({
   onBumpOrder,
   onBumpTransaction,
 }: KdsBoardProps) {
-  const columns = useMemo(() => {
-    const c0: PendingItem[] = [];
-    const c1: PendingItem[] = [];
-    const c2: PendingItem[] = [];
-    for (const p of pendingItems) {
-      const col = p.kind === "order" ? orderKitchenColumn(p.order) : txKitchenColumn(p.transaction);
-      if (col === 0) c0.push(p);
-      else if (col === 1) c1.push(p);
-      else c2.push(p);
-    }
-    return [c0, c1, c2] as const;
+  /** Same chronological flow as standard pending queue (oldest first). */
+  const sortedItems = useMemo(() => {
+    return [...pendingItems].sort((a, b) => {
+      const tA = a.kind === "order" ? a.order.createdAt : a.transaction.createdAt;
+      const tB = b.kind === "order" ? b.order.createdAt : b.transaction.createdAt;
+      return new Date(tA).getTime() - new Date(tB).getTime();
+    });
   }, [pendingItems]);
 
   function renderOrderLines(order: PosOrder) {
@@ -203,7 +202,10 @@ export default function KdsBoard({
             padding: 20,
             border: `4px solid ${borderColor}`,
             boxShadow: `0 0 0 2px ${headerAccent}33`,
-            minHeight: 200,
+            minHeight: 0,
+            flexShrink: 0,
+            width: KITCHEN_CARD_WIDTH,
+            maxHeight: "100%",
             display: "flex",
             flexDirection: "column",
             gap: 12,
@@ -259,7 +261,10 @@ export default function KdsBoard({
           padding: 20,
           border: `4px solid ${borderColor}`,
           boxShadow: `0 0 0 2px ${headerAccent}33`,
-          minHeight: 200,
+          minHeight: 0,
+          flexShrink: 0,
+          width: KITCHEN_CARD_WIDTH,
+          maxHeight: "100%",
           display: "flex",
           flexDirection: "column",
           gap: 12,
@@ -296,52 +301,42 @@ export default function KdsBoard({
     );
   }
 
-  const titles = ["New", "Preparing", "Ready"] as const;
-
   return (
     <div
       style={{
         flex: 1,
         minHeight: 0,
-        overflow: "auto",
-        WebkitOverflowScrolling: "touch",
+        minWidth: 0,
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
       }}
     >
       <div
         style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(3, minmax(min(100%, 300px), 1fr))",
+          flex: 1,
+          minHeight: 0,
+          minWidth: 0,
+          display: "flex",
+          flexDirection: "row",
           gap: 16,
-          minHeight: "100%",
-          alignContent: "start",
+          overflowX: "auto",
+          overflowY: "hidden",
+          alignItems: "stretch",
+          paddingBottom: 8,
+          WebkitOverflowScrolling: "touch",
         }}
       >
-        {columns.map((items, i) => (
-          <div key={titles[i]} style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
-            <div
-              style={{
-                position: "sticky",
-                top: 0,
-                zIndex: 1,
-                padding: "12px 8px",
-                background: COLORS.bgDarkest,
-                borderBottom: `3px solid ${i === 0 ? COL_NEW : i === 1 ? COL_PREP : COL_READY}`,
-              }}
-            >
-              <h2 style={{ margin: 0, fontSize: 26, fontWeight: 800, color: "#fff" }}>{titles[i]}</h2>
-              <div style={{ fontSize: 16, color: COLORS.textSecondary, marginTop: 4 }}>
-                {items.length} ticket{items.length !== 1 ? "s" : ""}
-              </div>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 16, paddingBottom: 24 }}>
-              {items.length === 0 ? (
-                <div style={{ padding: 24, textAlign: "center", color: COLORS.textSecondary, fontSize: 18 }}>—</div>
-              ) : (
-                items.map((item) => renderCard(item, i as 0 | 1 | 2))
-              )}
-            </div>
-          </div>
-        ))}
+        {sortedItems.length === 0 ? (
+          <div style={{ padding: 16, color: COLORS.textSecondary, fontSize: 17 }}>No kitchen tickets.</div>
+        ) : (
+          sortedItems.map((item) =>
+            renderCard(
+              item,
+              item.kind === "order" ? orderKitchenColumn(item.order) : txKitchenColumn(item.transaction)
+            )
+          )
+        )}
       </div>
     </div>
   );

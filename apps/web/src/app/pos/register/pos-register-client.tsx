@@ -2637,7 +2637,12 @@ export default function PosRegisterClient() {
     });
   }
 
-  /** Resolve substitute price for a size/mode when available (e.g. 70 regular, 180 1-liter). Matches by sizeCloudId first, then by sizeLabel so 1-liter/concentrated get correct price. */
+  /**
+   * Resolve substitute tier price for size/mode (CloudSubstitute.prices or fallback priceCents).
+   * Amounts in this file are centavos (formatPesos divides by 100 for display). Milk line charge =
+   * max(0, selectedTier - defaultMilkTier) — must match server posTransactions milk upcharge.
+   * Example: base ₱140 (14000) + milk upgrade ₱70 (7000) → line ₱210 (21000) for that size/mode.
+   */
   function getSubstitutePriceCents(
     sub: SubstituteOption | undefined | null,
     sizeCloudId: string | undefined,
@@ -2726,10 +2731,8 @@ export default function PosRegisterClient() {
         const mode = configBaseType ?? undefined;
         const sizeLabel = configSizeOption?.name;
         const selectedPrice = getSubstitutePriceCents(selectedSubstituteForQuickAdd, sizeId, mode, sizeLabel);
-        // Default milk is included in base price; only charge the increment for a non-default milk
-        const defaultPriceForDelta = selectedSubstituteId === defaultId ? selectedPrice : 0;
-        const delta = selectedPrice - defaultPriceForDelta;
-        optionTotalCentsHasSizes += delta;
+        const defaultMilkPrice = getSubstitutePriceCents(defaultSub ?? undefined, sizeId, mode, sizeLabel);
+        optionTotalCentsHasSizes += Math.max(0, selectedPrice - defaultMilkPrice);
       }
       const lineShotsQtyHasSizes = configuringItem.supportsShots ? configShotsQty : 0;
       const includedShotsHasSizes = resolveIncludedShots({
@@ -2863,8 +2866,8 @@ export default function PosRegisterClient() {
       const sizeId = selectedSize?.id;
       const sizeLabel = selectedSize?.name;
       const selectedPrice = getSubstitutePriceCents(selectedSub ?? undefined, sizeId, derivedBaseType, sizeLabel);
-      const defaultPriceForDelta = selectedSubstituteId === defaultId ? selectedPrice : 0;
-      milkPriceDelta = selectedPrice - defaultPriceForDelta;
+      const defaultMilkPrice = getSubstitutePriceCents(defaultSub ?? undefined, sizeId, derivedBaseType, sizeLabel);
+      milkPriceDelta = Math.max(0, selectedPrice - defaultMilkPrice);
     }
     optionTotalCents += milkPriceDelta;
 
@@ -4524,45 +4527,81 @@ export default function PosRegisterClient() {
               )}
 
               {/* Milk Substitute Section: cloud-synced only; show only when substitutes exist */}
-              {configuringItem.substitutes && configuringItem.substitutes.length > 0 && (
-              <div style={{ marginBottom: 20 }}>
-                <h3 style={{ fontSize: 16, marginBottom: 10, color: "#ddd", fontWeight: "600" }}>
-                  Milk Substitute
-                </h3>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {configuringItem.substitutes.map((s) => {
-                    const id = s.id;
-                    const name = s.name;
-                    const priceCents = s.priceCents;
-                    const defaultId = configuringItem.defaultSubstituteCloudId ?? configuringItem.substitutes?.[0]?.id;
-                    const isDefault = defaultId != null && id === defaultId;
-                    const isSelected = selectedSubstituteId === id;
-                    return (
-                      <button
-                        key={id}
-                        onClick={() => setSelectedSubstituteId(id)}
-                        style={{
-                          padding: "10px 16px",
-                          border: `2px solid ${isSelected ? COLORS.primary : "#444"}`,
-                          borderRadius: 6,
-                          cursor: "pointer",
-                          background: isSelected ? COLORS.primary : "#2a2a2a",
-                          color: "#fff",
-                          fontWeight: isSelected ? "bold" : "normal",
-                          transition: "all 0.2s",
-                          fontSize: 14,
-                          position: "relative",
-                        }}
-                      >
-                        {name}
-                        {isDefault && <span style={{ fontSize: 11, color: "#aaa", marginLeft: 4 }}>(default)</span>}
-                        {priceCents > 0 && ` (+${formatPesos(priceCents)})`}
-                      </button>
+              {configuringItem.substitutes && configuringItem.substitutes.length > 0 &&
+                (() => {
+                  const defaultId = configuringItem.defaultSubstituteCloudId ?? configuringItem.substitutes?.[0]?.id;
+                  const defaultSubForLabel = defaultId
+                    ? configuringItem.substitutes!.find((x) => x.id === defaultId)
+                    : configuringItem.substitutes![0];
+                  let szId: string | undefined;
+                  let md: "HOT" | "ICED" | "CONCENTRATED" | undefined;
+                  let szLab: string | null | undefined;
+                  if (configuringItem.hasSizes && configSizeOption && configBaseType) {
+                    szId = configSizeOption.id;
+                    md = configBaseType;
+                    szLab = configSizeOption.name;
+                  } else {
+                    const sg = configuringItem.itemOptionGroups?.find(
+                      (ig) =>
+                        ig.group.name.toLowerCase().includes("size") || ig.group.name.toUpperCase().includes("OZ")
                     );
-                  })}
-                </div>
-              </div>
-              )}
+                    const soid = sg ? selectedOptions[sg.group.id]?.[0] : null;
+                    szId = soid ?? undefined;
+                    szLab = sg?.group.options.find((o) => o.id === soid)?.name;
+                    const tg = configuringItem.itemOptionGroups?.find((ig) =>
+                      ["HOT", "ICED", "CONCENTRATED"].includes(ig.group.name.toUpperCase())
+                    );
+                    const toid = tg ? selectedOptions[tg.group.id]?.[0] : null;
+                    const topt = tg?.group.options.find((o) => o.id === toid);
+                    const tn = (topt?.name ?? "").toUpperCase();
+                    if (tn.includes("ICED")) md = "ICED";
+                    else if (tn.includes("HOT")) md = "HOT";
+                    else if (tn.includes("CONCENTRATED")) md = "CONCENTRATED";
+                  }
+                  return (
+                    <div style={{ marginBottom: 20 }}>
+                      <h3 style={{ fontSize: 16, marginBottom: 10, color: "#ddd", fontWeight: "600" }}>
+                        Milk Substitute
+                      </h3>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                        {configuringItem.substitutes!.map((s) => {
+                          const id = s.id;
+                          const name = s.name;
+                          const isDefault = defaultId != null && id === defaultId;
+                          const isSelected = selectedSubstituteId === id;
+                          const tierSel = getSubstitutePriceCents(s, szId, md, szLab);
+                          const tierDef = getSubstitutePriceCents(defaultSubForLabel ?? undefined, szId, md, szLab);
+                          const milkExtra = Math.max(0, tierSel - tierDef);
+                          return (
+                            <button
+                              key={id}
+                              type="button"
+                              onClick={() => setSelectedSubstituteId(id)}
+                              style={{
+                                padding: "10px 16px",
+                                border: `2px solid ${isSelected ? COLORS.primary : "#444"}`,
+                                borderRadius: 6,
+                                cursor: "pointer",
+                                background: isSelected ? COLORS.primary : "#2a2a2a",
+                                color: "#fff",
+                                fontWeight: isSelected ? "bold" : "normal",
+                                transition: "all 0.2s",
+                                fontSize: 14,
+                                position: "relative",
+                              }}
+                            >
+                              {name}
+                              {isDefault && (
+                                <span style={{ fontSize: 11, color: "#aaa", marginLeft: 4 }}>(default)</span>
+                              )}
+                              {milkExtra > 0 && ` (+${formatPesos(milkExtra)})`}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
 
               {/* Add-ons (cloud-synced), collapsible per group */}
               {configuringItem.addOns && configuringItem.addOns.length > 0 && (() => {
@@ -4874,8 +4913,8 @@ export default function PosRegisterClient() {
                           return sizeOpt?.name ?? undefined;
                         })();
                         const selectedPrice = getSubstitutePriceCents(selectedSub ?? undefined, sizeId, mode, sizeLabelBreakdown);
-                        const defaultPriceForDelta = selectedSubstituteId === defaultId ? selectedPrice : 0;
-                        return selectedPrice - defaultPriceForDelta;
+                        const defaultMilkPrice = getSubstitutePriceCents(defaultSub ?? undefined, sizeId, mode, sizeLabelBreakdown);
+                        return Math.max(0, selectedPrice - defaultMilkPrice);
                       })()
                     : 0;
 

@@ -950,9 +950,8 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
           if (substitutePriceBySizeMap.has(keySelected)) selectedPrice = substitutePriceBySizeMap.get(keySelected)!;
           if (keyDefault != null && substitutePriceBySizeMap.has(keyDefault)) defaultPrice = substitutePriceBySizeMap.get(keyDefault)!;
         }
-        // Default milk is included in base price; only charge the increment for a non-default milk
-        const defaultPriceForDelta = it.selectedSubstituteCloudId === defaultSubId ? selectedPrice : 0;
-        milkUpchargeCents = Math.max(0, selectedPrice - defaultPriceForDelta);
+        // Increment over default milk at this size/mode (must not zero default price when a premium substitute is chosen)
+        milkUpchargeCents = Math.max(0, selectedPrice - defaultPrice);
       } else {
         milkUpchargeCents = calculateMilkUpcharge(it.milkChoice as MilkType | undefined, effectiveDefaultMilk);
       }
