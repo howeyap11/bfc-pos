@@ -2650,30 +2650,46 @@ export default function PosRegisterClient() {
     sizeLabel?: string | null
   ): number {
     if (!sub) return 0;
-    let result: number;
-    if (mode && sub.prices && sub.prices.length > 0) {
-      const modeNorm = mode.toUpperCase();
-      const matchMode = (p: SubstitutePriceBySize) =>
-        p.mode === modeNorm || p.mode === modeNorm.toLowerCase();
-      let bySize = sizeCloudId
-        ? sub.prices.find((p) => p.sizeCloudId === sizeCloudId && matchMode(p))
+    const prices = sub.prices;
+    if (!prices || prices.length === 0) return sub.priceCents ?? 0;
+
+    const modeNorm = mode?.toUpperCase();
+    const modeMatches = (p: SubstitutePriceBySize) => {
+      if (!modeNorm) return true;
+      const pm = (p.mode ?? "").toUpperCase();
+      return pm === modeNorm || (p.mode ?? "") === modeNorm.toLowerCase();
+    };
+
+    let bySize =
+      sizeCloudId != null && String(sizeCloudId).trim() !== ""
+        ? prices.find((p) => p.sizeCloudId === sizeCloudId && modeMatches(p))
         : null;
-      if (bySize == null && sizeLabel != null && String(sizeLabel).trim() !== "") {
-        const labelNorm = String(sizeLabel).trim().toLowerCase();
-        bySize = sub.prices.find(
-          (p) => p.sizeLabel != null && String(p.sizeLabel).trim().toLowerCase() === labelNorm && matchMode(p)
-        ) ?? null;
-      }
-      if (bySize != null) {
-        result = bySize.priceCents;
-      } else {
-        const byModeOnly = sub.prices.find(matchMode);
-        result = byModeOnly != null ? byModeOnly.priceCents : (sub.priceCents ?? 0);
-      }
-    } else {
-      result = sub.priceCents ?? 0;
+    if (bySize == null && sizeCloudId != null && String(sizeCloudId).trim() !== "") {
+      const forSize = prices.filter((p) => p.sizeCloudId === sizeCloudId);
+      bySize = (forSize.length === 1 ? forSize[0] : null) ?? prices.find((p) => p.sizeCloudId === sizeCloudId) ?? null;
     }
-    return result;
+    if (bySize == null && sizeLabel != null && String(sizeLabel).trim() !== "") {
+      const labelNorm = String(sizeLabel).trim().toLowerCase();
+      bySize =
+        prices.find(
+          (p) =>
+            p.sizeLabel != null &&
+            String(p.sizeLabel).trim().toLowerCase() === labelNorm &&
+            modeMatches(p)
+        ) ?? null;
+      if (bySize == null) {
+        bySize =
+          prices.find(
+            (p) => p.sizeLabel != null && String(p.sizeLabel).trim().toLowerCase() === labelNorm
+          ) ?? null;
+      }
+    }
+    if (bySize != null) return bySize.priceCents;
+
+    const byModeOnly = modeNorm ? prices.find(modeMatches) : null;
+    if (byModeOnly != null) return byModeOnly.priceCents;
+
+    return sub.priceCents ?? 0;
   }
 
   function addToCart() {

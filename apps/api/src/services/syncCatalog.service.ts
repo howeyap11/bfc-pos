@@ -1241,6 +1241,59 @@ export async function syncCatalogFromCloud(
         }
       }
 
+      /**
+       * Substitute pricing matrix (`substitutePrices`) was only applied when `data.substitutes` was non-empty.
+       * Stores that rely on substitute *groups* (no flat `substitutes` array) never persisted CloudSubstitutePrice
+       * rows, so POS saw empty `prices[]` and charged 0 for milk despite Cloud `/menu` matrix.
+       */
+      if (flatSubstitutes.length === 0 && substituteGroups.length > 0 && (data.substitutePrices ?? []).length > 0) {
+        await tx.cloudSubstitutePrice.deleteMany({ where: { storeId } });
+        const substituteIdsForMatrix = new Set<string>();
+        for (const g of substituteGroups) {
+          for (const o of g.options ?? []) substituteIdsForMatrix.add(o.id);
+        }
+        const validSizeCloudIdsMatrix = new Set((data.menuSizes ?? []).map((s: { id: string }) => s.id));
+        const substitutePricesPayload = data.substitutePrices ?? [];
+        const validPriceRows = substitutePricesPayload.filter(
+          (p: { substituteId: string; sizeId: string }) =>
+            substituteIdsForMatrix.has(p.substituteId) && validSizeCloudIdsMatrix.has(p.sizeId)
+        );
+        if (substitutePricesPayload.length > 0 && validPriceRows.length < substitutePricesPayload.length) {
+          const missingSub = substitutePricesPayload.filter((p: { substituteId: string }) => !substituteIdsForMatrix.has(p.substituteId));
+          const missingSize = substitutePricesPayload.filter((p: { sizeId: string }) => !validSizeCloudIdsMatrix.has(p.sizeId));
+          console.warn("[SyncCatalog] cloudSubstitutePrice (group catalog): skipped rows", {
+            skipped: substitutePricesPayload.length - validPriceRows.length,
+            sampleMissingSubstituteIds: [...new Set(missingSub.map((p: { substituteId: string }) => p.substituteId))].slice(0, 5),
+            sampleMissingSizeIds: [...new Set(missingSize.map((p: { sizeId: string }) => p.sizeId))].slice(0, 5),
+          });
+        }
+        if (validPriceRows.length > 0) {
+          await tx.cloudSubstitutePrice.createMany({
+            data: validPriceRows.map((p: { substituteId: string; sizeId: string; mode: string; priceCents: number }) => ({
+              storeId,
+              substituteCloudId: p.substituteId,
+              sizeCloudId: p.sizeId,
+              mode: p.mode,
+              priceCents: p.priceCents,
+            })),
+          });
+          const minPriceBySub = new Map<string, number>();
+          for (const p of validPriceRows) {
+            const cur = minPriceBySub.get(p.substituteId);
+            minPriceBySub.set(p.substituteId, cur === undefined ? p.priceCents : Math.min(cur, p.priceCents));
+          }
+          for (const subId of substituteIdsForMatrix) {
+            const pc = minPriceBySub.get(subId);
+            if (pc !== undefined) {
+              await tx.cloudSubstitute.updateMany({
+                where: { cloudId: subId, storeId },
+                data: { priceCents: pc },
+              });
+            }
+          }
+        }
+      }
+
       for (const o of data.menuOptions ?? []) {
         await tx.cloudMenuOption.upsert({
           where: { cloudId: o.id },

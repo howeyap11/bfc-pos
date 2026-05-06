@@ -1293,8 +1293,10 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
           app.log.warn({ err, transactionId: transaction.id }, "SnapResibo allocation at finalization threw");
         }
       }
-      // Sync to cloud (best effort, non-blocking)
-      await syncTransactionToCloudOrEnqueue(app.prisma, transaction.id, app.log);
+      // Sync to cloud in background — never block payment completion on cloud latency
+      void syncTransactionToCloudOrEnqueue(app.prisma, transaction.id, app.log).catch((err) =>
+        app.log.warn({ err, transactionId: transaction.id }, "[TransactionSync] background sync failed")
+      );
       // Cloud-recipe inventory (offline): persist per-line frozen consumption + local ledger; cloud uses same JSON and skips recompute
       const paidLines = transaction.lineItems.filter((l) => l.itemId);
       if (paidLines.length > 0) {
@@ -1369,8 +1371,9 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       include: { payments: true, lineItems: true },
     });
 
-    // Sync void to cloud
-    await syncTransactionToCloudOrEnqueue(app.prisma, voided.id, app.log);
+    void syncTransactionToCloudOrEnqueue(app.prisma, voided.id, app.log).catch((err) =>
+      app.log.warn({ err, transactionId: voided.id }, "[TransactionSync] void sync failed")
+    );
 
     try {
       const full = await app.prisma.transaction.findUnique({
@@ -1553,8 +1556,9 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       },
     });
 
-    // Sync refund to cloud (best effort, non-blocking)
-    await syncTransactionToCloudOrEnqueue(app.prisma, id, app.log);
+    void syncTransactionToCloudOrEnqueue(app.prisma, id, app.log).catch((err) =>
+      app.log.warn({ err, transactionId: id }, "[TransactionSync] refund sync failed")
+    );
 
     try {
       const lineRows = await app.prisma.transactionLineItem.findMany({
