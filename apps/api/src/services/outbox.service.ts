@@ -5,7 +5,56 @@ import {
   buildCloudSyncListsFromTransaction,
   type LineItemRecord,
   type RefundRecord,
+  type TransactionForCloudSync,
 } from "./transactionSync.service";
+
+/**
+ * Ensure a PENDING outbox row exists for transaction.cloud.sync for this POS transaction id.
+ * Dedupes: resets attempts on an existing PENDING/FAILED row with the same transactionId instead of inserting again.
+ * Used after refunds (and on failed uploads) so cloud always receives cumulative refunds on retry.
+ */
+export async function upsertPendingTransactionCloudSync(
+  prisma: PrismaClient,
+  storeId: string,
+  transactionId: string
+): Promise<void> {
+  if (!prisma.localOutbox) {
+    throw new Error(
+      "Prisma client missing LocalOutbox model. Run: cd apps/api && pnpm exec prisma generate"
+    );
+  }
+  const pending = await prisma.localOutbox.findMany({
+    where: {
+      topic: "transaction.cloud.sync",
+      status: { in: ["PENDING", "FAILED"] },
+    },
+    select: { id: true, payloadJson: true },
+  });
+  for (const row of pending) {
+    try {
+      const p = JSON.parse(row.payloadJson) as { transactionId?: string };
+      if (p.transactionId === transactionId) {
+        await prisma.localOutbox.update({
+          where: { id: row.id },
+          data: {
+            status: "PENDING",
+            attempts: 0,
+            lastError: null,
+            lastAttemptAt: null,
+          },
+        });
+        return;
+      }
+    } catch {
+      /* malformed payload — skip */
+    }
+  }
+  await enqueueOutbox(prisma, {
+    storeId,
+    topic: "transaction.cloud.sync",
+    payload: { transactionId },
+  });
+}
 
 export async function enqueueOutbox(
   prisma: PrismaClient,
@@ -259,8 +308,22 @@ export async function processTransactionSyncOutbox(
       if (!transaction) {
         throw new Error(`Transaction not found: ${transactionId}`);
       }
-      const { paymentsList, lineItemsList, refundAmountCents, refundsList } =
-        buildCloudSyncListsFromTransaction(transaction);
+      const refundStaffIds = [
+        ...new Set(transaction.refunds.map((r) => r.refundedByStaffId).filter((x): x is string => !!x)),
+      ];
+      const refundedByStaffNameById = new Map<string, string>();
+      if (refundStaffIds.length > 0) {
+        const staffRows = await prisma.staff.findMany({
+          where: { id: { in: refundStaffIds } },
+          select: { id: true, name: true },
+        });
+        for (const s of staffRows) refundedByStaffNameById.set(s.id, s.name);
+      }
+
+      const { paymentsList, lineItemsList, refundAmountCents, refundsList } = buildCloudSyncListsFromTransaction(
+        transaction as TransactionForCloudSync,
+        refundedByStaffNameById
+      );
 
       const result = await uploadFn(prisma, transaction, paymentsList, lineItemsList, {
         refundAmountCents,

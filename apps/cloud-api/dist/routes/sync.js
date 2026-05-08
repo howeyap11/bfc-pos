@@ -41,6 +41,7 @@ const transactionImportSchema = z.object({
         reason: z.string(),
         amountCents: z.number().int(),
         createdAt: z.string(),
+        refundedByStaffName: z.string().nullable().optional(),
         items: z.array(z.object({
             sourceLineItemId: z.string(),
             qtyRefunded: z.number().int(),
@@ -243,6 +244,23 @@ export async function syncRoutes(app) {
                     where: { id: { in: missingIngIds } },
                 });
                 ingredients = [...ingredientsVersioned, ...extraIngredients];
+            }
+        }
+        // Ensure ingredients referenced by substitute recipe-consumption matrix are always present.
+        // Cloud `/menu-settings/substitutes` stores images on Ingredient, and the matrix references ingredientId.
+        // In delta sync, ingredientsVersioned may not include these ids if no Ingredient row changed.
+        {
+            const refIngIds = new Set([
+                ...(substituteRecipeConsumptions ?? []).map((r) => r.ingredientId),
+                ...(optionChoiceRecipeLines ?? []).map((r) => r.ingredientId),
+                ...(legacyAddOns ?? []).flatMap((a) => (a.recipeLines ?? []).map((r) => r.ingredientId)),
+                ...(substituteGroups ?? []).flatMap((g) => (g.options ?? []).flatMap((o) => (o.recipeLines ?? []).map((r) => r.ingredientId))),
+            ]);
+            const existingIngIds = new Set((ingredients ?? []).map((i) => i.id));
+            const missing = [...refIngIds].filter((id) => id && !existingIngIds.has(id));
+            if (missing.length > 0) {
+                const extra = await app.prisma.ingredient.findMany({ where: { id: { in: missing } } });
+                ingredients = [...ingredients, ...extra];
             }
         }
         app.log.info({

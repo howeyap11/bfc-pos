@@ -13,7 +13,9 @@ import type {
 const MS_24H = 24 * 60 * 60 * 1000;
 
 export function isPendingOlderThan24Hours(createdAt: string): boolean {
-  return Date.now() - new Date(createdAt).getTime() > MS_24H;
+  const t = new Date(createdAt ?? "").getTime();
+  if (!Number.isFinite(t)) return false;
+  return Date.now() - t > MS_24H;
 }
 
 /** Elapsed since createdAt as HH:MM:SS (local clock). */
@@ -112,12 +114,16 @@ export function orderQualifiesForKitchen(item: PendingItem, kitchenCategoryIds: 
   if (kitchenCategoryIds.length === 0) return true;
   const set = new Set(kitchenCategoryIds);
   if (item.kind === "order") {
-    return item.order.items.some((li) => {
+    const lines = item.order.items;
+    if (!Array.isArray(lines)) return false;
+    return lines.some((li) => {
       const id = kitchenFilterCategoryId(li);
       return id != null && set.has(id);
     });
   }
-  return item.transaction.lineItems.some((li) => {
+  const txLines = item.transaction.lineItems;
+  if (!Array.isArray(txLines)) return false;
+  return txLines.some((li) => {
     const id = kitchenFilterCategoryId(li);
     return id != null && set.has(id);
   });

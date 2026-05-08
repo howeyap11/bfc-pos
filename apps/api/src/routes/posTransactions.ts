@@ -11,7 +11,7 @@ import { Prisma, type MilkType, type ServiceType, type ShotsPricingMode } from "
 import type { PrismaClient } from "@prisma/client";
 import { requireStaffHook } from "../plugins/staffGuard";
 import { verifyAdminPin } from "../services/adminPin.service";
-import { enqueueOutbox } from "../services/outbox.service";
+import { enqueueOutbox, upsertPendingTransactionCloudSync } from "../services/outbox.service";
 import { ensureItemForCloudId } from "../services/catalogCache.service";
 import { syncTransactionToCloudOrEnqueue } from "../services/transactionSync.service";
 import {
@@ -1541,7 +1541,7 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       data: {
         transactionId: transaction.id,
         reason,
-        refundedByStaffId: null, // TODO: Link to actual staff when available
+        refundedByStaffId: (req as { staff?: { id: string } }).staff?.id ?? null,
         refundItems: {
           create: refundItems,
         },
@@ -1576,6 +1576,12 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
         },
       },
     });
+
+    try {
+      await upsertPendingTransactionCloudSync(app.prisma, STORE_ID, id);
+    } catch (err) {
+      app.log.error({ err, transactionId: id }, "[Refund] Failed to ensure cloud sync outbox (will retry via scheduler if immediate sync fails)");
+    }
 
     void syncTransactionToCloudOrEnqueue(app.prisma, id, app.log).catch((err) =>
       app.log.warn({ err, transactionId: id }, "[TransactionSync] refund sync failed")

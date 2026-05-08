@@ -14,7 +14,13 @@ import {
   lineLabelForPrintModal,
   transactionTypeUi,
 } from "@/lib/orderLineDisplay";
-import type { PendingItem, PendingTransaction, PendingTransactionLineItem, PosOrder } from "./kitchen-types";
+import type {
+  OrderLineItem,
+  PendingItem,
+  PendingTransaction,
+  PendingTransactionLineItem,
+  PosOrder,
+} from "./kitchen-types";
 import KdsBoard from "./kds-board";
 import { playKitchenNewOrderChime } from "./kitchen-alert";
 
@@ -29,6 +35,92 @@ const CARD_EXPANDED_WIDTH = 520;
 const CARD_EXPANDED_MIN_WIDTH = 440;
 const CARD_MIN_HEIGHT = 320;
 /** Cart column width matches Register: clamp(272px, 32vw, 440px) */
+
+/** Ensure QR line formatter never iterates undefined `options`. */
+function coerceOrderLineItem(li: unknown): OrderLineItem {
+  if (!li || typeof li !== "object") {
+    return { id: "_", qty: 0, unitPrice: 0, lineNote: null, item: null, options: [] };
+  }
+  const x = li as Partial<OrderLineItem>;
+  return {
+    id: typeof x.id === "string" ? x.id : "_",
+    qty: typeof x.qty === "number" && Number.isFinite(x.qty) ? x.qty : 0,
+    unitPrice: typeof x.unitPrice === "number" && Number.isFinite(x.unitPrice) ? x.unitPrice : 0,
+    lineNote: x.lineNote ?? null,
+    item: x.item ?? null,
+    options: Array.isArray(x.options) ? x.options : [],
+  };
+}
+
+/** Coerce API payloads so `.map` / `.some` never throws (missing items/lineItems). */
+function coercePendingTransaction(tx: unknown): PendingTransaction | null {
+  if (!tx || typeof tx !== "object") return null;
+  const t = tx as Partial<PendingTransaction>;
+  if (typeof t.id !== "string") return null;
+  return {
+    ...(t as PendingTransaction),
+    createdAt: typeof t.createdAt === "string" && t.createdAt ? t.createdAt : new Date(0).toISOString(),
+    lineItems: Array.isArray(t.lineItems) ? (t.lineItems as unknown[]).map(coercePendingTxLine) : [],
+  };
+}
+
+function coercePendingTxLine(li: unknown): PendingTransactionLineItem {
+  if (!li || typeof li !== "object") {
+    return {
+      id: "_",
+      qty: 0,
+      unitPrice: 0,
+      lineNote: null,
+      specialInstructions: null,
+      name: "",
+      optionsJson: null,
+      categoryName: null,
+      subCategoryName: null,
+      displayLabel: "",
+      item: null,
+    };
+  }
+  const x = li as Partial<PendingTransactionLineItem>;
+  return {
+    id: typeof x.id === "string" ? x.id : "_",
+    qty: typeof x.qty === "number" ? x.qty : 0,
+    unitPrice: typeof x.unitPrice === "number" ? x.unitPrice : 0,
+    lineNote: x.lineNote ?? null,
+    specialInstructions: x.specialInstructions ?? null,
+    customerName: x.customerName,
+    name: typeof x.name === "string" ? x.name : "",
+    optionsJson: x.optionsJson ?? null,
+    categoryName: x.categoryName ?? null,
+    subCategoryName: x.subCategoryName ?? null,
+    displayLabel: typeof x.displayLabel === "string" ? x.displayLabel : "",
+    item: x.item ?? null,
+  };
+}
+
+function coercePosOrder(o: unknown): PosOrder | null {
+  if (!o || typeof o !== "object") return null;
+  const row = o as Partial<PosOrder>;
+  if (typeof row.id !== "string") return null;
+  const linkedRaw = row.linkedTransaction;
+  const linked =
+    linkedRaw != null && typeof linkedRaw === "object" ? coercePendingTransaction(linkedRaw) : null;
+  return {
+    ...(row as PosOrder),
+    createdAt: typeof row.createdAt === "string" && row.createdAt ? row.createdAt : new Date(0).toISOString(),
+    items: Array.isArray(row.items) ? row.items.map(coerceOrderLineItem) : [],
+    linkedTransaction: linked,
+  };
+}
+
+function coercePosOrders(raw: unknown): PosOrder[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map(coercePosOrder).filter((x): x is PosOrder => x != null);
+}
+
+function coercePendingTransactions(raw: unknown): PendingTransaction[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map(coercePendingTransaction).filter((x): x is PendingTransaction => x != null);
+}
 
 function getMinutesElapsed(createdAt: string): number {
   return Math.floor((Date.now() - new Date(createdAt).getTime()) / 60_000);
@@ -138,7 +230,7 @@ function OrdersCartLineItem({ item }: { item: CartItem }) {
 
 export default function OrdersClient({
   variant = "default",
-  kdsExitHref = "/tablet/pending",
+  kdsExitHref = "/tablet/pending-orders",
 }: {
   variant?: "default" | "kds" | "tabletPending" | "tabletQr";
   /** Shown on Kitchen display header (tablet shell). */
@@ -149,6 +241,8 @@ export default function OrdersClient({
   const isTabletPending = variant === "tabletPending";
   const isTabletQr = variant === "tabletQr";
   const isTabletOrders = isTabletPending || isTabletQr;
+  /** Tablet UI + kitchen board: poll / bump without staff PIN (local kiosk). POS /orders still requires login. */
+  const ordersAllowAnonymous = isTabletOrders || isKds;
   const [activeStaff, setActiveStaff] = useState<{ staffKey: string } | null>(null);
   const [innerTab, setInnerTab] = useState<"qr" | "pending">("qr");
   const [orders, setOrders] = useState<PosOrder[]>([]);
@@ -180,7 +274,7 @@ export default function OrdersClient({
   const effectiveTab =
     isKds || isTabletPending ? "pending" : isTabletQr ? "qr" : qrMenuEnabled ? innerTab : "pending";
 
-  /** Shared pending-queue UX: POS pending tab + /tablet/pending (not KDS, not QR-only). */
+  /** Shared pending-queue UX: POS pending tab + tablet pending routes (not KDS, not QR-only). */
   const isPendingQueueView =
     !isKds && (isTabletPending || (!isTabletOrders && effectiveTab === "pending"));
 
@@ -230,16 +324,19 @@ export default function OrdersClient({
   }, [loadCartFromStorage]);
 
   const loadOrders = useCallback(async () => {
-    if (!activeStaff?.staffKey) return;
+    if (!ordersAllowAnonymous && !activeStaff?.staffKey) return;
     if (loadOrdersInFlight.current) return;
     loadOrdersInFlight.current = true;
 
     try {
       console.log("[OrdersPoll] tick → GET /api/pos/orders", { tab: effectiveTab, variant });
       setError(null);
+      const headers: Record<string, string> = {};
+      const sk = activeStaff?.staffKey?.trim();
+      if (sk) headers["x-staff-key"] = sk;
       const res = await fetch(`/api/pos/orders?tab=${effectiveTab}`, {
         cache: "no-store",
-        headers: { "x-staff-key": activeStaff.staffKey },
+        headers,
       });
 
       const text = await res.text();
@@ -255,9 +352,11 @@ export default function OrdersClient({
         throw new Error(errMsg);
       }
 
-      const data = JSON.parse(text) as { orders?: PosOrder[]; pendingTransactions?: PendingTransaction[] } | PosOrder[];
-      const orderList = Array.isArray(data) ? data : (data.orders ?? []);
-      const pendingTxList = Array.isArray(data) ? [] : (data.pendingTransactions ?? []);
+      const data = JSON.parse(text) as { orders?: unknown; pendingTransactions?: unknown } | unknown[];
+      const orderList = Array.isArray(data) ? coercePosOrders(data) : coercePosOrders((data as { orders?: unknown }).orders);
+      const pendingTxList = Array.isArray(data)
+        ? []
+        : coercePendingTransactions((data as { pendingTransactions?: unknown }).pendingTransactions);
       setOrders((prev) => {
         if (!isKds && !isTabletOrders && priorOrdersSuccessRef.current && orderList.length > prev.length) {
           setNewOrderBadge((b) => b + (orderList.length - prev.length));
@@ -303,10 +402,10 @@ export default function OrdersClient({
       loadOrdersInFlight.current = false;
       setLoading(false);
     }
-  }, [activeStaff?.staffKey, effectiveTab, isKds, isTabletOrders, variant]);
+  }, [activeStaff?.staffKey, effectiveTab, isKds, isTabletOrders, ordersAllowAnonymous, variant]);
 
   useEffect(() => {
-    if (!activeStaff?.staffKey) {
+    if (!ordersAllowAnonymous && !activeStaff?.staffKey) {
       setLoading(false);
       return;
     }
@@ -315,11 +414,11 @@ export default function OrdersClient({
     const pollMs = isKds ? POLL_INTERVAL_KDS_MS : POLL_INTERVAL_MS;
     const t = setInterval(() => void loadOrders(), pollMs);
     return () => clearInterval(t);
-  }, [activeStaff?.staffKey, effectiveTab, loadOrders, isKds]);
+  }, [activeStaff?.staffKey, effectiveTab, loadOrders, isKds, ordersAllowAnonymous]);
 
   /** Browsers throttle timers in background tabs; refresh when the user returns. */
   useEffect(() => {
-    if (!activeStaff?.staffKey) return;
+    if (!ordersAllowAnonymous && !activeStaff?.staffKey) return;
     const onVis = () => {
       if (document.visibilityState === "visible") {
         console.log("[OrdersPoll] tab visible → refresh");
@@ -328,7 +427,7 @@ export default function OrdersClient({
     };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
-  }, [activeStaff?.staffKey, loadOrders]);
+  }, [activeStaff?.staffKey, loadOrders, ordersAllowAnonymous]);
 
   /** Pending-tab tickets before age/category filters (lists below apply 24h and kitchen category rules). */
   const pendingItemsRaw: PendingItem[] = useMemo(() => {
@@ -340,7 +439,11 @@ export default function OrdersClient({
     items.sort((a, b) => {
       const tA = a.kind === "order" ? a.order.createdAt : a.transaction.createdAt;
       const tB = b.kind === "order" ? b.order.createdAt : b.transaction.createdAt;
-      return new Date(tA).getTime() - new Date(tB).getTime();
+      const xa = new Date(tA).getTime();
+      const xb = new Date(tB).getTime();
+      const na = Number.isFinite(xa) ? xa : 0;
+      const nb = Number.isFinite(xb) ? xb : 0;
+      return na - nb;
     });
     return items;
   }, [effectiveTab, orders, pendingTransactions]);
@@ -361,6 +464,28 @@ export default function OrdersClient({
       return !isPendingOlderThan24Hours(t);
     });
   }, [pendingItemsRaw, kitchenDisplayCategoryIds]);
+
+  useEffect(() => {
+    if (process.env.NODE_ENV === "production") return;
+    if (effectiveTab !== "pending") return;
+    const cutoffMs = Date.now() - 24 * 60 * 60 * 1000;
+    const after24 = pendingItemsRaw.filter((p) => {
+      const t = p.kind === "order" ? p.order.createdAt : p.transaction.createdAt;
+      return !isPendingOlderThan24Hours(t);
+    }).length;
+    const afterKitchenAnd24 = filterPendingForKitchen(pendingItemsRaw, kitchenDisplayCategoryIds).filter((p) => {
+      const t = p.kind === "order" ? p.order.createdAt : p.transaction.createdAt;
+      return !isPendingOlderThan24Hours(t);
+    }).length;
+    console.log("[PendingQueueDebug]", {
+      cutoffIso: new Date(cutoffMs).toISOString(),
+      pendingQueryCountBeforeFilters: pendingItemsRaw.length,
+      countAfter24hFilter: after24,
+      countAfter24hAndCategoryFilter: afterKitchenAnd24,
+      kitchenCategoryFilterCount: kitchenDisplayCategoryIds.length,
+      variant,
+    });
+  }, [effectiveTab, pendingItemsRaw, kitchenDisplayCategoryIds, variant]);
 
   useEffect(() => {
     if (effectiveTab === "qr") {
@@ -472,14 +597,17 @@ export default function OrdersClient({
   }
 
   async function handlePrepCompleteTransaction(tx: PendingTransaction) {
-    if (!activeStaff?.staffKey || completingTransactionId) return;
+    if ((!ordersAllowAnonymous && !activeStaff?.staffKey) || completingTransactionId) return;
     setCompletingTransactionId(tx.id);
     setError(null);
     try {
+      const headers: Record<string, string> = {};
+      const sk = activeStaff?.staffKey?.trim();
+      if (sk) headers["x-staff-key"] = sk;
       const res = await fetch(`/api/pos/transactions/${tx.id}/prep-complete`, {
         method: "PATCH",
         cache: "no-store",
-        headers: { "x-staff-key": activeStaff.staffKey },
+        headers,
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || data.message || "Failed to mark prep complete");
@@ -492,17 +620,17 @@ export default function OrdersClient({
   }
 
   async function handleKdsBumpOrder(o: PosOrder, nextStatus: string) {
-    if (!activeStaff?.staffKey || bumpingOrderId) return;
+    if ((!ordersAllowAnonymous && !activeStaff?.staffKey) || bumpingOrderId) return;
     setBumpingOrderId(o.id);
     setError(null);
     try {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      const sk = activeStaff?.staffKey?.trim();
+      if (sk) headers["x-staff-key"] = sk;
       const res = await fetch(`/api/order-status/${o.id}`, {
         method: "PATCH",
         cache: "no-store",
-        headers: {
-          "Content-Type": "application/json",
-          "x-staff-key": activeStaff.staffKey,
-        },
+        headers,
         body: JSON.stringify({ status: nextStatus }),
       });
       const data = (await res.json()) as { error?: string; message?: string };
@@ -516,14 +644,17 @@ export default function OrdersClient({
   }
 
   async function handleKdsBumpTransaction(txId: string) {
-    if (!activeStaff?.staffKey || bumpingKdsTxId) return;
+    if ((!ordersAllowAnonymous && !activeStaff?.staffKey) || bumpingKdsTxId) return;
     setBumpingKdsTxId(txId);
     setError(null);
     try {
+      const headers: Record<string, string> = {};
+      const sk = activeStaff?.staffKey?.trim();
+      if (sk) headers["x-staff-key"] = sk;
       const res = await fetch(`/api/pos/transactions/${txId}/kds-bump`, {
         method: "PATCH",
         cache: "no-store",
-        headers: { "x-staff-key": activeStaff.staffKey },
+        headers,
       });
       const data = (await res.json()) as { error?: string; message?: string };
       if (!res.ok) throw new Error(data.error || data.message || "Failed to bump ticket");
@@ -1245,17 +1376,13 @@ export default function OrdersClient({
     );
   }
 
-  if (!activeStaff?.staffKey) {
+  if (!ordersAllowAnonymous && !activeStaff?.staffKey) {
     return (
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "60vh", padding: 24, background: COLORS.bgDarkest }}>
         <div style={{ background: COLORS.bgDark, padding: 32, borderRadius: 12, border: `1px solid ${COLORS.borderLight}`, maxWidth: 400, textAlign: "center" }}>
           <h2 style={{ margin: "0 0 16px 0", fontSize: 20, color: COLORS.textPrimary }}>Staff Login Required</h2>
           <p style={{ margin: "0 0 24px 0", fontSize: 15, color: COLORS.textSecondary, lineHeight: 1.5 }}>
-            {isKds
-              ? "Kitchen Display uses the same staff session as the register. Log in on Register first."
-              : isTabletOrders
-                ? "Orders on this tablet use the same staff session as the register. Log in on Register or use Staff on the tablet menu."
-                : "No active staff session. Please login from the Register page first."}
+            No active staff session. Please login from the Register page first.
           </p>
           <button
             type="button"

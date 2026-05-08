@@ -8,5 +8,7 @@ declare module "fastify" {
     prisma: PrismaClient;
     inventoryService: InventoryService;
     requireStaff: (req: any, reply: any) => Promise<void> | void;
+    /** Missing x-staff-key allowed; invalid key still 401. For tablet/kiosk display routes only. */
+    optionalStaff: (req: any, reply: any) => Promise<void> | void;
   }
 }

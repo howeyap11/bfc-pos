@@ -3798,6 +3798,43 @@ export async function adminRoutes(app: FastifyInstance) {
       };
     });
 
+    // #region agent log
+    try {
+      const dbSample = list[0];
+      const rowSample = rows[0];
+      const refundedRow = list.find((t) => (t.refundAmountCents ?? 0) > 0);
+      fetch("http://127.0.0.1:7328/ingest/4412edb8-6093-4552-97f7-a28d77cc8a0f", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "f985ab" },
+        body: JSON.stringify({
+          sessionId: "f985ab",
+          hypothesisId: "H1-H2",
+          location: "cloud-api admin.ts GET /transactions",
+          message: "transactions list: DB has refund fields vs API row keys",
+          data: {
+            rowCount: rows.length,
+            apiRowKeys: rowSample ? Object.keys(rowSample) : [],
+            dbRefundAmountFirst: dbSample?.refundAmountCents ?? null,
+            dbHasRefundsJsonFirst: Boolean(dbSample?.refundsJson),
+            refundedInPage: refundedRow
+              ? {
+                  refundAmountCents: refundedRow.refundAmountCents,
+                  hasRefundsJson: Boolean(refundedRow.refundsJson),
+                  apiRowHasRefundFields: Object.keys(rows.find((r) => r.sourceTransactionId === refundedRow.sourceTransactionId) ?? {}).filter(
+                    (k) => k.includes("refund") || k.includes("Refund")
+                  ),
+                }
+              : null,
+          },
+          timestamp: Date.now(),
+          runId: "pre-fix",
+        }),
+      }).catch(() => {});
+    } catch {
+      /* ignore */
+    }
+    // #endregion
+
     return { items: rows, nextCursor, hasMore };
   });
 

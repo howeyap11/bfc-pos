@@ -29,6 +29,9 @@ import { resolveInitialHasSizesModeAndSize } from "@/lib/posItemInitialSize";
 import { isDrinkLineStillAllowed, type ItemDetailForDrinkGuard } from "@/lib/posDrinkCartGuard";
 import { enqueueSyncItem, addSyncQueueUpdatedListener } from "@/lib/syncQueue";
 
+/** Survives accidental remount: restore success panel until cashier starts a new transaction. */
+const REGISTER_SUCCESS_PANEL_SS_KEY = "bfc_register_success_panel_v1";
+
 /**
  * POS Register Client Component
  * 
@@ -1807,6 +1810,46 @@ export default function PosRegisterClient() {
   const [showStaffModal, setShowStaffModal] = useState(false);
   const [staffBusy, setStaffBusy] = useState<string | null>(null);
 
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(REGISTER_SUCCESS_PANEL_SS_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as {
+        cartPanelMode?: string;
+        lastCompletedTransaction?: {
+          id: string;
+          transactionNo: number;
+          totalCents: number;
+          method: string;
+          items: CartItem[];
+          createdAt: string;
+          staffName?: string;
+          changeCents?: number;
+          payments?: Array<{ method: string; amountCents: number }>;
+        };
+      };
+      if (parsed.cartPanelMode === "SUCCESS" && parsed.lastCompletedTransaction?.id) {
+        setLastCompletedTransaction(parsed.lastCompletedTransaction);
+        setCartPanelMode("SUCCESS");
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      if (cartPanelMode === "SUCCESS" && lastCompletedTransaction) {
+        sessionStorage.setItem(
+          REGISTER_SUCCESS_PANEL_SS_KEY,
+          JSON.stringify({ cartPanelMode: "SUCCESS", lastCompletedTransaction })
+        );
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [cartPanelMode, lastCompletedTransaction]);
+
   // Customer display: last-added item for second-screen preview
   const [lastAddedForDisplay, setLastAddedForDisplay] = useState<{
     preview: ItemPreview;
@@ -2901,6 +2944,11 @@ export default function PosRegisterClient() {
       // If success panel is open, switch back to cart so the new item is visible
       setLastCompletedTransaction(null);
       setCartPanelMode("CART");
+      try {
+        sessionStorage.removeItem(REGISTER_SUCCESS_PANEL_SS_KEY);
+      } catch {
+        /* ignore */
+      }
       return;
     }
 
@@ -3050,6 +3098,11 @@ export default function PosRegisterClient() {
     // If success panel is open, switch back to cart so the new item is visible
     setLastCompletedTransaction(null);
     setCartPanelMode("CART");
+    try {
+      sessionStorage.removeItem(REGISTER_SUCCESS_PANEL_SS_KEY);
+    } catch {
+      /* ignore */
+    }
   }
 
   function updateCartItem(updatedItem: CartItem) {
@@ -3855,6 +3908,11 @@ export default function PosRegisterClient() {
     setQrOrderId(null); // Clear QR order link
     setLastCompletedTransaction(null);
     setCartPanelMode("CART");
+    try {
+      sessionStorage.removeItem(REGISTER_SUCCESS_PANEL_SS_KEY);
+    } catch {
+      /* ignore */
+    }
   }
 
   function formatPesos(cents: number) {

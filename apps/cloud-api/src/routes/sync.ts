@@ -47,6 +47,7 @@ const transactionImportSchema = z.object({
     reason: z.string(),
     amountCents: z.number().int(),
     createdAt: z.string(),
+    refundedByStaffName: z.string().nullable().optional(),
     items: z.array(z.object({
       sourceLineItemId: z.string(),
       qtyRefunded: z.number().int(),
@@ -302,7 +303,7 @@ export async function syncRoutes(app: FastifyInstance) {
         const refIngIds = new Set<string>([
           ...(substituteRecipeConsumptions ?? []).map((r) => r.ingredientId),
           ...(optionChoiceRecipeLines ?? []).map((r) => r.ingredientId),
-          ...(addOns ?? []).flatMap((a) => (a.recipeLines ?? []).map((r) => r.ingredientId)),
+          ...(legacyAddOns ?? []).flatMap((a) => (a.recipeLines ?? []).map((r) => r.ingredientId)),
           ...(substituteGroups ?? []).flatMap((g) => (g.options ?? []).flatMap((o) => (o.recipeLines ?? []).map((r) => r.ingredientId))),
         ]);
         const existingIngIds = new Set((ingredients ?? []).map((i) => i.id));

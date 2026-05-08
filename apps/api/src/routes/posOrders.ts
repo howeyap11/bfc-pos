@@ -131,7 +131,7 @@ export const posOrdersRoutes: FastifyPluginAsync = async (app) => {
     return { categories: rows.map((r) => ({ id: r.cloudId, name: r.name })) };
   });
 
-  app.get("/pos/orders", { preHandler: app.requireStaff }, async (req, reply) => {
+  app.get("/pos/orders", { preHandler: app.optionalStaff }, async (req, reply) => {
     const parsed = PosOrdersQuery.safeParse(req.query);
     const tab = parsed.success ? parsed.data.tab : "qr";
 
@@ -308,7 +308,7 @@ export const posOrdersRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // Mark a transaction's prep as complete (attach prep time to transaction)
-  app.patch("/pos/transactions/:id/prep-complete", { preHandler: app.requireStaff }, async (req, reply) => {
+  app.patch("/pos/transactions/:id/prep-complete", { preHandler: app.optionalStaff }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const transaction = await app.prisma.transaction.findFirst({
       where: { id, storeId: STORE_ID, status: "PAID" },
@@ -325,7 +325,7 @@ export const posOrdersRoutes: FastifyPluginAsync = async (app) => {
   });
 
   /** KDS: advance PAID transaction one step — new → preparing → ready → completed (same local row). */
-  app.patch("/pos/transactions/:id/kds-bump", { preHandler: app.requireStaff }, async (req, reply) => {
+  app.patch("/pos/transactions/:id/kds-bump", { preHandler: app.optionalStaff }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const transaction = await app.prisma.transaction.findFirst({
       where: { id, storeId: STORE_ID, status: "PAID", prepCompletedAt: null },

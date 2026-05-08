@@ -18,7 +18,7 @@ const DRAWER_W = 320;
 const WEB_VERSION = process.env.NEXT_PUBLIC_POS_VERSION ?? "0.1.0";
 
 const NAV_DEF = [
-  { label: "Pending orders", href: "/tablet/pending", key: "showPending" as const },
+  { label: "Pending orders", href: "/tablet/pending-orders", key: "showPending" as const },
   { label: "QR orders", href: "/tablet/qr", key: "showQr" as const },
   { label: "Kitchen display", href: "/tablet/kitchen", key: "showKitchen" as const },
   { label: "Staff", href: "/tablet/staff", key: "showStaff" as const },

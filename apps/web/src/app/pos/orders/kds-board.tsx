@@ -78,12 +78,15 @@ export default function KdsBoard({
     return [...pendingItems].sort((a, b) => {
       const tA = a.kind === "order" ? a.order.createdAt : a.transaction.createdAt;
       const tB = b.kind === "order" ? b.order.createdAt : b.transaction.createdAt;
-      return new Date(tA).getTime() - new Date(tB).getTime();
+      const xa = new Date(tA).getTime();
+      const xb = new Date(tB).getTime();
+      return (Number.isFinite(xa) ? xa : 0) - (Number.isFinite(xb) ? xb : 0);
     });
   }, [pendingItems]);
 
   function renderOrderLines(order: PosOrder) {
-    return order.items.map((li) => {
+    const lines = Array.isArray(order.items) ? order.items : [];
+    return lines.map((li) => {
       const { qtyLine, nameWithSizeTemp, detailLine } = formatQrOrderLine(li);
       return (
         <div
@@ -277,7 +280,9 @@ export default function KdsBoard({
         <div style={{ fontSize: 15, fontWeight: 600, color: COLORS.textSecondary }}>Receipt · {tx.source}</div>
         {tx.createdBy && <div style={{ fontSize: 20, fontWeight: 600, color: "#a5b4fc" }}>{tx.createdBy}</div>}
         {tableLabel && <div style={{ fontSize: 24, fontWeight: 700, color: "#fff" }}>Table {tableLabel}</div>}
-        <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>{renderTxLines(tx.lineItems, tx.serviceType ?? null)}</div>
+        <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+          {renderTxLines(Array.isArray(tx.lineItems) ? tx.lineItems : [], tx.serviceType ?? null)}
+        </div>
         <button
           type="button"
           disabled={busy}

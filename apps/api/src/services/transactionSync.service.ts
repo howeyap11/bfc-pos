@@ -36,6 +36,7 @@ export type RefundRecord = {
   reason: string;
   amountCents: number;
   createdAt: string;
+  refundedByStaffName?: string | null;
   items?: Array<{
     sourceLineItemId: string;
     qtyRefunded: number;
@@ -72,6 +73,7 @@ export type TransactionForCloudSync = {
     id: string;
     reason: string;
     createdAt: Date;
+    refundedByStaffId: string | null;
     refundItems: Array<{
       transactionLineItemId: string;
       qtyRefunded: number;
@@ -80,7 +82,10 @@ export type TransactionForCloudSync = {
   }>;
 };
 
-export function buildCloudSyncListsFromTransaction(transaction: TransactionForCloudSync): {
+export function buildCloudSyncListsFromTransaction(
+  transaction: TransactionForCloudSync,
+  refundedByStaffNameById?: Map<string, string>
+): {
   paymentsList: PaymentRecord[];
   lineItemsList: LineItemRecord[];
   refundAmountCents: number;
@@ -102,11 +107,16 @@ export function buildCloudSyncListsFromTransaction(transaction: TransactionForCl
   for (const r of transaction.refunds) {
     const amount = r.refundItems.reduce((s, ri) => s + ri.amountRefundedCents, 0);
     refundAmountCents += amount;
+    const staffId = r.refundedByStaffId ?? null;
+    const refundedByStaffName = staffId
+      ? (refundedByStaffNameById?.get(staffId) ?? null)
+      : null;
     refundsList.push({
       id: r.id,
       reason: r.reason,
       amountCents: amount,
       createdAt: r.createdAt.toISOString(),
+      refundedByStaffName,
       items: r.refundItems.map((ri) => ({
         sourceLineItemId: ri.transactionLineItemId,
         qtyRefunded: ri.qtyRefunded,
@@ -220,8 +230,6 @@ export async function syncTransactionToCloudOrEnqueue(
 ): Promise<{ ok: boolean }> {
   const logger = log ?? { info: (m: string, meta?: object) => console.log("[TransactionSync]", m, meta ?? {}), warn: (m: string, meta?: object) => console.warn("[TransactionSync]", m, meta ?? {}) };
 
-  const { enqueueOutbox } = await import("./outbox.service");
-
   const transaction = await prisma.transaction.findUnique({
     where: { id: transactionId },
     include: {
@@ -252,8 +260,22 @@ export async function syncTransactionToCloudOrEnqueue(
     voidReason: transaction.voidReason,
   };
 
-  const { paymentsList, lineItemsList, refundAmountCents, refundsList } =
-    buildCloudSyncListsFromTransaction(transaction);
+  const refundStaffIds = [
+    ...new Set(transaction.refunds.map((r) => r.refundedByStaffId).filter((x): x is string => !!x)),
+  ];
+  const refundedByStaffNameById = new Map<string, string>();
+  if (refundStaffIds.length > 0) {
+    const staffRows = await prisma.staff.findMany({
+      where: { id: { in: refundStaffIds } },
+      select: { id: true, name: true },
+    });
+    for (const s of staffRows) refundedByStaffNameById.set(s.id, s.name);
+  }
+
+  const { paymentsList, lineItemsList, refundAmountCents, refundsList } = buildCloudSyncListsFromTransaction(
+    transaction,
+    refundedByStaffNameById
+  );
 
   const result = await uploadTransactionToCloud(prisma, txRecord, paymentsList, lineItemsList, {
     refundAmountCents,
@@ -273,10 +295,14 @@ export async function syncTransactionToCloudOrEnqueue(
     error: (result as { error?: string }).error,
     ...(refundsList.length > 0 && { refundCount: refundsList.length }),
   });
-  await enqueueOutbox(prisma, {
-    storeId: transaction.storeId,
-    topic: "transaction.cloud.sync",
-    payload: { transactionId },
-  });
+  try {
+    const { upsertPendingTransactionCloudSync } = await import("./outbox.service.js");
+    await upsertPendingTransactionCloudSync(prisma, transaction.storeId, transactionId);
+  } catch (err) {
+    logger.warn("Outbox upsert failed after upload failure", {
+      transactionId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
   return { ok: false };
 }

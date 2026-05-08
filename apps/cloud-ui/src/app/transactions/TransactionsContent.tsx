@@ -63,6 +63,33 @@ export function TransactionsContent() {
     try {
       if (activeTab === "Transactions") {
         const res = await api.getTransactions({ from, to, limit: PAGE_SIZE });
+        // #region agent log
+        {
+          const first = res.items[0];
+          fetch("http://127.0.0.1:7328/ingest/4412edb8-6093-4552-97f7-a28d77cc8a0f", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "f985ab" },
+            body: JSON.stringify({
+              sessionId: "f985ab",
+              hypothesisId: "H3",
+              location: "cloud-ui TransactionsContent handleGo",
+              message: "first transaction row keys from API (client)",
+              data: {
+                count: res.items.length,
+                firstKeys: first ? Object.keys(first) : [],
+                firstHasRefundFields: first
+                  ? {
+                      refundAmountCents: "refundAmountCents" in first,
+                      refunds: "refunds" in first,
+                    }
+                  : null,
+              },
+              timestamp: Date.now(),
+              runId: "pre-fix",
+            }),
+          }).catch(() => {});
+        }
+        // #endregion
         setTransactions(res.items);
         setNextCursor(res.nextCursor);
         setHasMore(res.hasMore ?? !!res.nextCursor);

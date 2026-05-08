@@ -26,7 +26,7 @@ export function normalizeTabletNav(raw: unknown): TabletNavConfig {
 
 /** First content route allowed by nav; falls back to settings. */
 export function firstTabletSectionPath(nav: TabletNavConfig): string {
-  if (nav.showPending) return "/tablet/pending";
+  if (nav.showPending) return "/tablet/pending-orders";
   if (nav.showQr) return "/tablet/qr";
   if (nav.showKitchen) return "/tablet/kitchen";
   if (nav.showStaff) return "/tablet/staff";
