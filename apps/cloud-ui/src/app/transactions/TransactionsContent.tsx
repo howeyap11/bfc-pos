@@ -6,7 +6,6 @@ import * as XLSX from "xlsx";
 import { api, type SyncedTransactionRefundRow, type SyncedTransactionRow, type DailyReport, type MonthlyReport } from "@/lib/api";
 import { getDefaultBusinessDateString } from "@/lib/localDate";
 import { COLORS, getPaymentBadgeColor } from "@/lib/theme";
-import { postTransactionsTabClientVerify } from "@/lib/transactionsTabVerify";
 
 const TABS = ["Transactions", "Hourly", "Daily", "Monthly"] as const;
 type TabId = (typeof TABS)[number];
@@ -77,9 +76,6 @@ export function TransactionsContent() {
     try {
       if (activeTab === "Transactions") {
         const res = await api.getTransactions({ from, to, limit: PAGE_SIZE });
-        // #region tx tab verify ingest (optional: NEXT_PUBLIC_BFC_TX_DEBUG_INGEST_URL at build time)
-        postTransactionsTabClientVerify("handleGo", res.items);
-        // #endregion
         setTransactions(res.items);
         setNextCursor(res.nextCursor);
         setHasMore(res.hasMore ?? !!res.nextCursor);
@@ -107,9 +103,6 @@ export function TransactionsContent() {
     const cursorToFetch = nextCursor;
     try {
       const res = await api.getTransactions({ from, to, limit: PAGE_SIZE, cursor: cursorToFetch });
-      // #region tx tab verify ingest
-      postTransactionsTabClientVerify("handleLoadMore", res.items);
-      // #endregion
       setTransactions(res.items);
       setNextCursor(res.nextCursor);
       setHasMore(res.hasMore ?? !!res.nextCursor);
@@ -130,9 +123,6 @@ export function TransactionsContent() {
     setLoading(true);
     try {
       const res = await api.getTransactions({ from, to, limit: PAGE_SIZE, cursor: prevCursor ?? undefined });
-      // #region tx tab verify ingest
-      postTransactionsTabClientVerify("handleLoadPrevious", res.items);
-      // #endregion
       setTransactions(res.items);
       setNextCursor(res.nextCursor);
       setHasMore(res.hasMore ?? !!res.nextCursor);

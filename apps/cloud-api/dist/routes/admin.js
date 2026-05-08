@@ -9,7 +9,6 @@ import { hashStaffPin } from "../lib/staffPin.js";
 import { getDrinkSizesOptionGroup, getDrinkSizesOptionIds, getDrinkSizesCatalogForAdminUi, findMenuOptionForMenuSize, SIZES_GROUP_NAME, } from "../lib/drinkSizes.js";
 import { getDashboardKpis, getSalesByDate, getPaymentTypeTotals, getSalesByCategory, getSalesByItem, getSalesByCashier, getSalesByPayment, getItemsSold, getLastSyncedAt, getStoreName, buildDateRange, getDefaultDateRange, netSalesCentsForSyncedTransaction, foldPaymentsFromSyncedTransactions, } from "../services/dashboard.service.js";
 import { localBusinessDateRangeToUtc, localBusinessDayToUtcRange, localBusinessMonthToUtcRange, } from "../lib/businessDay.js";
-import { postTransactionsListVerify } from "../lib/transactionsTabVerify.js";
 import { buildWorkLogFeed } from "../services/workLogFeed.service.js";
 import { staffBusinessDateKeyWithRollover } from "../lib/staffBusinessDate.js";
 import { getWorkDayRolloverMinutesFromDb } from "../services/workDaySettings.service.js";
@@ -3599,9 +3598,6 @@ export async function adminRoutes(app) {
                 refunds,
             };
         });
-        // #region tx tab verify ingest (optional: BFC_TX_DEBUG_INGEST_URL on deploy smoke tests)
-        postTransactionsListVerify(rows, list);
-        // #endregion
         return { items: rows, nextCursor, hasMore };
     });
     // Daily report (Asia/Manila: selected date is local calendar day)

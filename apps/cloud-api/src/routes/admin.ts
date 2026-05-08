@@ -35,7 +35,6 @@ import {
   localBusinessDayToUtcRange,
   localBusinessMonthToUtcRange,
 } from "../lib/businessDay.js";
-import { postTransactionsListVerify } from "../lib/transactionsTabVerify.js";
 import { buildWorkLogFeed, type WorkLogKind } from "../services/workLogFeed.service.js";
 import { staffBusinessDateKeyWithRollover } from "../lib/staffBusinessDate.js";
 import { getWorkDayRolloverMinutesFromDb } from "../services/workDaySettings.service.js";
@@ -3826,10 +3825,6 @@ export async function adminRoutes(app: FastifyInstance) {
         refunds,
       };
     });
-
-    // #region tx tab verify ingest (optional: BFC_TX_DEBUG_INGEST_URL on deploy smoke tests)
-    postTransactionsListVerify(rows as Record<string, unknown>[], list);
-    // #endregion
 
     return { items: rows, nextCursor, hasMore };
   });
