@@ -2,7 +2,7 @@
  * Run: pnpm exec tsx src/services/localConsumption.parseOptions.test.ts
  */
 import assert from "node:assert/strict";
-import { parseOptionsJson } from "./localConsumption.service";
+import { parseOptionsJson } from "./localConsumption.service.js";
 
 function run() {
   const a = parseOptionsJson(null);

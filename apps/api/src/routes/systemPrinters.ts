@@ -1,13 +1,13 @@
 import type { FastifyInstance } from "fastify";
-import { requireStaffHook } from "../plugins/staffGuard";
-import { enumerateWindowsPrinters } from "../services/printerDiscovery.service";
-import { getPrinterConfig, setPrinterConfig, type PrinterConfig } from "../services/printerConfig.service";
-import { printTestReceiptToDevice, printTestStickerToDevice } from "../services/print.service";
+import { requireStaffHook } from "../plugins/staffGuard.js";
+import { enumerateWindowsPrinters } from "../services/printerDiscovery.service.js";
+import { getPrinterConfig, setPrinterConfig, type PrinterConfig } from "../services/printerConfig.service.js";
+import { printTestReceiptToDevice, printTestStickerToDevice } from "../services/print.service.js";
 import {
   resolveExactOrCaseInsensitive,
   resolveStickerQueueName,
   trimPrinterName,
-} from "../services/printerResolve.service";
+} from "../services/printerResolve.service.js";
 
 function enumerationHint(code: string, printerCount: number, detail?: string): string {
   if (code === "OK" && printerCount === 0) {

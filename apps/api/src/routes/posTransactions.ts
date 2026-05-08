@@ -9,11 +9,11 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { Prisma, type MilkType, type ServiceType, type ShotsPricingMode } from "@prisma/client";
 import type { PrismaClient } from "@prisma/client";
-import { requireStaffHook } from "../plugins/staffGuard";
-import { verifyAdminPin } from "../services/adminPin.service";
-import { enqueueOutbox, upsertPendingTransactionCloudSync } from "../services/outbox.service";
-import { ensureItemForCloudId } from "../services/catalogCache.service";
-import { syncTransactionToCloudOrEnqueue } from "../services/transactionSync.service";
+import { requireStaffHook } from "../plugins/staffGuard.js";
+import { verifyAdminPin } from "../services/adminPin.service.js";
+import { enqueueOutbox, upsertPendingTransactionCloudSync } from "../services/outbox.service.js";
+import { ensureItemForCloudId } from "../services/catalogCache.service.js";
+import { syncTransactionToCloudOrEnqueue } from "../services/transactionSync.service.js";
 import {
   printReceiptToDevice,
   printStickersToDevice,
@@ -22,20 +22,20 @@ import {
   filterOptionsJsonByItemCaps,
   type ReceiptHeaderOptions,
   type TransactionForPrint,
-} from "../services/print.service";
+} from "../services/print.service.js";
 import {
   allocateVouchersForTransaction,
   getSnapResiboVoucherForTransaction,
-} from "../services/snapResiboVoucher.service";
-import { getCalendarDayRange } from "../services/dayRange.service";
-import { printZReading } from "../services/zReading.service";
-import { getTransactionSummary } from "../services/transactionSummary.service";
-import { getTransactionSyncOutboxStatus } from "../services/outbox.service";
+} from "../services/snapResiboVoucher.service.js";
+import { getCalendarDayRange } from "../services/dayRange.service.js";
+import { printZReading } from "../services/zReading.service.js";
+import { getTransactionSummary } from "../services/transactionSummary.service.js";
+import { getTransactionSyncOutboxStatus } from "../services/outbox.service.js";
 import {
   finalizePaidTransactionInventory,
   restoreInventoryForRefund,
   restoreInventoryForVoid,
-} from "../services/posTxnInventory.service";
+} from "../services/posTxnInventory.service.js";
 
 const STORE_ID = "store_1";
 const SNAPRESIBO_QR_ITEM_ID = "SNAPRESIBO_QR";

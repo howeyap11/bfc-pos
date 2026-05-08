@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
-import { formatTransactionLineLabel } from "../services/print.service";
+import { formatTransactionLineLabel } from "../services/print.service.js";
 
 const PosOrdersQuery = z.object({
   tab: z.enum(["pending", "qr"]).default("qr"),

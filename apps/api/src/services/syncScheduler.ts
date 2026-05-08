@@ -1,12 +1,12 @@
 import type { FastifyInstance } from "fastify";
-import { syncCatalogFromCloud } from "./syncCatalog.service";
-import { processTransactionSyncOutbox, getTransactionSyncOutboxStatus } from "./outbox.service";
-import { uploadTransactionToCloud } from "./transactionSync.service";
-import { cleanupStaleMenuImages } from "./menuImageCache.service";
-import { isOnline } from "./connectivity.service";
-import { syncOwnerPasswordHash } from "./ownerPassword.service";
-import { processStaffOpsOutbox } from "./staffOpsSync.service";
-import { syncStaffOpsReferenceData } from "./staffOpsPull.service";
+import { syncCatalogFromCloud } from "./syncCatalog.service.js";
+import { processTransactionSyncOutbox, getTransactionSyncOutboxStatus } from "./outbox.service.js";
+import { uploadTransactionToCloud } from "./transactionSync.service.js";
+import { cleanupStaleMenuImages } from "./menuImageCache.service.js";
+import { isOnline } from "./connectivity.service.js";
+import { syncOwnerPasswordHash } from "./ownerPassword.service.js";
+import { processStaffOpsOutbox } from "./staffOpsSync.service.js";
+import { syncStaffOpsReferenceData } from "./staffOpsPull.service.js";
 
 let catalogInFlight = false;
 let transactionFlushInFlight = false;

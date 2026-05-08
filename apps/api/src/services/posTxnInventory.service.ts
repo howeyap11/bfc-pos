@@ -4,7 +4,7 @@ import {
   computeConsumptionForLine,
   consumptionMapToPerUnitJson,
   parseOptionsJson,
-} from "./localConsumption.service";
+} from "./localConsumption.service.js";
 
 const REF_SALE = "POS_CLOUD_SALE";
 const REF_REFUND = "POS_CLOUD_REFUND";

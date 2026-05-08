@@ -3,7 +3,7 @@
  */
 import type { PrismaClient } from "@prisma/client";
 import assert from "node:assert/strict";
-import { restoreInventoryForVoid } from "./posTxnInventory.service";
+import { restoreInventoryForVoid } from "./posTxnInventory.service.js";
 
 async function run() {
   const prisma = {} as PrismaClient;

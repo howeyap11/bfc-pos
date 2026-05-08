@@ -1,6 +1,6 @@
 // apps/api/src/routes/register.ts
 import type { FastifyInstance } from "fastify";
-import { requireStaffHook } from "../plugins/staffGuard";
+import { requireStaffHook } from "../plugins/staffGuard.js";
 
 const STORE_ID = "store_1";
 

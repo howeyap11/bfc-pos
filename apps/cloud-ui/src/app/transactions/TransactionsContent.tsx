@@ -3,9 +3,10 @@
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import * as XLSX from "xlsx";
-import { api, type SyncedTransactionRow, type DailyReport, type MonthlyReport } from "@/lib/api";
+import { api, type SyncedTransactionRefundRow, type SyncedTransactionRow, type DailyReport, type MonthlyReport } from "@/lib/api";
 import { getDefaultBusinessDateString } from "@/lib/localDate";
 import { COLORS, getPaymentBadgeColor } from "@/lib/theme";
+import { postTransactionsTabClientVerify } from "@/lib/transactionsTabVerify";
 
 const TABS = ["Transactions", "Hourly", "Daily", "Monthly"] as const;
 type TabId = (typeof TABS)[number];
@@ -20,6 +21,19 @@ function formatDate(iso: string): string {
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+/** Qty refunded per POS line id (`sourceLineItemId`), summed across refund events */
+function refundedQtyBySourceLineItemId(refunds: SyncedTransactionRefundRow[]): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const r of refunds) {
+    for (const it of r.items ?? []) {
+      const id = it.sourceLineItemId;
+      if (!id) continue;
+      m.set(id, (m.get(id) ?? 0) + it.qtyRefunded);
+    }
+  }
+  return m;
 }
 
 export function TransactionsContent() {
@@ -63,32 +77,8 @@ export function TransactionsContent() {
     try {
       if (activeTab === "Transactions") {
         const res = await api.getTransactions({ from, to, limit: PAGE_SIZE });
-        // #region agent log
-        {
-          const first = res.items[0];
-          fetch("http://127.0.0.1:7328/ingest/4412edb8-6093-4552-97f7-a28d77cc8a0f", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "f985ab" },
-            body: JSON.stringify({
-              sessionId: "f985ab",
-              hypothesisId: "H3",
-              location: "cloud-ui TransactionsContent handleGo",
-              message: "first transaction row keys from API (client)",
-              data: {
-                count: res.items.length,
-                firstKeys: first ? Object.keys(first) : [],
-                firstHasRefundFields: first
-                  ? {
-                      refundAmountCents: "refundAmountCents" in first,
-                      refunds: "refunds" in first,
-                    }
-                  : null,
-              },
-              timestamp: Date.now(),
-              runId: "pre-fix",
-            }),
-          }).catch(() => {});
-        }
+        // #region tx tab verify ingest (optional: NEXT_PUBLIC_BFC_TX_DEBUG_INGEST_URL at build time)
+        postTransactionsTabClientVerify("handleGo", res.items);
         // #endregion
         setTransactions(res.items);
         setNextCursor(res.nextCursor);
@@ -117,6 +107,9 @@ export function TransactionsContent() {
     const cursorToFetch = nextCursor;
     try {
       const res = await api.getTransactions({ from, to, limit: PAGE_SIZE, cursor: cursorToFetch });
+      // #region tx tab verify ingest
+      postTransactionsTabClientVerify("handleLoadMore", res.items);
+      // #endregion
       setTransactions(res.items);
       setNextCursor(res.nextCursor);
       setHasMore(res.hasMore ?? !!res.nextCursor);
@@ -137,6 +130,9 @@ export function TransactionsContent() {
     setLoading(true);
     try {
       const res = await api.getTransactions({ from, to, limit: PAGE_SIZE, cursor: prevCursor ?? undefined });
+      // #region tx tab verify ingest
+      postTransactionsTabClientVerify("handleLoadPrevious", res.items);
+      // #endregion
       setTransactions(res.items);
       setNextCursor(res.nextCursor);
       setHasMore(res.hasMore ?? !!res.nextCursor);
@@ -406,6 +402,12 @@ export function TransactionsContent() {
                     </tr>
                   ) : (
                     transactions.map((tx) => {
+                      const refunds = tx.refunds ?? [];
+                      const hasRefunds = refunds.length > 0 || (tx.refundAmountCents ?? 0) > 0;
+                      const refundQtyByLine = refundedQtyBySourceLineItemId(refunds);
+                      const netTotal =
+                        tx.netTotalCents ??
+                        Math.max(0, tx.totalCents - (tx.refundAmountCents ?? 0));
                       const methods = [...new Set(tx.payments.map((p) => p.method))];
                       const shortId = (tx.sourceTransactionId ?? tx.id).slice(-8);
                       return (
@@ -470,22 +472,78 @@ export function TransactionsContent() {
                                       ? line.displayLabel.replace(/\s*x\d+$/i, "").trim() || line.name
                                       : line.name;
                                   const mainLabel = `${line.qty}× ${itemOnly}`;
+                                  const refundedQty =
+                                    line.sourceLineItemId != null && line.sourceLineItemId !== ""
+                                      ? refundQtyByLine.get(line.sourceLineItemId) ?? 0
+                                      : 0;
+                                  const refunded = refundedQty >= line.qty && line.qty > 0;
                                   return (
-                                    <div key={idx} className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 text-sm text-white">
+                                    <div
+                                      key={idx}
+                                      className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 text-sm"
+                                      style={{
+                                        color: refunded ? "#737373" : "#fff",
+                                        textDecoration: refunded ? "line-through" : undefined,
+                                      }}
+                                    >
                                       <div className="min-w-0">
                                         <div className="min-w-0 break-words font-medium">{mainLabel}</div>
+                                        {refunded && (
+                                          <span
+                                            className="mt-1 inline-block rounded px-1.5 py-0.5 text-[9px] font-semibold"
+                                            style={{ background: "#7f1d1d", color: "#fca5a5" }}
+                                          >
+                                            REFUNDED
+                                          </span>
+                                        )}
                                       </div>
-                                      <span className="shrink-0 self-start text-right text-green-400 whitespace-nowrap">{formatPesos(line.lineTotal)}</span>
+                                      <span
+                                        className="shrink-0 self-start whitespace-nowrap text-right font-semibold"
+                                        style={{ color: refunded ? "#525252" : "#4ade80" }}
+                                      >
+                                        {formatPesos(line.lineTotal)}
+                                      </span>
                                     </div>
                                   );
                                 })
                               ) : (
                                 <span className="text-sm text-white/60">—</span>
                               )}
+                              {refunds.length > 0 && (
+                                <div className="mt-2 space-y-1 border-t pt-2" style={{ borderColor: COLORS.borderLight }}>
+                                  <div className="text-[10px] font-semibold uppercase text-white/50">Refunds</div>
+                                  {refunds.map((r) => (
+                                    <div key={r.id} className="text-xs italic text-white/70">
+                                      <span className="text-amber-200/90">{r.reason}</span>
+                                      {" · "}
+                                      {formatPesos(r.amountCents)}
+                                      {" · "}
+                                      {formatTime(r.createdAt)}
+                                      {r.refundedByStaffName ? (
+                                        <>
+                                          {" · "}
+                                          <span className="not-italic text-white/90">by {r.refundedByStaffName}</span>
+                                        </>
+                                      ) : null}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
                             </div>
                           </td>
                           <td className="px-4 py-3 text-right align-top">
-                            <span className="text-sm font-semibold text-green-400">{formatPesos(tx.totalCents)}</span>
+                            <div>
+                              {hasRefunds && (
+                                <div className="mb-1 text-xs text-white/50 line-through">{formatPesos(tx.totalCents)}</div>
+                              )}
+                              <span
+                                className="text-sm font-semibold"
+                                style={{ color: hasRefunds ? "#fbbf24" : "#4ade80" }}
+                              >
+                                {formatPesos(netTotal)}
+                              </span>
+                              {hasRefunds && <div className="mt-0.5 text-[10px] text-white/45">(after refunds)</div>}
+                            </div>
                           </td>
                         </tr>
                       );

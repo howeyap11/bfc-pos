@@ -8,8 +8,8 @@
  * Refunds processed on a different day still reduce the original sale's net.
  */
 import type { PrismaClient } from "@prisma/client";
-import { getCalendarDayRange } from "./dayRange.service";
-import { formatTransactionLineLabel } from "./print.service";
+import { getCalendarDayRange } from "./dayRange.service.js";
+import { formatTransactionLineLabel } from "./print.service.js";
 
 const STORE_ID = "store_1";
 

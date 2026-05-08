@@ -3,18 +3,18 @@ import type { PrismaClient } from "@prisma/client";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
-import { enqueueOutbox } from "../services/outbox.service";
-import { canAuditStaffOps, canManageStaffOps, canRecordWarehousePullout } from "../lib/staffRoles";
+import { enqueueOutbox } from "../services/outbox.service.js";
+import { canAuditStaffOps, canManageStaffOps, canRecordWarehousePullout } from "../lib/staffRoles.js";
 import {
   DEFAULT_WORK_DAY_CUTOVER_MINUTES,
   parseWorkDayCutoverMinutes,
   staffBusinessDateKeyWithCutover,
-} from "../lib/staffBusinessDate";
+} from "../lib/staffBusinessDate.js";
 import Decimal from "decimal.js";
-import { resolveManualInventoryShiftType } from "../lib/manualInventoryShiftType";
-import { buildManualInventorySubmitSnapshot } from "../lib/manualInventorySnapshot";
-import { decodeBase64Image, saveStaffMedia, toRelativeStaffMediaPath } from "../services/localStaffMedia.service";
-import { requireStaffHook } from "../plugins/staffGuard";
+import { resolveManualInventoryShiftType } from "../lib/manualInventoryShiftType.js";
+import { buildManualInventorySubmitSnapshot } from "../lib/manualInventorySnapshot.js";
+import { decodeBase64Image, saveStaffMedia, toRelativeStaffMediaPath } from "../services/localStaffMedia.service.js";
+import { requireStaffHook } from "../plugins/staffGuard.js";
 
 const STAFF_MEDIA_ABS_ROOT = path.resolve(process.cwd(), "storage", "staff-media");
 

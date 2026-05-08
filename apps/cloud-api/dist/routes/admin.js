@@ -9,6 +9,7 @@ import { hashStaffPin } from "../lib/staffPin.js";
 import { getDrinkSizesOptionGroup, getDrinkSizesOptionIds, getDrinkSizesCatalogForAdminUi, findMenuOptionForMenuSize, SIZES_GROUP_NAME, } from "../lib/drinkSizes.js";
 import { getDashboardKpis, getSalesByDate, getPaymentTypeTotals, getSalesByCategory, getSalesByItem, getSalesByCashier, getSalesByPayment, getItemsSold, getLastSyncedAt, getStoreName, buildDateRange, getDefaultDateRange, netSalesCentsForSyncedTransaction, foldPaymentsFromSyncedTransactions, } from "../services/dashboard.service.js";
 import { localBusinessDateRangeToUtc, localBusinessDayToUtcRange, localBusinessMonthToUtcRange, } from "../lib/businessDay.js";
+import { postTransactionsListVerify } from "../lib/transactionsTabVerify.js";
 import { buildWorkLogFeed } from "../services/workLogFeed.service.js";
 import { staffBusinessDateKeyWithRollover } from "../lib/staffBusinessDate.js";
 import { getWorkDayRolloverMinutesFromDb } from "../services/workDaySettings.service.js";
@@ -3565,6 +3566,16 @@ export async function adminRoutes(app) {
             catch {
                 // ignore
             }
+            let refunds = [];
+            try {
+                if (t.refundsJson)
+                    refunds = JSON.parse(t.refundsJson);
+            }
+            catch {
+                // ignore
+            }
+            const refundAmountCents = t.refundAmountCents ?? 0;
+            const netTotalCents = netSalesCentsForSyncedTransaction(t.totalCents, refundAmountCents);
             return {
                 id: t.id,
                 sourceTransactionId: t.sourceTransactionId,
@@ -3574,6 +3585,8 @@ export async function adminRoutes(app) {
                 serviceType: t.serviceType,
                 cashierName: t.cashierName,
                 totalCents: t.totalCents,
+                refundAmountCents,
+                netTotalCents,
                 subtotalCents: t.subtotalCents,
                 discountCents: t.discountCents,
                 itemsCount: t.itemsCount,
@@ -3583,42 +3596,11 @@ export async function adminRoutes(app) {
                 isTest: t.isTest ?? false,
                 payments,
                 lineItems,
+                refunds,
             };
         });
-        // #region agent log
-        try {
-            const dbSample = list[0];
-            const rowSample = rows[0];
-            const refundedRow = list.find((t) => (t.refundAmountCents ?? 0) > 0);
-            fetch("http://127.0.0.1:7328/ingest/4412edb8-6093-4552-97f7-a28d77cc8a0f", {
-                method: "POST",
-                headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "f985ab" },
-                body: JSON.stringify({
-                    sessionId: "f985ab",
-                    hypothesisId: "H1-H2",
-                    location: "cloud-api admin.ts GET /transactions",
-                    message: "transactions list: DB has refund fields vs API row keys",
-                    data: {
-                        rowCount: rows.length,
-                        apiRowKeys: rowSample ? Object.keys(rowSample) : [],
-                        dbRefundAmountFirst: dbSample?.refundAmountCents ?? null,
-                        dbHasRefundsJsonFirst: Boolean(dbSample?.refundsJson),
-                        refundedInPage: refundedRow
-                            ? {
-                                refundAmountCents: refundedRow.refundAmountCents,
-                                hasRefundsJson: Boolean(refundedRow.refundsJson),
-                                apiRowHasRefundFields: Object.keys(rows.find((r) => r.sourceTransactionId === refundedRow.sourceTransactionId) ?? {}).filter((k) => k.includes("refund") || k.includes("Refund")),
-                            }
-                            : null,
-                    },
-                    timestamp: Date.now(),
-                    runId: "pre-fix",
-                }),
-            }).catch(() => { });
-        }
-        catch {
-            /* ignore */
-        }
+        // #region tx tab verify ingest (optional: BFC_TX_DEBUG_INGEST_URL on deploy smoke tests)
+        postTransactionsListVerify(rows, list);
         // #endregion
         return { items: rows, nextCursor, hasMore };
     });

@@ -1,7 +1,7 @@
 // apps/api/src/routes/drawer.ts
 import type { FastifyInstance } from "fastify";
-import { requireStaffHook } from "../plugins/staffGuard";
-import { openCashDrawerUsingConfiguredReceiptPrinter } from "../services/print.service";
+import { requireStaffHook } from "../plugins/staffGuard.js";
+import { openCashDrawerUsingConfiguredReceiptPrinter } from "../services/print.service.js";
 
 const STORE_ID = "store_1";
 

@@ -13,7 +13,7 @@ import {
   DEFAULT_WORK_DAY_CUTOVER_MINUTES,
   staffAuditLocalMinutesFromMidnight,
   staffBusinessDateKeyWithCutover,
-} from "./staffBusinessDate";
+} from "./staffBusinessDate.js";
 
 export type ManualInventoryShiftType = "Beginning" | "End";
 

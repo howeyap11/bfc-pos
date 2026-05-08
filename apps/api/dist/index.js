@@ -16,35 +16,36 @@ const dbPath = databaseUrl.startsWith("file:")
     : "[url]";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
-import prismaPlugin from "./plugins/prisma";
-import inventoryServicePlugin from "./plugins/inventoryService";
-import { staffGuardPlugin } from "./plugins/staffGuard";
-import { staffRoutesPlugin } from "./routes/staff";
-import { staffQueueRoutes } from "./routes/staffQueue";
-import { staffOpsRoutes } from "./routes/staffOps";
-import { posOrdersRoutes } from "./routes/posOrders";
-import { orderStatusRoutes } from "./routes/orderStatus";
-import { functionRoomRoutes } from "./routes/functionRoom";
-import { orderCancelRoutes } from "./routes/orderCancel";
-import { qrAcceptRoutes } from "./routes/qrAccept";
-import { registerRoutes } from "./routes/register";
-import { posTransactionsRoutes } from "./routes/posTransactions";
-import { drawerRoutes } from "./routes/drawer";
-import { adminSyncRoutes } from "./routes/admin/adminSync";
+import prismaPlugin from "./plugins/prisma.js";
+import inventoryServicePlugin from "./plugins/inventoryService.js";
+import { staffGuardPlugin } from "./plugins/staffGuard.js";
+import { staffRoutesPlugin } from "./routes/staff.js";
+import { staffQueueRoutes } from "./routes/staffQueue.js";
+import { staffOpsRoutes } from "./routes/staffOps.js";
+import { posOrdersRoutes } from "./routes/posOrders.js";
+import { orderStatusRoutes } from "./routes/orderStatus.js";
+import { functionRoomRoutes } from "./routes/functionRoom.js";
+import { orderCancelRoutes } from "./routes/orderCancel.js";
+import { qrAcceptRoutes } from "./routes/qrAccept.js";
+import { registerRoutes } from "./routes/register.js";
+import { posTransactionsRoutes } from "./routes/posTransactions.js";
+import { posCustomerDisplayRoutes } from "./routes/posCustomerDisplay.js";
+import { drawerRoutes } from "./routes/drawer.js";
+import { adminSyncRoutes } from "./routes/admin/adminSync.js";
 import { deviceCommandsRoutes } from "./routes/deviceCommands.js";
-import { storeConfigRoutes } from "./routes/storeConfig";
-import { systemPrintersRoutes } from "./routes/systemPrinters";
-import { snapResiboRoutes } from "./routes/snapResibo";
-import { sopRoutes } from "./routes/sop";
+import { storeConfigRoutes } from "./routes/storeConfig.js";
+import { systemPrintersRoutes } from "./routes/systemPrinters.js";
+import { snapResiboRoutes } from "./routes/snapResibo.js";
+import { sopRoutes } from "./routes/sop.js";
 import { devRoutes } from "./routes/dev.js";
 import { ownerRoutesPlugin } from "./routes/owner.js";
-import { ensureItemForCloudId } from "./services/catalogCache.service";
+import { ensureItemForCloudId } from "./services/catalogCache.service.js";
 import { startSyncScheduler, runCatalogSync } from "./services/syncScheduler.js";
 import { startDeviceCommandPolling } from "./services/deviceCommandPolling.service.js";
 import { getCommandState } from "./services/commandState.service.js";
 import { getSyncStatus } from "./services/syncScheduler.js";
 import { getDeviceKey } from "./services/deviceKey.service.js";
-import { cleanupStaleMenuImages, getCachedMenuImageFile, getImagePath, initMenuImageCache, preloadMissingMenuImages, } from "./services/menuImageCache.service";
+import { cleanupStaleMenuImages, getCachedMenuImageFile, getImagePath, initMenuImageCache, preloadMissingMenuImages, } from "./services/menuImageCache.service.js";
 const app = Fastify({ logger: true });
 // Plugins
 await app.register(cors, { origin: true });
@@ -65,6 +66,7 @@ await app.register(orderCancelRoutes);
 await app.register(qrAcceptRoutes);
 await app.register(registerRoutes);
 await app.register(posTransactionsRoutes);
+await app.register(posCustomerDisplayRoutes);
 await app.register(drawerRoutes);
 await app.register(adminSyncRoutes);
 await app.register(deviceCommandsRoutes);
@@ -164,6 +166,12 @@ app.get("/menu", async (req, reply) => {
             }),
             app.prisma.storeConfig.findUnique({ where: { storeId: "store_1" } }),
         ]);
+        const drinkSizeItemRows = await app.prisma.cloudMenuItemDrinkSizeConfig.findMany({
+            where: { storeId: "store_1" },
+            select: { menuItemCloudId: true },
+            distinct: ["menuItemCloudId"],
+        });
+        const itemsWithDrinkSizeConfigs = new Set(drinkSizeItemRows.map((r) => r.menuItemCloudId));
         await preloadMissingMenuImages((items ?? []).map((i) => ({ id: i.cloudId, imageUrl: i.imageUrl })));
         const subCategoryMap = new Map((subCategories ?? []).map((s) => [s.cloudId, s.name]));
         let result = await Promise.all((categories ?? []).map(async (cat) => ({
@@ -178,7 +186,7 @@ app.get("/menu", async (req, reply) => {
                 description: null,
                 imageUrl: await getImagePath({ id: i.cloudId, imageUrl: i.imageUrl }),
                 series: i.subCategoryCloudId ? subCategoryMap.get(i.subCategoryCloudId) ?? "Other" : "Other",
-                hasSizes: i.hasSizes ?? false,
+                hasSizes: !!i.hasSizes && itemsWithDrinkSizeConfigs.has(i.cloudId),
             }))),
         })));
         const uncategorized = (items ?? []).filter((i) => !i.categoryCloudId);
@@ -193,7 +201,7 @@ app.get("/menu", async (req, reply) => {
                     description: null,
                     imageUrl: await getImagePath({ id: i.cloudId, imageUrl: i.imageUrl }),
                     series: i.subCategoryCloudId ? subCategoryMap.get(i.subCategoryCloudId) ?? "Other" : "Other",
-                    hasSizes: i.hasSizes ?? false,
+                    hasSizes: !!i.hasSizes && itemsWithDrinkSizeConfigs.has(i.cloudId),
                 }))),
             });
         }
@@ -208,7 +216,7 @@ app.get("/menu", async (req, reply) => {
                         description: null,
                         imageUrl: await getImagePath({ id: i.cloudId, imageUrl: i.imageUrl ?? null }),
                         series: "Other",
-                        hasSizes: i.hasSizes ?? false,
+                        hasSizes: !!i.hasSizes && itemsWithDrinkSizeConfigs.has(i.cloudId),
                     }))),
                 }];
         }
@@ -375,14 +383,16 @@ app.get("/items/:id", async (req, reply) => {
                 sizesByMode[modeKey].push({ id: c.optionCloudId, name, priceCents: priceCents ?? undefined });
             }
         }
-        const hasSizes = drinkConfigs.length > 0 || cloud.hasSizes;
+        // Drink-by-mode UI only when cloud admin hasSizes AND synced configs exist (avoids orphan configs or legacy option-group leakage).
+        const catalogHasSizes = cloud.hasSizes === true;
+        const hasSizes = catalogHasSizes && drinkConfigs.length > 0;
         const drinkModeDefaultsPayload = drinkModeDefaultRows.length > 0
             ? drinkModeDefaultRows.map((r) => ({
                 mode: r.mode,
                 defaultOptionId: r.defaultOptionCloudId,
             }))
             : undefined;
-        const itemOptionGroups = links.map((link) => {
+        const itemOptionGroupsRaw = links.map((link) => {
             const g = groupMap.get(link.groupCloudId);
             if (!g)
                 return null;
@@ -409,14 +419,19 @@ app.get("/items/:id", async (req, reply) => {
                 },
             };
         }).filter(Boolean);
+        const itemOptionGroups = catalogHasSizes
+            ? itemOptionGroupsRaw
+            : itemOptionGroupsRaw.filter((row) => !row.group.isSizeGroup);
         const defaultShots = cloud.defaultShots ?? 0;
         const supportsShots = cloud.supportsShots ?? false;
-        // Included (free) shots per size+temp: from size prices, fallback to item defaultShots
+        // Included (free) shots per size+temp: only when item supports shots
         const includedShotsBySizeAndTemp = {};
-        for (const p of sizePrices) {
-            const key = `${p.baseType}|${p.sizeOptionCloudId}`;
-            const value = p.includedShots != null ? p.includedShots : defaultShots;
-            includedShotsBySizeAndTemp[key] = value;
+        if (supportsShots) {
+            for (const p of sizePrices) {
+                const key = `${p.baseType}|${p.sizeOptionCloudId}`;
+                const value = p.includedShots != null ? p.includedShots : defaultShots;
+                includedShotsBySizeAndTemp[key] = value;
+            }
         }
         // Active shot pricing rule (for cloud items: apply to shots above default)
         let shotPricingRule;
@@ -482,12 +497,42 @@ app.get("/items/:id", async (req, reply) => {
                     .map((a) => ({ id: a.cloudId, name: a.name, priceCents: a.priceCents })),
             }))
             : undefined;
-        const itemSubstitutes = substitutes.filter((s) => substituteIds.has(s.cloudId)).map((s) => {
+        const linkedSubIds = [...substituteIds];
+        const recipeRows = linkedSubIds.length > 0
+            ? await app.prisma.cloudSubstituteRecipeConsumption.findMany({
+                where: { storeId, substituteCloudId: { in: linkedSubIds } },
+                select: { substituteCloudId: true, ingredientCloudId: true },
+                orderBy: { id: "asc" },
+            })
+            : [];
+        const firstIngredientBySub = new Map();
+        for (const r of recipeRows) {
+            if (!firstIngredientBySub.has(r.substituteCloudId)) {
+                firstIngredientBySub.set(r.substituteCloudId, r.ingredientCloudId);
+            }
+        }
+        const ingIdsForSubs = [...new Set([...firstIngredientBySub.values()])];
+        const ingredientsForSubs = ingIdsForSubs.length > 0
+            ? await app.prisma.cloudIngredient.findMany({
+                where: { storeId, cloudId: { in: ingIdsForSubs } },
+                select: { cloudId: true, imageUrl: true },
+            })
+            : [];
+        const rawUrlByIngredient = new Map(ingredientsForSubs.map((i) => [i.cloudId, i.imageUrl]));
+        const substituteImageByCloudId = new Map();
+        await Promise.all([...firstIngredientBySub.entries()].map(async ([subCloudId, ingCloudId]) => {
+            const raw = rawUrlByIngredient.get(ingCloudId) ?? null;
+            substituteImageByCloudId.set(subCloudId, raw ? await getImagePath({ id: ingCloudId, imageUrl: raw }) : null);
+        }));
+        const itemSubstitutes = substitutes
+            .filter((s) => substituteIds.has(s.cloudId) && s.isActive)
+            .map((s) => {
             const sub = s;
             return {
                 id: sub.cloudId,
                 name: sub.name,
                 priceCents: sub.priceCents,
+                imageUrl: substituteImageByCloudId.get(sub.cloudId) ?? null,
                 prices: (sub.prices ?? []).map((p) => ({
                     sizeCloudId: p.sizeCloudId,
                     sizeLabel: p.size?.label ?? null,

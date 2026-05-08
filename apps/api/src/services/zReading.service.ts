@@ -1,8 +1,8 @@
 import type { PrismaClient } from "@prisma/client";
-import { printRawEscPosToReceiptPrinter } from "./print.service";
-import { getPrinterConfig } from "./printerConfig.service";
-import { getTransactionSummary } from "./transactionSummary.service";
-import { getCalendarDayRange } from "./dayRange.service";
+import { printRawEscPosToReceiptPrinter } from "./print.service.js";
+import { getPrinterConfig } from "./printerConfig.service.js";
+import { getTransactionSummary } from "./transactionSummary.service.js";
+import { getCalendarDayRange } from "./dayRange.service.js";
 
 const RECEIPT_WIDTH = 48;
 const STORE_ID = "store_1";

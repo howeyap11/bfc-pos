@@ -20,6 +20,14 @@ prisma._bfcInstanceId = `prisma-${Date.now()}-${Math.random().toString(36).slice
 function disconnectOnShutdown() {
     prisma.$disconnect().catch(() => { });
 }
+/** If _prisma_migrations says staff_passcode_hash ran but ALTER never applied, sync/catalog will crash. */
+async function ensureSqliteStaffPasscodeHashColumn(client) {
+    const rows = await client.$queryRawUnsafe(`PRAGMA table_info(Staff)`);
+    if (rows.some((c) => c.name === "passcodeHash"))
+        return;
+    await client.$executeRawUnsafe(`ALTER TABLE "Staff" ADD COLUMN "passcodeHash" TEXT`);
+    console.warn("[prisma] Added missing Staff.passcodeHash (SQLite was out of sync with migration history). Catalog sync should work after restart.");
+}
 const prismaPlugin = async (app) => {
     // SQLite: PRAGMA returns results in SQLite — must use $queryRawUnsafe, not $executeRaw (P2010)
     if (rawUrl.startsWith("file:")) {
@@ -30,6 +38,12 @@ const prismaPlugin = async (app) => {
         catch (pragmaErr) {
             // Don't break startup if PRAGMA fails (e.g. driver quirk)
             console.warn("[prisma] PRAGMA busy_timeout failed:", pragmaErr);
+        }
+        try {
+            await ensureSqliteStaffPasscodeHashColumn(prisma);
+        }
+        catch (repairErr) {
+            console.warn("[prisma] Staff.passcodeHash repair skipped/failed:", repairErr);
         }
     }
     app.decorate("prisma", prisma);

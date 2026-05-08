@@ -1,5 +1,5 @@
 import Decimal from "decimal.js";
-import { InventoryEventKind, StockLocationCode } from "../lib/inventoryEventKinds";
+import { InventoryEventKind, StockLocationCode } from "../lib/inventoryEventKinds.js";
 export class InventoryService {
     prisma;
     constructor(prisma) {

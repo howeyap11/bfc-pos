@@ -67,6 +67,7 @@ const storeConfigRoutesImpl = async (app) => {
                     splitPaymentEnabled: true,
                     paymentMethodOrder: null,
                     stickerPrintCategoryIds: [],
+                    kitchenDisplayCategoryIds: [],
                     businessName: null,
                     address: null,
                     receiptTaxType: null,
@@ -87,6 +88,27 @@ const storeConfigRoutesImpl = async (app) => {
             const stickerPrintCategoryIds = config.stickerPrintCategoryIds
                 ? JSON.parse(config.stickerPrintCategoryIds)
                 : [];
+            let kitchenDisplayCategoryIds = [];
+            try {
+                const kRaw = config.kitchenDisplayCategoryIds;
+                if (kRaw) {
+                    const p = JSON.parse(kRaw);
+                    if (Array.isArray(p)) {
+                        kitchenDisplayCategoryIds = p.filter((x) => typeof x === "string" && x.trim().length > 0);
+                    }
+                }
+            }
+            catch {
+                kitchenDisplayCategoryIds = [];
+            }
+            if (kitchenDisplayCategoryIds.length > 0) {
+                const validRows = await app.prisma.cloudCategory.findMany({
+                    where: { storeId: STORE_ID, cloudId: { in: kitchenDisplayCategoryIds } },
+                    select: { cloudId: true },
+                });
+                const validSet = new Set(validRows.map((r) => r.cloudId));
+                kitchenDisplayCategoryIds = kitchenDisplayCategoryIds.filter((id) => validSet.has(id));
+            }
             /* tabletNavJson: safe if null, invalid JSON, or column missing on very old Prisma client — parseTabletNavJson covers all. */
             let tabletNav = defaultTabletNav();
             try {
@@ -101,6 +123,7 @@ const storeConfigRoutesImpl = async (app) => {
                 splitPaymentEnabled: config.splitPaymentEnabled ?? true,
                 paymentMethodOrder,
                 stickerPrintCategoryIds,
+                kitchenDisplayCategoryIds,
                 businessName: config.businessName ?? null,
                 address: config.address ?? null,
                 receiptTaxType: config.receiptTaxType ?? null,
@@ -126,6 +149,20 @@ const storeConfigRoutesImpl = async (app) => {
         preHandler: allowStaffOrStoreConfigAdmin,
     }, async (req, reply) => {
         const body = req.body;
+        let kitchenDisplayCategoryIdsJson = undefined;
+        if (body.kitchenDisplayCategoryIds !== undefined) {
+            let kitchenNorm = [];
+            if (Array.isArray(body.kitchenDisplayCategoryIds) && body.kitchenDisplayCategoryIds.length > 0) {
+                const raw = [...new Set(body.kitchenDisplayCategoryIds.map((x) => String(x ?? "").trim()).filter(Boolean))];
+                const found = await app.prisma.cloudCategory.findMany({
+                    where: { storeId: STORE_ID, cloudId: { in: raw } },
+                    select: { cloudId: true },
+                });
+                const fs = new Set(found.map((f) => f.cloudId));
+                kitchenNorm = raw.filter((id) => fs.has(id));
+            }
+            kitchenDisplayCategoryIdsJson = kitchenNorm.length > 0 ? JSON.stringify(kitchenNorm) : null;
+        }
         const updateData = {};
         if (body.enabledPaymentMethods !== undefined) {
             updateData.enabledPaymentMethods = JSON.stringify(body.enabledPaymentMethods);
@@ -140,6 +177,9 @@ const storeConfigRoutesImpl = async (app) => {
             updateData.stickerPrintCategoryIds = Array.isArray(body.stickerPrintCategoryIds)
                 ? JSON.stringify(body.stickerPrintCategoryIds)
                 : null;
+        }
+        if (kitchenDisplayCategoryIdsJson !== undefined) {
+            updateData.kitchenDisplayCategoryIds = kitchenDisplayCategoryIdsJson;
         }
         if (body.businessName !== undefined) {
             updateData.businessName = body.businessName?.trim() || null;
@@ -177,6 +217,7 @@ const storeConfigRoutesImpl = async (app) => {
                     stickerPrintCategoryIds: Array.isArray(body.stickerPrintCategoryIds)
                         ? JSON.stringify(body.stickerPrintCategoryIds)
                         : null,
+                    kitchenDisplayCategoryIds: kitchenDisplayCategoryIdsJson !== undefined ? kitchenDisplayCategoryIdsJson : null,
                     businessName: body.businessName?.trim() || null,
                     address: body.address?.trim() || null,
                     devMode: !!body.devMode,
@@ -193,12 +234,25 @@ const storeConfigRoutesImpl = async (app) => {
         const stickerPrintCategoryIds = config.stickerPrintCategoryIds
             ? JSON.parse(config.stickerPrintCategoryIds)
             : [];
+        let kitchenPutIds = [];
+        try {
+            const kRaw = config.kitchenDisplayCategoryIds;
+            if (kRaw) {
+                const p = JSON.parse(kRaw);
+                if (Array.isArray(p))
+                    kitchenPutIds = p.filter((x) => typeof x === "string" && x.trim().length > 0);
+            }
+        }
+        catch {
+            kitchenPutIds = [];
+        }
         return {
             storeId: config.storeId,
             enabledPaymentMethods: JSON.parse(config.enabledPaymentMethods),
             splitPaymentEnabled: config.splitPaymentEnabled,
             paymentMethodOrder: config.paymentMethodOrder ? JSON.parse(config.paymentMethodOrder) : null,
             stickerPrintCategoryIds,
+            kitchenDisplayCategoryIds: kitchenPutIds,
             businessName: config.businessName ?? null,
             address: config.address ?? null,
             receiptTaxType: config.receiptTaxType ?? null,
@@ -247,6 +301,40 @@ const storeConfigRoutesImpl = async (app) => {
             },
         });
         return { ok: true, tabletNav: next };
+    });
+    /** Kitchen display category filter: admin PIN only. Empty array = show all orders on KDS. */
+    app.patch("/store-config/kitchen-display", async (req, reply) => {
+        const body = req.body;
+        const pin = (body.adminPin ?? "").trim();
+        const pinResult = await verifyAdminPin(pin, app.prisma);
+        if (!pinResult.valid) {
+            return reply.code(401).send({ error: "INVALID_PIN", message: "Invalid admin PIN" });
+        }
+        const raw = body.kitchenDisplayCategoryIds;
+        if (!Array.isArray(raw)) {
+            return reply.code(400).send({ error: "INVALID_BODY", message: "kitchenDisplayCategoryIds array required" });
+        }
+        const ids = [...new Set(raw.map((x) => String(x ?? "").trim()).filter(Boolean))];
+        let normalized = [];
+        if (ids.length > 0) {
+            const found = await app.prisma.cloudCategory.findMany({
+                where: { storeId: STORE_ID, cloudId: { in: ids } },
+                select: { cloudId: true },
+            });
+            const foundSet = new Set(found.map((c) => c.cloudId));
+            normalized = ids.filter((id) => foundSet.has(id));
+        }
+        await app.prisma.storeConfig.upsert({
+            where: { storeId: STORE_ID },
+            update: { kitchenDisplayCategoryIds: normalized.length > 0 ? JSON.stringify(normalized) : null },
+            create: {
+                storeId: STORE_ID,
+                enabledPaymentMethods: JSON.stringify(["CASH", "CARD", "GCASH", "FOODPANDA"]),
+                splitPaymentEnabled: true,
+                kitchenDisplayCategoryIds: normalized.length > 0 ? JSON.stringify(normalized) : null,
+            },
+        });
+        return { ok: true, kitchenDisplayCategoryIds: normalized };
     });
 };
 export const storeConfigRoutes = fp(storeConfigRoutesImpl, { name: "storeConfigRoutes", dependencies: ["prisma"] });

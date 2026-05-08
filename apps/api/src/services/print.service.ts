@@ -13,13 +13,13 @@ import { fileURLToPath } from "url";
 import os from "os";
 import crypto from "crypto";
 import type { PrismaClient } from "@prisma/client";
-import { getPrinterConfig } from "./printerConfig.service";
-import { enumerateWindowsPrinters, type PrinterEnumerationResult } from "./printerDiscovery.service";
+import { getPrinterConfig } from "./printerConfig.service.js";
+import { enumerateWindowsPrinters, type PrinterEnumerationResult } from "./printerDiscovery.service.js";
 import {
   resolveExactOrCaseInsensitive,
   resolveStickerQueueName,
   trimPrinterName,
-} from "./printerResolve.service";
+} from "./printerResolve.service.js";
 
 const execFileAsync = promisify(execFile);
 

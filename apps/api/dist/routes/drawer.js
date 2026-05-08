@@ -1,5 +1,5 @@
-import { requireStaffHook } from "../plugins/staffGuard";
-import { openCashDrawerUsingConfiguredReceiptPrinter } from "../services/print.service";
+import { requireStaffHook } from "../plugins/staffGuard.js";
+import { openCashDrawerUsingConfiguredReceiptPrinter } from "../services/print.service.js";
 const STORE_ID = "store_1";
 export async function drawerRoutes(app) {
     app.addHook("preHandler", requireStaffHook);

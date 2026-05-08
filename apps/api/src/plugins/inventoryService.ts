@@ -1,6 +1,6 @@
 import fp from "fastify-plugin";
 import type { FastifyPluginAsync } from "fastify";
-import { createInventoryService } from "../services/inventory.service";
+import { createInventoryService } from "../services/inventory.service.js";
 
 const inventoryServicePlugin: FastifyPluginAsync = async (app) => {
   const inventoryService = createInventoryService(app.prisma);

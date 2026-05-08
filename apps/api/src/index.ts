@@ -20,30 +20,30 @@ const dbPath = databaseUrl.startsWith("file:")
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 
-import prismaPlugin from "./plugins/prisma";
-import inventoryServicePlugin from "./plugins/inventoryService";
-import { staffGuardPlugin } from "./plugins/staffGuard";
-import { staffRoutesPlugin } from "./routes/staff";
-import { staffQueueRoutes } from "./routes/staffQueue";
-import { staffOpsRoutes } from "./routes/staffOps";
-import { posOrdersRoutes } from "./routes/posOrders";
-import { orderStatusRoutes } from "./routes/orderStatus";
-import { functionRoomRoutes } from "./routes/functionRoom";
-import { orderCancelRoutes } from "./routes/orderCancel";
-import { qrAcceptRoutes } from "./routes/qrAccept";
-import { registerRoutes } from "./routes/register";
-import { posTransactionsRoutes } from "./routes/posTransactions";
-import { posCustomerDisplayRoutes } from "./routes/posCustomerDisplay";
-import { drawerRoutes } from "./routes/drawer";
-import { adminSyncRoutes } from "./routes/admin/adminSync";
+import prismaPlugin from "./plugins/prisma.js";
+import inventoryServicePlugin from "./plugins/inventoryService.js";
+import { staffGuardPlugin } from "./plugins/staffGuard.js";
+import { staffRoutesPlugin } from "./routes/staff.js";
+import { staffQueueRoutes } from "./routes/staffQueue.js";
+import { staffOpsRoutes } from "./routes/staffOps.js";
+import { posOrdersRoutes } from "./routes/posOrders.js";
+import { orderStatusRoutes } from "./routes/orderStatus.js";
+import { functionRoomRoutes } from "./routes/functionRoom.js";
+import { orderCancelRoutes } from "./routes/orderCancel.js";
+import { qrAcceptRoutes } from "./routes/qrAccept.js";
+import { registerRoutes } from "./routes/register.js";
+import { posTransactionsRoutes } from "./routes/posTransactions.js";
+import { posCustomerDisplayRoutes } from "./routes/posCustomerDisplay.js";
+import { drawerRoutes } from "./routes/drawer.js";
+import { adminSyncRoutes } from "./routes/admin/adminSync.js";
 import { deviceCommandsRoutes } from "./routes/deviceCommands.js";
-import { storeConfigRoutes } from "./routes/storeConfig";
-import { systemPrintersRoutes } from "./routes/systemPrinters";
-import { snapResiboRoutes } from "./routes/snapResibo";
-import { sopRoutes } from "./routes/sop";
+import { storeConfigRoutes } from "./routes/storeConfig.js";
+import { systemPrintersRoutes } from "./routes/systemPrinters.js";
+import { snapResiboRoutes } from "./routes/snapResibo.js";
+import { sopRoutes } from "./routes/sop.js";
 import { devRoutes } from "./routes/dev.js";
 import { ownerRoutesPlugin } from "./routes/owner.js";
-import { ensureItemForCloudId } from "./services/catalogCache.service";
+import { ensureItemForCloudId } from "./services/catalogCache.service.js";
 import { startSyncScheduler, runCatalogSync } from "./services/syncScheduler.js";
 import { startDeviceCommandPolling } from "./services/deviceCommandPolling.service.js";
 import { getCommandState } from "./services/commandState.service.js";
@@ -55,7 +55,7 @@ import {
   getImagePath,
   initMenuImageCache,
   preloadMissingMenuImages,
-} from "./services/menuImageCache.service";
+} from "./services/menuImageCache.service.js";
 
 const app = Fastify({ logger: true });
 

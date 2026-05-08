@@ -4,7 +4,7 @@ const Body = z.object({
     status: z.enum(["PLACED", "ACCEPTED", "IN_PREP", "READY", "COMPLETED", "CANCELLED"]),
 });
 export const orderStatusRoutes = async (app) => {
-    app.patch("/orders/:id/status", { preHandler: app.requireStaff }, async (req, reply) => {
+    app.patch("/orders/:id/status", { preHandler: app.optionalStaff }, async (req, reply) => {
         const p = Params.safeParse(req.params);
         if (!p.success)
             return reply.code(400).send({ error: "INVALID_PARAMS" });

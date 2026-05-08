@@ -3,7 +3,7 @@ import { randomBytes } from "crypto";
 import {
   DEFAULT_WORK_DAY_FROM_TIME_LOCAL,
   DEFAULT_WORK_DAY_TO_TIME_LOCAL,
-} from "../lib/staffBusinessDate";
+} from "../lib/staffBusinessDate.js";
 
 const CLOUD_URL = process.env.CLOUD_URL ?? "";
 const ADMIN_ROLES = ["ADMIN", "OIC", "AUDITOR", "MANAGER"];

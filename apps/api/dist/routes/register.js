@@ -1,4 +1,4 @@
-import { requireStaffHook } from "../plugins/staffGuard";
+import { requireStaffHook } from "../plugins/staffGuard.js";
 const STORE_ID = "store_1";
 export async function registerRoutes(app) {
     // Protect all endpoints with x-staff-key

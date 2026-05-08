@@ -2,7 +2,7 @@ import { pipeline } from "stream/promises";
 import { createWriteStream } from "fs";
 import { join } from "path";
 import { randomBytes } from "crypto";
-import { requireStaffHook } from "../plugins/staffGuard";
+import { requireStaffHook } from "../plugins/staffGuard.js";
 const STORE_ID = "store_1";
 export async function sopRoutes(app) {
     app.addHook("preHandler", requireStaffHook);

@@ -400,6 +400,15 @@ export type InventoryLocation = {
   sortOrder?: number;
 };
 
+export type SyncedTransactionRefundRow = {
+  id: string;
+  reason: string;
+  amountCents: number;
+  createdAt: string;
+  refundedByStaffName?: string | null;
+  items?: { sourceLineItemId: string; qtyRefunded: number; amountRefundedCents: number }[];
+};
+
 export type SyncedTransactionRow = {
   id: string;
   sourceTransactionId: string;
@@ -409,6 +418,10 @@ export type SyncedTransactionRow = {
   serviceType: string;
   cashierName: string | null;
   totalCents: number;
+  /** Sum refunded (reconciliation); aligns with dashboard. */
+  refundAmountCents?: number;
+  /** max(0, totalCents - refundAmountCents), same formula as dashboard net sales per row. */
+  netTotalCents?: number;
   subtotalCents: number;
   discountCents: number;
   itemsCount: number;
@@ -421,10 +434,13 @@ export type SyncedTransactionRow = {
     name: string;
     qty: number;
     lineTotal: number;
+    /** Present when synced from POS; used to cross-reference refund line items. */
+    sourceLineItemId?: string;
     displayLabel?: string;
     categoryName?: string | null;
     subcategoryName?: string | null;
   }[];
+  refunds?: SyncedTransactionRefundRow[];
 };
 
 export type DailyReport = {

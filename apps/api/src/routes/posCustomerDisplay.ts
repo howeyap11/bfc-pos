@@ -1,9 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import { requireStaffHook } from "../plugins/staffGuard";
+import { requireStaffHook } from "../plugins/staffGuard.js";
 import {
   getCustomerDisplaySnapshotState,
   setCustomerDisplaySnapshot,
-} from "../services/customerDisplayState.service";
+} from "../services/customerDisplayState.service.js";
 
 const DEFAULT_STATE = {
   mode: "idle",

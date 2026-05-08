@@ -6,7 +6,7 @@ import {
   type LineItemRecord,
   type RefundRecord,
   type TransactionForCloudSync,
-} from "./transactionSync.service";
+} from "./transactionSync.service.js";
 
 /**
  * Ensure a PENDING outbox row exists for transaction.cloud.sync for this POS transaction id.

@@ -1,7 +1,7 @@
 import "fastify";
 import "@fastify/multipart";
 import type { PrismaClient } from "@prisma/client";
-import type { InventoryService } from "../services/inventory.service";
+import type { InventoryService } from "../services/inventory.service.js";
 
 declare module "fastify" {
   interface FastifyInstance {

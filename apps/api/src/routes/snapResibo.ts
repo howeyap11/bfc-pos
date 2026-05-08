@@ -9,7 +9,7 @@ import {
   getVoucherStats,
   SnapResiboImportStoreNotFoundError,
   SNAPRESIBO_DEFAULT_STORE_ID,
-} from "../services/snapResiboVoucher.service";
+} from "../services/snapResiboVoucher.service.js";
 
 export async function snapResiboRoutes(app: FastifyInstance) {
   app.get("/snapresibo/vouchers/count", async () => {

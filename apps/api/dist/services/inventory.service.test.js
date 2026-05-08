@@ -4,7 +4,7 @@
  * Run with: tsx src/services/inventory.service.test.ts
  */
 import { PrismaClient } from "@prisma/client";
-import { InventoryService } from "./inventory.service";
+import { InventoryService } from "./inventory.service.js";
 import Decimal from "decimal.js";
 async function runTests() {
     const prisma = new PrismaClient();

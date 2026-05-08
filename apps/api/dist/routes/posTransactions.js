@@ -1,15 +1,16 @@
-import { requireStaffHook } from "../plugins/staffGuard";
-import { verifyAdminPin } from "../services/adminPin.service";
-import { enqueueOutbox } from "../services/outbox.service";
-import { ensureItemForCloudId } from "../services/catalogCache.service";
-import { syncTransactionToCloudOrEnqueue } from "../services/transactionSync.service";
-import { printReceiptToDevice, printStickersToDevice, formatTransactionLineLabel, } from "../services/print.service";
-import { allocateVouchersForTransaction, getSnapResiboVoucherForTransaction, } from "../services/snapResiboVoucher.service";
-import { getCalendarDayRange } from "../services/dayRange.service";
-import { printZReading } from "../services/zReading.service";
-import { getTransactionSummary } from "../services/transactionSummary.service";
-import { getTransactionSyncOutboxStatus } from "../services/outbox.service";
-import { finalizePaidTransactionInventory, restoreInventoryForRefund, restoreInventoryForVoid, } from "../services/posTxnInventory.service";
+import { Prisma } from "@prisma/client";
+import { requireStaffHook } from "../plugins/staffGuard.js";
+import { verifyAdminPin } from "../services/adminPin.service.js";
+import { enqueueOutbox, upsertPendingTransactionCloudSync } from "../services/outbox.service.js";
+import { ensureItemForCloudId } from "../services/catalogCache.service.js";
+import { syncTransactionToCloudOrEnqueue } from "../services/transactionSync.service.js";
+import { printReceiptToDevice, printStickersToDevice, printOrderSlip, formatTransactionLineLabel, filterOptionsJsonByItemCaps, } from "../services/print.service.js";
+import { allocateVouchersForTransaction, getSnapResiboVoucherForTransaction, } from "../services/snapResiboVoucher.service.js";
+import { getCalendarDayRange } from "../services/dayRange.service.js";
+import { printZReading } from "../services/zReading.service.js";
+import { getTransactionSummary } from "../services/transactionSummary.service.js";
+import { getTransactionSyncOutboxStatus } from "../services/outbox.service.js";
+import { finalizePaidTransactionInventory, restoreInventoryForRefund, restoreInventoryForVoid, } from "../services/posTxnInventory.service.js";
 const STORE_ID = "store_1";
 const SNAPRESIBO_QR_ITEM_ID = "SNAPRESIBO_QR";
 export const CREATE_TX_STEPS = {
@@ -23,6 +24,76 @@ export const CREATE_TX_STEPS = {
 function getPrismaErrorInfo(err) {
     const e = err;
     return typeof e === "object" && e !== null ? { code: e.code, meta: e.meta } : {};
+}
+/** Reject cart lines whose baseType/size no longer match synced CloudMenuItemDrinkSizeConfig (offline catalog updates). */
+async function assertDrinkSizeSelectionsAllowed(prisma, storeId, log, regularItems) {
+    const sizedLines = regularItems.filter((it) => it.baseType && it.sizeLabel != null && String(it.sizeLabel).trim() !== "");
+    if (sizedLines.length === 0)
+        return;
+    const cloudIds = [...new Set(sizedLines.map((i) => i.itemId))];
+    const configs = await prisma.cloudMenuItemDrinkSizeConfig.findMany({
+        where: { storeId, menuItemCloudId: { in: cloudIds } },
+        select: { menuItemCloudId: true, mode: true, optionCloudId: true },
+    });
+    const configsByItem = new Map();
+    for (const c of configs) {
+        const list = configsByItem.get(c.menuItemCloudId) ?? [];
+        list.push(c);
+        configsByItem.set(c.menuItemCloudId, list);
+    }
+    const allOptIds = [...new Set(configs.map((c) => c.optionCloudId))];
+    const optRows = allOptIds.length > 0
+        ? await prisma.cloudMenuOption.findMany({
+            where: { storeId, cloudId: { in: allOptIds } },
+            select: { cloudId: true, name: true },
+        })
+        : [];
+    const optNameById = new Map(optRows.map((o) => [o.cloudId, o.name ?? ""]));
+    const normLabel = (s) => s.trim().toLowerCase().replace(/\s+/g, "");
+    for (const it of sizedLines) {
+        const itemCfgs = configsByItem.get(it.itemId) ?? [];
+        if (itemCfgs.length === 0)
+            continue;
+        const mode = String(it.baseType ?? "").toUpperCase();
+        const allowedIds = new Set(itemCfgs.filter((c) => String(c.mode ?? "").toUpperCase() === mode).map((c) => c.optionCloudId));
+        if (allowedIds.size === 0) {
+            log.error({
+                tag: "[createTransaction]",
+                step: CREATE_TX_STEPS.resolve_items,
+                reason: "DRINK_MODE_NOT_ALLOWED",
+                itemId: it.itemId,
+                baseType: it.baseType,
+                sizeLabel: it.sizeLabel,
+                optionIds: it.optionIds ?? [],
+            }, "Cart drink selection invalid for synced menu");
+            throw new Error(`DRINK_MODE_NOT_ALLOWED itemId=${it.itemId} baseType=${it.baseType} sizeLabel=${it.sizeLabel ?? ""}`);
+        }
+        const lineOptIds = it.optionIds ?? [];
+        if (lineOptIds.some((id) => allowedIds.has(id)))
+            continue;
+        const labelNorm = normLabel(String(it.sizeLabel ?? ""));
+        let matched = false;
+        for (const oid of allowedIds) {
+            const nm = normLabel(optNameById.get(oid) ?? "");
+            if (nm && (nm === labelNorm || nm.includes(labelNorm) || labelNorm.includes(nm))) {
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) {
+            log.error({
+                tag: "[createTransaction]",
+                step: CREATE_TX_STEPS.resolve_items,
+                reason: "DRINK_SIZE_OPTION_NOT_ALLOWED_FOR_MODE",
+                itemId: it.itemId,
+                baseType: it.baseType,
+                sizeLabel: it.sizeLabel,
+                optionIds: lineOptIds,
+                allowedOptionIdsForMode: [...allowedIds],
+            }, "Cart drink selection invalid for synced menu");
+            throw new Error(`DRINK_SIZE_NOT_ALLOWED itemId=${it.itemId} baseType=${it.baseType} sizeLabel=${it.sizeLabel ?? ""}`);
+        }
+    }
 }
 function logCreateTransactionError(log, ctx, err, payload) {
     const prismaInfo = getPrismaErrorInfo(err);
@@ -95,8 +166,14 @@ function calculateShotsUpcharge(shotsQty, pricingMode, defaultShots, shotRule) {
         const extraShots = Math.max(0, shotsQty - defShots);
         if (extraShots === 0)
             return 0;
-        const bundles = Math.ceil(extraShots / shotRule.shotsPerBundle);
-        return bundles * shotRule.priceCentsPerBundle;
+        const perBundle = shotRule.shotsPerBundle;
+        if (typeof perBundle !== "number" || perBundle <= 0)
+            return 0;
+        const bundles = Math.ceil(extraShots / perBundle);
+        const price = shotRule.priceCentsPerBundle;
+        if (typeof price !== "number" || !Number.isFinite(bundles * price))
+            return 0;
+        return bundles * price;
     }
     // Legacy: shotsPricingMode
     if (!pricingMode)
@@ -156,6 +233,8 @@ export async function posTransactionsRoutes(app) {
                         refundItems: true,
                         item: {
                             select: {
+                                cloudId: true,
+                                supportsShots: true,
                                 category: {
                                     select: {
                                         id: true,
@@ -187,19 +266,42 @@ export async function posTransactionsRoutes(app) {
                 hasMore,
             });
         }
+        const listCloudIds = new Set();
+        for (const tx of rawItems) {
+            for (const li of tx.lineItems) {
+                const cid = li.item?.cloudId;
+                if (cid)
+                    listCloudIds.add(cid);
+            }
+        }
+        const listCloudRows = listCloudIds.size > 0
+            ? await app.prisma.cloudMenuItem.findMany({
+                where: { storeId: STORE_ID, cloudId: { in: [...listCloudIds] } },
+                select: { cloudId: true, name: true, hasSizes: true, supportsShots: true },
+            })
+            : [];
+        const listCloudCapMap = new Map(listCloudRows.map((r) => [r.cloudId, r]));
         const items = rawItems.map((tx) => ({
             ...tx,
-            lineItems: tx.lineItems.map((li) => ({
-                ...li,
-                displayLabel: formatTransactionLineLabel({
-                    name: li.name,
-                    optionsJson: li.optionsJson,
-                    categoryName: li.categoryName ?? li.item?.category?.name ?? undefined,
-                    subCategoryName: li.subCategoryName ?? undefined,
-                    qty: li.qty,
-                    includeQuantity: true,
-                }),
-            })),
+            lineItems: tx.lineItems.map((li) => {
+                const cloudId = li.item?.cloudId ?? null;
+                const cap = cloudId ? listCloudCapMap.get(cloudId) : undefined;
+                const allowStructuredSize = cloudId ? cap?.hasSizes === true : true;
+                const allowShots = cloudId ? cap?.supportsShots === true : li.item?.supportsShots !== false;
+                const oj = filterOptionsJsonByItemCaps(li.optionsJson, { allowStructuredSize, allowShots });
+                return {
+                    ...li,
+                    optionsJson: oj ?? li.optionsJson,
+                    displayLabel: formatTransactionLineLabel({
+                        name: li.name,
+                        optionsJson: oj,
+                        categoryName: li.categoryName ?? li.item?.category?.name ?? undefined,
+                        subCategoryName: li.subCategoryName ?? undefined,
+                        qty: li.qty,
+                        includeQuantity: true,
+                    }),
+                };
+            }),
         }));
         return {
             items,
@@ -252,13 +354,49 @@ export async function posTransactionsRoutes(app) {
                 items: Array.isArray(rawBody.items) ? rawBody.items : [],
             };
             for (const it of body.items) {
-                if (it && typeof it === "object" && !Array.isArray(it.optionIds)) {
-                    it.optionIds = it.optionIds ?? [];
+                if (it && typeof it === "object") {
+                    if (!Array.isArray(it.optionIds)) {
+                        it.optionIds = it.optionIds ?? [];
+                    }
+                    const idRaw = it.itemId;
+                    it.itemId =
+                        typeof idRaw === "string" ? idRaw.trim() : idRaw != null ? String(idRaw).trim() : "";
                 }
             }
             if (body.items.length === 0) {
                 reply.code(400);
                 return { error: "EMPTY_ITEMS" };
+            }
+            if (body.items.some((it) => !it?.itemId)) {
+                reply.code(400);
+                return { error: "MISSING_ITEM_ID", message: "One or more lines are missing a valid item id." };
+            }
+            let orderIdForCreate = null;
+            if (body.orderId != null && String(body.orderId).trim() !== "") {
+                const oid = String(body.orderId).trim();
+                const ord = await app.prisma.order.findUnique({
+                    where: { id: oid },
+                    select: { id: true },
+                });
+                if (!ord) {
+                    reply.code(400);
+                    return {
+                        error: "ORDER_NOT_FOUND",
+                        message: "Order not found. Reload QR orders or start a new cart.",
+                    };
+                }
+                const existingForOrder = await app.prisma.transaction.findUnique({
+                    where: { orderId: oid },
+                    select: { id: true },
+                });
+                if (existingForOrder) {
+                    reply.code(409);
+                    return {
+                        error: "ORDER_ALREADY_HAS_TRANSACTION",
+                        message: "This order is already linked to a sale. Open it from Transactions or start a new order.",
+                    };
+                }
+                orderIdForCreate = oid;
             }
             step = CREATE_TX_STEPS.ensure_store;
             // Ensure Store (and StoreConfig) exist so transaction.create FK does not fail (e.g. fresh DB without seed).
@@ -310,21 +448,31 @@ export async function posTransactionsRoutes(app) {
             });
             const nextNo = (last?.transactionNo ?? 0) + 1;
             step = CREATE_TX_STEPS.resolve_items;
-            // itemId from POS is cloudId (from CloudMenuItem); resolve to Item.id for storage + inventory (exclude SnapResibo virtual item)
+            // itemId from POS is menu cloudId or legacy Item.id; resolve to Item.id for storage + inventory (exclude SnapResibo virtual item)
             const cloudIds = [...new Set(regularItems.map((i) => i.itemId))];
             const optionIds = [...new Set(regularItems.flatMap((i) => i.optionIds ?? []))];
-            const resolvedIds = [];
+            const requestItemIdToLocalId = new Map();
             for (const cid of cloudIds) {
                 try {
-                    const itemId = await ensureItemForCloudId(app.prisma, cid);
-                    resolvedIds.push(itemId);
+                    const localId = await ensureItemForCloudId(app.prisma, cid);
+                    requestItemIdToLocalId.set(cid, localId);
                 }
-                catch {
-                    throw new Error(`Invalid itemId: ${cid}`);
+                catch (cause) {
+                    const causeMsg = cause instanceof Error ? cause.message : String(cause);
+                    app.log.error({
+                        tag: "[createTransaction]",
+                        step: CREATE_TX_STEPS.resolve_items,
+                        storeId: STORE_ID,
+                        deviceId,
+                        cloudItemId: cid,
+                        cause: causeMsg,
+                    }, "ensureItemForCloudId failed (invalid or missing catalog item)");
+                    throw new Error(`Invalid itemId: ${cid} (${causeMsg})`);
                 }
             }
+            const uniqueLocalIds = [...new Set(requestItemIdToLocalId.values())];
             const dbItems = await app.prisma.item.findMany({
-                where: { id: { in: resolvedIds } },
+                where: { id: { in: uniqueLocalIds } },
                 select: {
                     id: true,
                     cloudId: true,
@@ -342,6 +490,11 @@ export async function posTransactionsRoutes(app) {
                 if (i.cloudId)
                     itemMap.set(i.cloudId, i);
             }
+            for (const [requestId, localId] of requestItemIdToLocalId) {
+                const row = itemMap.get(localId);
+                if (row)
+                    itemMap.set(requestId, row);
+            }
             const cloudItems = await app.prisma.cloudMenuItem.findMany({
                 where: { cloudId: { in: cloudIds }, storeId: STORE_ID },
                 select: {
@@ -352,6 +505,8 @@ export async function posTransactionsRoutes(app) {
                     defaultSubstituteCloudId: true,
                     categoryCloudId: true,
                     subCategoryCloudId: true,
+                    hasSizes: true,
+                    supportsShots: true,
                 },
             });
             const cloudItemMap = new Map(cloudItems.map((c) => [c.cloudId, c]));
@@ -472,6 +627,7 @@ export async function posTransactionsRoutes(app) {
                     }
                 }
             }
+            await assertDrinkSizeSelectionsAllowed(app.prisma, STORE_ID, app.log, regularItems);
             // Determine service type, source
             // NOTE: Service fees are now per-line (lineSurchargeCents), not transaction-level
             const serviceTypeInput = String(body.serviceType ?? "DINE_IN").trim().toUpperCase();
@@ -508,34 +664,74 @@ export async function posTransactionsRoutes(app) {
                 const dbItem = itemMap.get(it.itemId);
                 if (!dbItem)
                     throw new Error(`Invalid itemId: ${it.itemId}`);
+                const cloudItemRow = cloudItemMap.get(it.itemId);
+                const allowsSizes = cloudItemRow?.hasSizes === true;
+                const allowsShots = cloudItemRow?.supportsShots === true;
+                const effectiveBaseType = allowsSizes ? it.baseType : undefined;
+                const effectiveSizeLabel = allowsSizes ? it.sizeLabel : undefined;
+                const effectiveShotsQty = allowsShots ? Math.max(0, Math.trunc(it.shotsQty ?? 0)) : 0;
+                if (process.env.BFC_POS_CATALOG_CAPS_DEBUG === "1") {
+                    if (!allowsSizes && (it.baseType || it.sizeLabel)) {
+                        app.log.warn({
+                            event: "catalog_caps_strip_size",
+                            itemCloudId: it.itemId,
+                            itemName: dbItem.name,
+                            localHasSizes: cloudItemRow?.hasSizes,
+                            sentBaseType: it.baseType,
+                            sentSizeLabel: it.sizeLabel,
+                        }, "[CATALOG_CAPS_DEBUG] Item hasSizes=false but POS sent size fields — normalized server-side");
+                    }
+                    if (!allowsShots && (it.shotsQty ?? 0) > 0) {
+                        app.log.warn({
+                            event: "catalog_caps_strip_shots",
+                            itemCloudId: it.itemId,
+                            itemName: dbItem.name,
+                            localSupportsShots: cloudItemRow?.supportsShots,
+                            sentShotsQty: it.shotsQty,
+                        }, "[CATALOG_CAPS_DEBUG] Item supportsShots=false but POS sent shots — normalized server-side");
+                    }
+                }
                 const qty = Math.max(1, Math.trunc(it.qty || 1));
                 const optIds = it.optionIds ?? [];
-                const shotsQty = it.shotsQty ?? 0;
-                const hasSizeSelection = !!(it.baseType && it.sizeLabel);
+                const hasSizeSelection = !!(effectiveBaseType && effectiveSizeLabel);
+                const sizeish = (s) => {
+                    const n = s.toLowerCase();
+                    return n.includes("size") || n.includes("temperature") || /\btemp\b/.test(n);
+                };
                 const deltas = optIds.map((oid) => {
                     const o = optionMap.get(oid);
                     const co = cloudOptionMap.get(oid);
                     const addOn = addOnMap.get(oid);
                     if (o) {
+                        if (!allowsSizes && sizeish(o.group?.name ?? ""))
+                            return 0;
                         if (hasSizeSelection && (o.group?.name ?? "").toLowerCase().includes("size"))
                             return 0;
                         const name = (o.name ?? "").toLowerCase();
+                        if (!allowsShots && (name.includes("shot") || name.includes("espresso shot")))
+                            return 0;
                         if (name.includes("shot") || name.includes("espresso shot"))
                             return 0;
                         return o.priceDelta ?? 0;
                     }
                     if (co) {
+                        if (!allowsSizes && sizeish(co.groupName))
+                            return 0;
                         if (hasSizeSelection && co.groupName.toLowerCase().includes("size"))
                             return 0;
                         if (co.groupName.toLowerCase().includes("shot"))
                             return 0;
                         const name = (co.name ?? "").toLowerCase();
+                        if (!allowsShots && (name.includes("shot") || name.includes("espresso shot")))
+                            return 0;
                         if (name.includes("shot") || name.includes("espresso shot"))
                             return 0;
                         return co.priceDelta ?? 0;
                     }
                     if (addOn) {
                         const name = (addOn.name ?? "").toLowerCase();
+                        if (!allowsShots && (name.includes("shot") || name.includes("espresso shot")))
+                            return 0;
                         if (name.includes("shot") || name.includes("espresso shot"))
                             return 0;
                         return addOn.priceDelta ?? 0;
@@ -546,15 +742,15 @@ export async function posTransactionsRoutes(app) {
                 // Add espresso shots upcharge (server-side recalculation for money safety)
                 // Resolve included shots: per size+temp from CloudMenuItemSizePrice, else item defaultShots
                 const cloudItem = cloudItemMap.get(it.itemId);
-                let includedShots = cloudItem?.defaultShots ?? null;
-                if (it.baseType && it.sizeLabel) {
-                    const sizeKey = `${it.itemId}|${it.baseType}|${it.sizeLabel}`;
+                let includedShots = allowsShots ? (cloudItem?.defaultShots ?? null) : 0;
+                if (allowsShots && effectiveBaseType && effectiveSizeLabel) {
+                    const sizeKey = `${it.itemId}|${effectiveBaseType}|${effectiveSizeLabel}`;
                     const fromSizePrice = includedShotsMap.get(sizeKey);
                     if (typeof fromSizePrice === "number") {
                         includedShots = fromSizePrice;
                     }
                 }
-                const shotsUpchargeCents = calculateShotsUpcharge(shotsQty, dbItem.shotsPricingMode, includedShots, shotRule);
+                const shotsUpchargeCents = calculateShotsUpcharge(effectiveShotsQty, dbItem.shotsPricingMode, includedShots, shotRule);
                 modifiersCents += shotsUpchargeCents;
                 // Milk upcharge: per-size/mode when available (e.g. 70 regular, 180 1-liter), else flat substitute price
                 const effectiveDefaultMilk = it.defaultMilk ?? dbItem.defaultMilk;
@@ -562,26 +758,38 @@ export async function posTransactionsRoutes(app) {
                 if (it.selectedSubstituteCloudId) {
                     const cloudItem = cloudItemMap.get(it.itemId);
                     const defaultSubId = cloudItem?.defaultSubstituteCloudId ?? null;
-                    let selectedPrice = substitutePriceMap.get(it.selectedSubstituteCloudId) ?? 0;
-                    let defaultPrice = defaultSubId != null ? substitutePriceMap.get(defaultSubId) ?? 0 : 0;
+                    let selectedPrice = 0;
+                    let defaultPrice = 0;
                     let sizeCloudId = optIds.find((id) => sizeCloudIdsSet.has(id)) ?? null;
-                    const mode = (it.baseType ?? "").toUpperCase();
-                    if (!sizeCloudId && it.sizeLabel && mode) {
-                        const fromLabel = sizeLabelToCloudId.get(it.sizeLabel.trim().toLowerCase());
+                    const mode = (effectiveBaseType ?? "").toUpperCase();
+                    if (!sizeCloudId && effectiveSizeLabel && mode) {
+                        const fromLabel = sizeLabelToCloudId.get(effectiveSizeLabel.trim().toLowerCase());
                         if (fromLabel)
                             sizeCloudId = fromLabel;
                     }
                     if (sizeCloudId && mode) {
                         const keySelected = `${it.selectedSubstituteCloudId}|${sizeCloudId}|${mode}`;
-                        const keyDefault = defaultSubId != null ? `${defaultSubId}|${sizeCloudId}|${mode}` : null;
                         if (substitutePriceBySizeMap.has(keySelected))
                             selectedPrice = substitutePriceBySizeMap.get(keySelected);
-                        if (keyDefault != null && substitutePriceBySizeMap.has(keyDefault))
-                            defaultPrice = substitutePriceBySizeMap.get(keyDefault);
+                        if (!substitutePriceBySizeMap.has(keySelected)) {
+                            app.log.warn({
+                                event: "milk_matrix_missing",
+                                substituteCloudId: it.selectedSubstituteCloudId,
+                                defaultSubId,
+                                sizeCloudId,
+                                sizeLabel: effectiveSizeLabel,
+                                mode,
+                            }, "[Milk] Missing substitute matrix row (selected)");
+                        }
                     }
-                    // Default milk is included in base price; only charge the increment for a non-default milk
-                    const defaultPriceForDelta = it.selectedSubstituteCloudId === defaultSubId ? selectedPrice : 0;
-                    milkUpchargeCents = Math.max(0, selectedPrice - defaultPriceForDelta);
+                    // Strict: when size+mode is known but matrix row is missing, treat as 0 (avoid accidental fallback charges).
+                    if (!sizeCloudId || !mode) {
+                        selectedPrice = substitutePriceMap.get(it.selectedSubstituteCloudId) ?? 0;
+                        defaultPrice = defaultSubId != null ? substitutePriceMap.get(defaultSubId) ?? 0 : 0;
+                    }
+                    // Hard rule: default milk always adds 0; otherwise use selected tier price (matrix) directly.
+                    milkUpchargeCents =
+                        defaultSubId && it.selectedSubstituteCloudId === defaultSubId ? 0 : Math.max(0, selectedPrice);
                 }
                 else {
                     milkUpchargeCents = calculateMilkUpcharge(it.milkChoice, effectiveDefaultMilk);
@@ -593,11 +801,11 @@ export async function posTransactionsRoutes(app) {
                 const lineDiscountCents = Math.max(0, Math.trunc(Number(it.discountAmount ?? 0)));
                 // Base unit price: if line has size selection and per-size price exists, use it; otherwise fall back to item basePrice.
                 let unitPrice = dbItem.basePrice;
-                if (it.baseType && it.sizeLabel) {
-                    const sizeLabelNorm = it.sizeLabel.trim().toLowerCase();
-                    const sizeCodeResolved = sizeLabelToCloudId.get(sizeLabelNorm) ?? it.sizeLabel;
-                    const key = `${it.itemId}|${it.baseType}|${it.sizeLabel}`;
-                    const keyByCode = `${it.itemId}|${it.baseType}|${sizeCodeResolved}`;
+                if (effectiveBaseType && effectiveSizeLabel) {
+                    const sizeLabelNorm = effectiveSizeLabel.trim().toLowerCase();
+                    const sizeCodeResolved = sizeLabelToCloudId.get(sizeLabelNorm) ?? effectiveSizeLabel;
+                    const key = `${it.itemId}|${effectiveBaseType}|${effectiveSizeLabel}`;
+                    const keyByCode = `${it.itemId}|${effectiveBaseType}|${sizeCodeResolved}`;
                     const sizedPrice = sizePriceMap.get(key) ?? sizePriceMap.get(keyByCode);
                     if (typeof sizedPrice === "number" && sizedPrice >= 0) {
                         unitPrice = sizedPrice;
@@ -618,20 +826,25 @@ export async function posTransactionsRoutes(app) {
                         return { id: oid, name: addOn.name, group: "Add-ons", priceDelta: addOn.priceDelta };
                     return { id: oid, missing: true };
                 });
-                if (shotsQty > 0) {
+                if (effectiveShotsQty > 0) {
                     optionsData.push({
                         type: "shots",
-                        qty: shotsQty,
-                        upchargeCents: shotsUpchargeCents
+                        qty: effectiveShotsQty,
+                        upchargeCents: shotsUpchargeCents,
                     });
                 }
-                if (it.baseType && it.sizeLabel) {
-                    optionsData.push({ type: "size", baseType: it.baseType, sizeLabel: it.sizeLabel });
+                if (effectiveBaseType && effectiveSizeLabel) {
+                    optionsData.push({ type: "size", baseType: effectiveBaseType, sizeLabel: effectiveSizeLabel });
                 }
                 if (it.selectedSubstituteCloudId) {
-                    optionsData.push({ type: "substitute", cloudId: it.selectedSubstituteCloudId });
+                    optionsData.push({
+                        type: "substitute",
+                        cloudId: it.selectedSubstituteCloudId,
+                        name: it.milkChoice ?? undefined,
+                        upchargeCents: milkUpchargeCents,
+                    });
                 }
-                if (it.milkChoice && (it.selectedSubstituteCloudId != null || (effectiveDefaultMilk != null && it.milkChoice !== effectiveDefaultMilk))) {
+                else if (it.milkChoice && effectiveDefaultMilk != null && it.milkChoice !== effectiveDefaultMilk) {
                     optionsData.push({
                         type: "milk",
                         choice: it.milkChoice,
@@ -653,7 +866,10 @@ export async function posTransactionsRoutes(app) {
                         tag: it.discountTag
                     });
                 }
-                const optionsJson = JSON.stringify(optionsData);
+                const optionsJson = filterOptionsJsonByItemCaps(JSON.stringify(optionsData), {
+                    allowStructuredSize: allowsSizes,
+                    allowShots: allowsShots,
+                });
                 const categoryName = cloudItem?.categoryCloudId != null ? categoryNameByCloudId.get(cloudItem.categoryCloudId) ?? null : null;
                 const subCategoryName = cloudItem?.subCategoryCloudId != null ? subCategoryNameByCloudId.get(cloudItem.subCategoryCloudId) ?? null : null;
                 return {
@@ -709,7 +925,7 @@ export async function posTransactionsRoutes(app) {
                     serviceType,
                     registerSessionId: open?.id || null, // Optional: link to register session if open
                     tableId,
-                    orderId: body.orderId || null, // Link to QR order if provided
+                    orderId: orderIdForCreate, // Link to QR order if provided (validated above)
                     subtotalCents,
                     discountCents,
                     serviceCents: 0, // Surcharges are per-line, not transaction-level
@@ -737,6 +953,48 @@ export async function posTransactionsRoutes(app) {
             return created;
         }
         catch (err) {
+            const errMsg = err instanceof Error ? err.message : String(err ?? "");
+            if (errMsg.startsWith("DRINK_MODE_NOT_ALLOWED") ||
+                errMsg.startsWith("DRINK_SIZE_NOT_ALLOWED")) {
+                logCreateTransactionError(app.log, { storeId: STORE_ID, step, deviceId }, err);
+                reply.code(400);
+                return {
+                    code: "INVALID_DRINK_SELECTION",
+                    message: "Drink size or temperature does not match the synced menu. Refresh the menu or adjust the line.",
+                };
+            }
+            if (errMsg.startsWith("Invalid itemId:") || errMsg.includes("CloudMenuItem not found:")) {
+                logCreateTransactionError(app.log, { storeId: STORE_ID, step, deviceId }, err);
+                const fromWrapped = errMsg.match(/^Invalid itemId:\s*(\S+)\s*\(/);
+                const fromBare = errMsg.match(/^Invalid itemId:\s*(\S+)\s*$/);
+                const fromCloud = errMsg.match(/CloudMenuItem not found:\s*(.+)$/);
+                const badItemId = (fromWrapped?.[1] ?? fromBare?.[1] ?? fromCloud?.[1]?.trim()) || undefined;
+                reply.code(400);
+                return {
+                    code: "INVALID_CART_ITEM",
+                    message: "A cart item is not on the menu anymore. Remove it or sync catalog and try again.",
+                    ...(badItemId ? { itemId: badItemId } : {}),
+                };
+            }
+            if (err instanceof Prisma.PrismaClientKnownRequestError) {
+                logCreateTransactionError(app.log, { storeId: STORE_ID, step, deviceId }, err, {
+                    prismaCode: err.code,
+                });
+                if (err.code === "P2002") {
+                    reply.code(409);
+                    return {
+                        code: "TRANSACTION_CONFLICT",
+                        message: "Another sale was saved at the same time. Try payment again.",
+                    };
+                }
+                if (err.code === "P2003") {
+                    reply.code(400);
+                    return {
+                        code: "INVALID_REFERENCE",
+                        message: "Linked order or table is invalid. Refresh and try again.",
+                    };
+                }
+            }
             logCreateTransactionError(app.log, { storeId: STORE_ID, step, deviceId }, err);
             const safeMessage = step === CREATE_TX_STEPS.validate_input
                 ? "Invalid request"
@@ -841,8 +1099,8 @@ export async function posTransactionsRoutes(app) {
                     app.log.warn({ err, transactionId: transaction.id }, "SnapResibo allocation at finalization threw");
                 }
             }
-            // Sync to cloud (best effort, non-blocking)
-            await syncTransactionToCloudOrEnqueue(app.prisma, transaction.id, app.log);
+            // Sync to cloud in background — never block payment completion on cloud latency
+            void syncTransactionToCloudOrEnqueue(app.prisma, transaction.id, app.log).catch((err) => app.log.warn({ err, transactionId: transaction.id }, "[TransactionSync] background sync failed"));
             // Cloud-recipe inventory (offline): persist per-line frozen consumption + local ledger; cloud uses same JSON and skips recompute
             const paidLines = transaction.lineItems.filter((l) => l.itemId);
             if (paidLines.length > 0) {
@@ -910,8 +1168,7 @@ export async function posTransactionsRoutes(app) {
             },
             include: { payments: true, lineItems: true },
         });
-        // Sync void to cloud
-        await syncTransactionToCloudOrEnqueue(app.prisma, voided.id, app.log);
+        void syncTransactionToCloudOrEnqueue(app.prisma, voided.id, app.log).catch((err) => app.log.warn({ err, transactionId: voided.id }, "[TransactionSync] void sync failed"));
         try {
             const full = await app.prisma.transaction.findUnique({
                 where: { id: voided.id },
@@ -1040,7 +1297,7 @@ export async function posTransactionsRoutes(app) {
             data: {
                 transactionId: transaction.id,
                 reason,
-                refundedByStaffId: null, // TODO: Link to actual staff when available
+                refundedByStaffId: req.staff?.id ?? null,
                 refundItems: {
                     create: refundItems,
                 },
@@ -1074,8 +1331,13 @@ export async function posTransactionsRoutes(app) {
                 },
             },
         });
-        // Sync refund to cloud (best effort, non-blocking)
-        await syncTransactionToCloudOrEnqueue(app.prisma, id, app.log);
+        try {
+            await upsertPendingTransactionCloudSync(app.prisma, STORE_ID, id);
+        }
+        catch (err) {
+            app.log.error({ err, transactionId: id }, "[Refund] Failed to ensure cloud sync outbox (will retry via scheduler if immediate sync fails)");
+        }
+        void syncTransactionToCloudOrEnqueue(app.prisma, id, app.log).catch((err) => app.log.warn({ err, transactionId: id }, "[TransactionSync] refund sync failed"));
         try {
             const lineRows = await app.prisma.transactionLineItem.findMany({
                 where: { transactionId: id },
@@ -1122,7 +1384,7 @@ export async function posTransactionsRoutes(app) {
                     lineItems: {
                         include: {
                             refundItems: true,
-                            item: { select: { cloudId: true } },
+                            item: { select: { cloudId: true, supportsShots: true } },
                         },
                     },
                     payments: true,
@@ -1151,13 +1413,27 @@ export async function posTransactionsRoutes(app) {
         const subCategoryNameByCloudId = new Map();
         const categoryNameByMenuItemCloudId = new Map();
         const subCategoryNameByMenuItemCloudId = new Map();
+        let cloudCapsByCloudId = new Map();
         if (cloudIds.length > 0) {
             const cloudItems = await app.prisma.cloudMenuItem.findMany({
-                where: { cloudId: { in: cloudIds } },
-                select: { cloudId: true, categoryCloudId: true, subCategoryCloudId: true },
+                where: { cloudId: { in: cloudIds }, storeId: STORE_ID },
+                select: {
+                    cloudId: true,
+                    name: true,
+                    categoryCloudId: true,
+                    subCategoryCloudId: true,
+                    hasSizes: true,
+                    supportsShots: true,
+                },
             });
             for (const row of cloudItems) {
                 categoryByCloudId.set(row.cloudId, row.categoryCloudId);
+                cloudCapsByCloudId.set(row.cloudId, {
+                    cloudId: row.cloudId,
+                    name: row.name,
+                    hasSizes: row.hasSizes,
+                    supportsShots: row.supportsShots,
+                });
             }
             const catIds = [...new Set(cloudItems.map((r) => r.categoryCloudId).filter((c) => !!c))];
             const subIds = [...new Set(cloudItems.map((r) => r.subCategoryCloudId).filter((c) => !!c))];
@@ -1189,9 +1465,28 @@ export async function posTransactionsRoutes(app) {
             const categoryCloudId = cloudId ? categoryByCloudId.get(cloudId) ?? null : null;
             const categoryName = li.categoryName ?? (cloudId ? categoryNameByMenuItemCloudId.get(cloudId) ?? null : null);
             const subCategoryName = li.subCategoryName ?? (cloudId ? subCategoryNameByMenuItemCloudId.get(cloudId) ?? null : null);
+            const capRow = cloudId ? cloudCapsByCloudId.get(cloudId) : undefined;
+            const allowStructuredSize = cloudId ? capRow?.hasSizes === true : true;
+            const allowShots = cloudId ? capRow?.supportsShots === true : li.item?.supportsShots !== false;
+            const optionsJsonForDisplay = filterOptionsJsonByItemCaps(li.optionsJson, {
+                allowStructuredSize,
+                allowShots,
+            });
+            if (process.env.BFC_POS_CATALOG_CAPS_DEBUG === "1" && cloudId && capRow) {
+                app.log.info({
+                    event: "receipt_view_caps",
+                    lineItemId: li.id,
+                    itemCloudId: cloudId,
+                    cloudName: capRow.name,
+                    localHasSizes: capRow.hasSizes,
+                    localSupportsShots: capRow.supportsShots,
+                    allowStructuredSize,
+                    allowShots,
+                }, "[CATALOG_CAPS_DEBUG] receipt line caps");
+            }
             const displayLabel = formatTransactionLineLabel({
                 name: li.name,
-                optionsJson: li.optionsJson,
+                optionsJson: optionsJsonForDisplay,
                 categoryName: categoryName ?? undefined,
                 subCategoryName: subCategoryName ?? undefined,
                 qty: li.qty,
@@ -1199,6 +1494,7 @@ export async function posTransactionsRoutes(app) {
             });
             return {
                 ...li,
+                optionsJson: optionsJsonForDisplay ?? li.optionsJson,
                 categoryCloudId,
                 categoryName: categoryName ?? undefined,
                 subCategoryName: subCategoryName ?? undefined,
@@ -1272,7 +1568,7 @@ export async function posTransactionsRoutes(app) {
             }
         }
         try {
-            await printReceiptToDevice(txForPrint, receiptHeader, vouchersForPrint.length > 0 ? vouchersForPrint : undefined);
+            await printReceiptToDevice(txForPrint, receiptHeader, vouchersForPrint.length > 0 ? vouchersForPrint : undefined, app.prisma, STORE_ID);
             return snapResiboError ? { ok: true, snapResiboError } : { ok: true };
         }
         catch (err) {
@@ -1282,9 +1578,79 @@ export async function posTransactionsRoutes(app) {
             return { error: "PRINT_FAILED", message };
         }
     });
+    // Order slip (receipt printer, ESC/POS); kitchen copy — no prices, no SnapResibo, no drawer.
+    async function runPrintOrderSlip(transactionId, reply, lineItemIds) {
+        const transaction = await app.prisma.transaction.findUnique({
+            where: { id: transactionId },
+            include: { lineItems: true, payments: true },
+        });
+        if (!transaction) {
+            reply.code(404);
+            return { error: "TRANSACTION_NOT_FOUND" };
+        }
+        let lineRows = transaction.lineItems;
+        if (lineItemIds && lineItemIds.length > 0) {
+            const allowed = new Set(lineItemIds);
+            lineRows = lineRows.filter((li) => allowed.has(li.id));
+            if (lineRows.length === 0) {
+                reply.code(400);
+                return { error: "NO_LINE_ITEMS", message: "No matching line items for print" };
+            }
+        }
+        const txForPrint = {
+            transactionNo: transaction.transactionNo,
+            totalCents: transaction.totalCents,
+            createdAt: transaction.createdAt instanceof Date
+                ? transaction.createdAt.toISOString()
+                : String(transaction.createdAt),
+            createdBy: transaction.createdBy,
+            serviceType: transaction.serviceType,
+            lineItems: lineRows.map((li) => ({
+                itemId: li.itemId,
+                name: li.name,
+                qty: li.qty,
+                unitPrice: li.unitPrice,
+                lineTotal: li.lineTotal,
+                note: li.note,
+                optionsJson: li.optionsJson,
+                categoryName: li.categoryName,
+                subCategoryName: li.subCategoryName,
+                specialInstructions: li.specialInstructions,
+                customerName: li.customerName,
+            })),
+            payments: transaction.payments.map((p) => ({
+                method: p.method,
+                amountCents: p.amountCents,
+            })),
+        };
+        try {
+            await printOrderSlip(txForPrint, app.prisma, STORE_ID);
+            return { ok: true };
+        }
+        catch (err) {
+            const message = err instanceof Error ? err.message : String(err ?? "Order slip print failed");
+            app.log.error({ err, transactionId }, "Print order slip failed");
+            reply.code(500);
+            return { error: "PRINT_FAILED", message };
+        }
+    }
+    app.post("/pos/transactions/:id/print-order-slip", async (req, reply) => {
+        const { id } = req.params;
+        const body = (req.body ?? {});
+        const lineItemIds = Array.isArray(body.lineItemIds) ? body.lineItemIds : undefined;
+        return runPrintOrderSlip(id, reply, lineItemIds);
+    });
+    app.post("/print/order-slip/:transactionId", async (req, reply) => {
+        const { transactionId } = req.params;
+        const body = (req.body ?? {});
+        const lineItemIds = Array.isArray(body.lineItemIds) ? body.lineItemIds : undefined;
+        return runPrintOrderSlip(transactionId, reply, lineItemIds);
+    });
     // Direct print stickers (local printer, no browser); uses store stickerPrintCategoryIds and line categoryCloudId
     app.post("/pos/transactions/:id/print-stickers", async (req, reply) => {
         const { id } = req.params;
+        const body = (req.body ?? {});
+        const lineItemIds = Array.isArray(body.lineItemIds) ? body.lineItemIds : undefined;
         const transaction = await app.prisma.transaction.findUnique({
             where: { id },
             include: {
@@ -1296,6 +1662,15 @@ export async function posTransactionsRoutes(app) {
             reply.code(404);
             return { error: "TRANSACTION_NOT_FOUND" };
         }
+        let stickerLines = transaction.lineItems;
+        if (lineItemIds && lineItemIds.length > 0) {
+            const allowed = new Set(lineItemIds);
+            stickerLines = stickerLines.filter((li) => allowed.has(li.id));
+            if (stickerLines.length === 0) {
+                reply.code(400);
+                return { error: "NO_LINE_ITEMS", message: "No matching line items for sticker print" };
+            }
+        }
         const storeConfig = await app.prisma.storeConfig.findUnique({
             where: { storeId: STORE_ID },
         });
@@ -1303,7 +1678,7 @@ export async function posTransactionsRoutes(app) {
             ? JSON.parse(storeConfig.stickerPrintCategoryIds)
             : [];
         const cloudIds = [
-            ...new Set(transaction.lineItems.map((li) => li.item?.cloudId).filter((c) => !!c)),
+            ...new Set(stickerLines.map((li) => li.item?.cloudId).filter((c) => !!c)),
         ];
         const categoryByCloudId = new Map();
         const subCategoryNameByMenuItemCloudId = new Map();
@@ -1330,7 +1705,8 @@ export async function posTransactionsRoutes(app) {
                 subCategoryNameByMenuItemCloudId.set(row.cloudId, name);
             }
         }
-        const enrichedLineItems = transaction.lineItems.map((li) => ({
+        const enrichedLineItems = stickerLines.map((li) => ({
+            itemId: li.itemId,
             name: li.name,
             qty: li.qty,
             unitPrice: li.unitPrice,
@@ -1351,7 +1727,7 @@ export async function posTransactionsRoutes(app) {
             lineItems: enrichedLineItems,
         };
         try {
-            const result = await printStickersToDevice(txForPrint, { stickerPrintCategoryIds });
+            const result = await printStickersToDevice(txForPrint, { stickerPrintCategoryIds }, app.prisma, STORE_ID);
             if (result.printed === 0) {
                 reply.code(400);
                 return { error: "NO_STICKER_ITEMS", message: "No sticker items in this transaction" };

@@ -1,7 +1,7 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import type { InventoryMovementType } from "@prisma/client";
 import Decimal from "decimal.js";
-import { InventoryEventKind, StockLocationCode, type StockLocationCodeValue } from "../lib/inventoryEventKinds";
+import { InventoryEventKind, StockLocationCode, type StockLocationCodeValue } from "../lib/inventoryEventKinds.js";
 
 export type InventoryMovementPostInput = {
   storeId: string;

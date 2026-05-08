@@ -5,7 +5,7 @@
  */
 
 import { PrismaClient } from "@prisma/client";
-import { InventoryService } from "./inventory.service";
+import { InventoryService } from "./inventory.service.js";
 import Decimal from "decimal.js";
 
 async function runTests() {
