@@ -837,7 +837,19 @@ export default function OrdersClient({
             </div>
           )}
           {isExpanded ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 16 }}>
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflowY: "auto",
+              WebkitOverflowScrolling: "touch",
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+              marginBottom: 16,
+              paddingRight: 6,
+            }}
+          >
             {o.items.map((li) => {
               const d = formatQrOrderLine(li);
               return (
@@ -873,7 +885,18 @@ export default function OrdersClient({
             })}
           </div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflowY: "auto",
+              WebkitOverflowScrolling: "touch",
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+              paddingRight: 6,
+            }}
+          >
             {o.items.map((li) => {
               const d = formatQrOrderLine(li);
               return (
@@ -938,7 +961,19 @@ export default function OrdersClient({
         <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
           {header}
           {isExpanded ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 16 }}>
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflowY: "auto",
+              WebkitOverflowScrolling: "touch",
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+              marginBottom: 16,
+              paddingRight: 6,
+            }}
+          >
             {o.items.map((li) => {
               const d = formatQrOrderLine(li);
               return (
@@ -957,7 +992,18 @@ export default function OrdersClient({
             })}
           </div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflowY: "auto",
+              WebkitOverflowScrolling: "touch",
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+              paddingRight: 6,
+            }}
+          >
             {o.items.map((li) => {
               const d = formatQrOrderLine(li);
               return (
@@ -1241,7 +1287,15 @@ export default function OrdersClient({
               {tx.table.zone?.code}-{tx.table.label}
             </div>
           )}
-          <div style={{ flex: 1, minHeight: 0 }}>
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflowY: "auto",
+              WebkitOverflowScrolling: "touch",
+              paddingRight: 6,
+            }}
+          >
             {isExpanded
               ? tx.lineItems.map((li) => renderTxLineTablet(li))
               : tx.lineItems.map((li) => {
