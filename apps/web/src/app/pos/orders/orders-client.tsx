@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { COLORS } from "@/lib/theme";
 import type { CartItem } from "@/lib/buildTransactionPayload";
 import {
@@ -29,6 +29,15 @@ const QR_ORDER_STORAGE_KEY = "bfc_pos_qr_order_id";
 
 const POLL_INTERVAL_MS = 5000;
 const POLL_INTERVAL_KDS_MS = 4000;
+
+/** Pending tablet queue URL with or without `basePath`, trailing slash, or sub-routes. */
+function isTabletPendingQueuePath(pathnameNormalized: string): boolean {
+  const parts = pathnameNormalized.split("/").filter(Boolean);
+  const ti = parts.indexOf("tablet");
+  if (ti < 0) return false;
+  const seg = parts[ti + 1];
+  return seg === "pending" || seg === "pending-orders" || (typeof seg === "string" && seg.startsWith("pending-orders"));
+}
 const CARD_COLLAPSED_WIDTH = 240;
 const CARD_COLLAPSED_MIN_WIDTH = 200;
 const CARD_EXPANDED_WIDTH = 520;
@@ -241,10 +250,21 @@ export default function OrdersClient({
   const isTabletPending = variant === "tabletPending";
   const isTabletQr = variant === "tabletQr";
   const isTabletOrders = isTabletPending || isTabletQr;
-  /** Tablet UI + kitchen board: poll / bump without staff PIN (local kiosk). POS /orders still requires login. */
-  const ordersAllowAnonymous = isTabletOrders || isKds;
+  const pathname = usePathname();
+  const pathNorm =
+    pathname != null && pathname.length > 1 && pathname.endsWith("/")
+      ? pathname.slice(0, -1)
+      : pathname ?? "";
+  /** URL truth: pending queue screen even if `variant` prop were ever wrong/missing (avoids fetch tab=qr + empty strip vs header). */
+  const isTabletPendingRoute = isTabletPendingQueuePath(pathNorm);
+  const forcePendingQueueData = isKds || isTabletPending || isTabletPendingRoute;
+  /** Tablet UI + kitchen board: poll / bump without staff PIN (local kiosk). Pending-queue tablet URLs too (variant can be wrong in edge builds). */
+  const ordersAllowAnonymous = isTabletOrders || isKds || isTabletPendingRoute;
   const [activeStaff, setActiveStaff] = useState<{ staffKey: string } | null>(null);
-  const [innerTab, setInnerTab] = useState<"qr" | "pending">("qr");
+  /** Tablet pending route always uses API tab=pending; keep inner aligned so hidden tablet UI doesn't leave this stuck on "qr". */
+  const [innerTab, setInnerTab] = useState<"qr" | "pending">(() =>
+    variant === "tabletPending" ? "pending" : "qr"
+  );
   const [orders, setOrders] = useState<PosOrder[]>([]);
   const [pendingTransactions, setPendingTransactions] = useState<PendingTransaction[]>([]);
   const [loading, setLoading] = useState(true);
@@ -272,11 +292,16 @@ export default function OrdersClient({
   const priorOrdersSuccessRef = useRef(false);
 
   const effectiveTab =
-    isKds || isTabletPending ? "pending" : isTabletQr ? "qr" : qrMenuEnabled ? innerTab : "pending";
+    forcePendingQueueData ? "pending" : isTabletQr ? "qr" : qrMenuEnabled ? innerTab : "pending";
 
   /** Shared pending-queue UX: POS pending tab + tablet pending routes (not KDS, not QR-only). */
   const isPendingQueueView =
-    !isKds && (isTabletPending || (!isTabletOrders && effectiveTab === "pending"));
+    !isKds &&
+    (isTabletPending || isTabletPendingRoute || (!isTabletOrders && effectiveTab === "pending"));
+
+  useEffect(() => {
+    if (isTabletPendingRoute) setInnerTab("pending");
+  }, [isTabletPendingRoute]);
 
   useEffect(() => {
     fetch("/api/store-config", { cache: "no-store" })
@@ -334,7 +359,8 @@ export default function OrdersClient({
       const headers: Record<string, string> = {};
       const sk = activeStaff?.staffKey?.trim();
       if (sk) headers["x-staff-key"] = sk;
-      const res = await fetch(`/api/pos/orders?tab=${effectiveTab}`, {
+      const ordersApiTab = effectiveTab === "pending" ? "pending" : "qr";
+      const res = await fetch(`/api/pos/orders?tab=${encodeURIComponent(ordersApiTab)}`, {
         cache: "no-store",
         headers,
       });
@@ -402,7 +428,7 @@ export default function OrdersClient({
       loadOrdersInFlight.current = false;
       setLoading(false);
     }
-  }, [activeStaff?.staffKey, effectiveTab, isKds, isTabletOrders, ordersAllowAnonymous, variant]);
+  }, [activeStaff?.staffKey, effectiveTab, isKds, isTabletOrders, ordersAllowAnonymous, variant, pathNorm]);
 
   useEffect(() => {
     if (!ordersAllowAnonymous && !activeStaff?.staffKey) {
@@ -466,26 +492,46 @@ export default function OrdersClient({
   }, [pendingItemsRaw, kitchenDisplayCategoryIds]);
 
   useEffect(() => {
-    if (process.env.NODE_ENV === "production") return;
-    if (effectiveTab !== "pending") return;
-    const cutoffMs = Date.now() - 24 * 60 * 60 * 1000;
-    const after24 = pendingItemsRaw.filter((p) => {
-      const t = p.kind === "order" ? p.order.createdAt : p.transaction.createdAt;
-      return !isPendingOlderThan24Hours(t);
-    }).length;
-    const afterKitchenAnd24 = filterPendingForKitchen(pendingItemsRaw, kitchenDisplayCategoryIds).filter((p) => {
-      const t = p.kind === "order" ? p.order.createdAt : p.transaction.createdAt;
-      return !isPendingOlderThan24Hours(t);
-    }).length;
-    console.log("[PendingQueueDebug]", {
-      cutoffIso: new Date(cutoffMs).toISOString(),
-      pendingQueryCountBeforeFilters: pendingItemsRaw.length,
-      countAfter24hFilter: after24,
-      countAfter24hAndCategoryFilter: afterKitchenAnd24,
-      kitchenCategoryFilterCount: kitchenDisplayCategoryIds.length,
-      variant,
-    });
-  }, [effectiveTab, pendingItemsRaw, kitchenDisplayCategoryIds, variant]);
+    const rawLen = pendingItemsRaw.length;
+    const listLen = pendingItemsList.length;
+    const filteredOutBy24 =
+      !isKds && rawLen > 0 ? Math.max(0, rawLen - listLen) : 0;
+    const renderBranch = loading
+      ? "loading"
+      : effectiveTab === "qr"
+        ? "qr_strip"
+        : listLen === 0
+          ? "pending_empty"
+          : "pending_cards";
+    const first = pendingItemsRaw[0];
+    const sampleFirstCreatedAt =
+      first == null
+        ? null
+        : first.kind === "order"
+          ? first.order.createdAt
+          : first.transaction.createdAt;
+    /** True when header shows N on queue but strip is not rendering N pending cards. */
+    const headerStripMismatch =
+      isPendingQueueView && !loading && listLen > 0 && renderBranch !== "pending_cards";
+  }, [
+    variant,
+    pathNorm,
+    pathname,
+    isTabletPendingRoute,
+    forcePendingQueueData,
+    isKds,
+    isTabletPending,
+    isTabletOrders,
+    isPendingQueueView,
+    innerTab,
+    effectiveTab,
+    loading,
+    qrMenuEnabled,
+    orders.length,
+    pendingTransactions.length,
+    pendingItemsRaw,
+    pendingItemsList.length,
+  ]);
 
   useEffect(() => {
     if (effectiveTab === "qr") {
@@ -1615,7 +1661,7 @@ export default function OrdersClient({
         >
           {loading ? (
             <p style={{ color: COLORS.textSecondary }}>Loading orders...</p>
-          ) : innerTab === "qr" ? (
+          ) : effectiveTab === "qr" ? (
             orders.length === 0 ? (
               <p style={{ color: COLORS.textSecondary }}>No orders.</p>
             ) : (

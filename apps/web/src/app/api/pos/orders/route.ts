@@ -2,10 +2,12 @@ export async function GET(req: Request) {
   try {
     const staffKey = req.headers.get("x-staff-key") ?? "";
     const url = new URL(req.url);
-    const tab = url.searchParams.get("tab") ?? "qr";
+    const rawTab = url.searchParams.get("tab");
+    /** Empty or unknown must not forward as `?tab=` (upstream defaults to qr and drops pending txs). */
+    const tab = rawTab?.trim() === "pending" ? "pending" : "qr";
 
     const backendBase = process.env.POS_API_BASE_URL || "http://127.0.0.1:4000";
-    const backendUrl = `${backendBase}/pos/orders?tab=${tab}`;
+    const backendUrl = `${backendBase}/pos/orders?tab=${encodeURIComponent(tab)}`;
 
     const upstream = await fetch(backendUrl, {
       cache: "no-store",
