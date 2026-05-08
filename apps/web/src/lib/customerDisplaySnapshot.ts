@@ -15,10 +15,14 @@ export type ItemPreview = {
   sizeLabel?: string | null;
   optionNames: string[];
   milkLabel?: string | null;
+  /** Cloud substitute recipe image when customizing / in cart preview */
+  milkImageUrl?: string | null;
   shotsQty?: number;
   qty: number;
   note?: string | null;
   transactionTypeLabel?: string | null;
+  /** Unit price (one item) in centavos: base + size + options + milk + shots + line surcharge */
+  unitPriceCents?: number;
 };
 
 export type CartSnapshotItem = {

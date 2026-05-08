@@ -155,8 +155,55 @@ function FeaturedItem({
         </div>
       )}
       {preview.milkLabel && (
-        <div style={{ fontSize: 15, color: "#ddd", marginBottom: 4 }}>
-          {preview.milkLabel}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 10,
+            fontSize: 15,
+            color: "#ddd",
+            marginBottom: 4,
+          }}
+        >
+          {preview.milkImageUrl ? (
+            <img
+              src={preview.milkImageUrl}
+              alt=""
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 8,
+                objectFit: "cover",
+                border: "1px solid rgba(255,255,255,0.15)",
+                flexShrink: 0,
+              }}
+            />
+          ) : (
+            <span
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 8,
+                background: "rgba(255,255,255,0.06)",
+                flexShrink: 0,
+              }}
+            />
+          )}
+          <span>{preview.milkLabel}</span>
+        </div>
+      )}
+      {preview.unitPriceCents != null && (
+        <div
+          style={{
+            fontSize: 17,
+            fontWeight: 700,
+            color: COLORS.primary,
+            marginTop: 10,
+            marginBottom: 4,
+          }}
+        >
+          Unit Price: {formatPesos(preview.unitPriceCents)}
         </div>
       )}
       {preview.shotsQty !== undefined && preview.shotsQty > 0 && (
@@ -322,7 +369,7 @@ export default function CustomerDisplayClient() {
         overflow: "hidden",
       }}
     >
-      {/* Left: featured item or idle / preparing */}
+      {/* Left: featured item or idle / preparing — vertically centered preview */}
       <div
         style={{
           flex: "1 1 58%",
@@ -330,12 +377,23 @@ export default function CustomerDisplayClient() {
           display: "flex",
           flexDirection: "column",
           borderRight: "1px solid #222",
+          minHeight: 0,
         }}
       >
         {isPreparing ? (
           <PreparingState />
         ) : featured ? (
-          <FeaturedItem preview={featured} showAddedBadge={showAddedBadge} />
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <FeaturedItem preview={featured} showAddedBadge={showAddedBadge} />
+          </div>
         ) : (
           <IdleState />
         )}

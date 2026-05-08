@@ -1020,11 +1020,14 @@ export async function posTransactionsRoutes(app: FastifyInstance) {
       }
 
       if (it.selectedSubstituteCloudId) {
+        const defaultSubForSticker = cloudItemRow?.defaultSubstituteCloudId ?? null;
+        const isDefaultSubstitute = !!(defaultSubForSticker && it.selectedSubstituteCloudId === defaultSubForSticker);
         optionsData.push({
           type: "substitute",
           cloudId: it.selectedSubstituteCloudId,
           name: it.milkChoice ?? undefined,
           upchargeCents: milkUpchargeCents,
+          isDefaultSubstitute,
         });
       } else if (it.milkChoice && effectiveDefaultMilk != null && it.milkChoice !== effectiveDefaultMilk) {
         optionsData.push({

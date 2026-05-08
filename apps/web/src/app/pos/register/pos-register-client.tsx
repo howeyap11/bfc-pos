@@ -172,6 +172,8 @@ type CartItem = {
   shotsUpchargeCents?: number; // Espresso shots upcharge (snapshot)
   /** Milk substitute incremental charge over default milk at selected size (centavos). */
   milkUpgradeCents?: number;
+  /** Synced substitute image for cart / customer display */
+  milkSubstituteImageUrl?: string | null;
   /** Transaction type (cloud-synced). Replaces legacy fulfillment. */
   transactionTypeCode: PosServiceType;
   transactionTypeLabel: string;
@@ -1457,6 +1459,18 @@ function formatLineItemModifiers(item: CartItem & { optionsJson?: string | null 
   let sizeText = sizeTemp.size;
   let tempText = sizeTemp.temp;
 
+  const normLoose = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
+  /** Drop option rows that duplicate temp/size already shown in primary (prevents second "size" in modifier list). */
+  function isDuplicatePrimaryTempSize(opt: { name?: string; groupName?: string }): boolean {
+    const name = (opt.name ?? "").trim();
+    if (!name) return false;
+    const nu = normLoose(name);
+    if (sizeTemp.size && nu === normLoose(sizeTemp.size)) return true;
+    if (sizeTemp.temp && nu === normLoose(sizeTemp.temp)) return true;
+    if (item.sizeLabel?.trim() && nu === normLoose(item.sizeLabel)) return true;
+    return false;
+  }
+
   // Fallback: extract from selectedOptions when temp/size not from direct or optionsJson
   const otherOptions: string[] = [];
   const isTempGroup = (g: string) =>
@@ -1475,6 +1489,7 @@ function formatLineItemModifiers(item: CartItem & { optionsJson?: string | null 
 
   if (!allowStructuredSize) {
     item.selectedOptions?.forEach((opt) => {
+      if (isDuplicatePrimaryTempSize(opt)) return;
       const groupName = (opt.groupName ?? "").toUpperCase();
       const optName = (opt.name ?? "").toUpperCase();
       if (isTempGroup(groupName) || isSizeGroup(groupName) || optName.includes("OZ")) return;
@@ -1487,6 +1502,7 @@ function formatLineItemModifiers(item: CartItem & { optionsJson?: string | null 
     });
   } else if (!sizeText || !tempText) {
     item.selectedOptions?.forEach((opt) => {
+      if (isDuplicatePrimaryTempSize(opt)) return;
       const optName = (opt.name ?? "").toUpperCase();
       const groupName = (opt.groupName ?? "").trim().toUpperCase();
       if (groupName === "HOT" || groupName === "ICED" || groupName === "CONCENTRATED") {
@@ -1507,6 +1523,7 @@ function formatLineItemModifiers(item: CartItem & { optionsJson?: string | null 
     });
   } else {
     item.selectedOptions?.forEach((opt) => {
+      if (isDuplicatePrimaryTempSize(opt)) return;
       const groupName = (opt.groupName ?? "").toUpperCase();
       const optName = (opt.name ?? "").toUpperCase();
       if (isTempGroup(groupName) || isSizeGroup(groupName) || optName.includes("OZ")) return;
@@ -1523,7 +1540,8 @@ function formatLineItemModifiers(item: CartItem & { optionsJson?: string | null 
   if (tempText) primaryParts.push(tempText);
   if (sizeText) primaryParts.push(sizeText);
 
-  // 2) Milk: label + incremental substitute charge (matches customization breakdown)
+  // 2) Milk: label + incremental substitute charge (matches customization breakdown); image beside row in cart UI
+  let milkRow: { text: string; imageUrl?: string | null } | null = null;
   if (item.milkChoice) {
     const milkLabel =
       item.milkChoice === "FULL_CREAM"
@@ -1536,7 +1554,10 @@ function formatLineItemModifiers(item: CartItem & { optionsJson?: string | null 
               ? "Soy milk"
               : String(item.milkChoice);
     const up = item.milkUpgradeCents ?? 0;
-    secondaryParts.push(`Milk: ${milkLabel} +${pesosFromCentsLine(up)}`);
+    milkRow = {
+      text: up > 0 ? `Milk: ${milkLabel} +${pesosFromCentsLine(up)}` : `Milk: ${milkLabel}`,
+      imageUrl: item.milkSubstituteImageUrl ?? null,
+    };
   }
 
   // 3) Shots: only when catalog allows shots
@@ -1561,7 +1582,8 @@ function formatLineItemModifiers(item: CartItem & { optionsJson?: string | null 
 
   return {
     primaryText: primaryTextOut, // e.g., "16oz ICED"
-    secondaryParts, // e.g., ["sub oatmilk", "2 shots", "Vanilla Syrup"]
+    secondaryParts, // e.g., ["2 shots", "Vanilla Syrup"] — milk is milkRow
+    milkRow,
     fulfillmentLabel: transactionTypeLabel,
     fulfillmentColor: transactionTypeColor,
   };
@@ -1582,7 +1604,7 @@ function CartLineItem({
   calculateLineTotal: (item: CartItem) => number;
 }) {
   // Use shared formatter
-  const { primaryText, secondaryParts, fulfillmentLabel, fulfillmentColor } = formatLineItemModifiers(item);
+  const { primaryText, secondaryParts, milkRow, fulfillmentLabel, fulfillmentColor } = formatLineItemModifiers(item);
 
   return (
     <div
@@ -1636,7 +1658,7 @@ function CartLineItem({
           </div>
 
           {/* Modifiers - UTAK Style: Size+Temp bold, rest comma-separated. Highlight cup customizations on cart only. */}
-          {(primaryText || secondaryParts.length > 0) && (
+          {(primaryText || milkRow || secondaryParts.length > 0) && (
             <div
               style={{
                 fontSize: 11,
@@ -1651,9 +1673,40 @@ function CartLineItem({
               {primaryText && (
                 <span style={{ color: "#fff", fontWeight: "600" }}>{primaryText}</span>
               )}
-              {primaryText && secondaryParts.length > 0 && (
+              {primaryText && (milkRow || secondaryParts.length > 0) && (
                 <span style={{ color: "#888" }}>, </span>
               )}
+              {milkRow && (
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6, verticalAlign: "middle" }}>
+                  {milkRow.imageUrl ? (
+                    <img
+                      src={milkRow.imageUrl}
+                      alt=""
+                      style={{
+                        width: 26,
+                        height: 26,
+                        borderRadius: 6,
+                        objectFit: "cover",
+                        border: "1px solid #444",
+                        flexShrink: 0,
+                      }}
+                    />
+                  ) : (
+                    <span
+                      style={{
+                        width: 26,
+                        height: 26,
+                        borderRadius: 6,
+                        background: "#333",
+                        flexShrink: 0,
+                        display: "inline-block",
+                      }}
+                    />
+                  )}
+                  <span style={{ color: "#888" }}>{milkRow.text}</span>
+                </span>
+              )}
+              {milkRow && secondaryParts.length > 0 && <span style={{ color: "#888" }}>, </span>}
               {secondaryParts.length > 0 && secondaryParts.map((part, i) => {
                 // Check if this part should be bold (marked with **)
                 const isBold = part.startsWith("**") && part.endsWith("**");
@@ -2918,6 +2971,7 @@ export default function PosRegisterClient() {
         selectedOptions: optsHasSizes,
         milkChoice: selectedSubstituteForQuickAdd?.name,
         selectedSubstituteCloudId: selectedSubstituteForQuickAdd?.id,
+        milkSubstituteImageUrl: selectedSubstituteForQuickAdd?.imageUrl ?? null,
         milkUpgradeCents: milkUpgradeSnap,
         defaultMilk: configuringItem.substitutes && configuringItem.substitutes.length > 0 ? configuringItem.defaultMilk : undefined,
         shotsQty: lineShotsQtyHasSizes,
@@ -3072,6 +3126,7 @@ export default function PosRegisterClient() {
       selectedOptions: opts,
       milkChoice: selectedSubstitute?.name,
       selectedSubstituteCloudId: selectedSubstitute?.id,
+      milkSubstituteImageUrl: selectedSubstitute?.imageUrl ?? null,
       milkUpgradeCents: milkPriceDelta,
       defaultMilk: configuringItem.substitutes && configuringItem.substitutes.length > 0 ? configuringItem.defaultMilk : undefined,
       shotsQty: lineShotsQtyNoSizes,
@@ -3147,30 +3202,227 @@ export default function PosRegisterClient() {
     return Math.max(0, subtotal + surcharge);
   }
 
+  /** Omit temp/size rows from customer-display chip list (shown beside temperature already). */
+  function cartPreviewOptionNames(item: CartItem): string[] {
+    const isTempOrSizeGroup = (gName: string) => {
+      const n = gName.toLowerCase();
+      return (
+        n.includes("temperature") ||
+        n.includes("temp") ||
+        n.includes("size") ||
+        n === "hot" ||
+        n === "iced" ||
+        n === "concentrated"
+      );
+    };
+    return (item.selectedOptions ?? [])
+      .filter((o) => !isTempOrSizeGroup(o.groupName ?? ""))
+      .map((o) => o.name);
+  }
+
+  /** Matches live customization breakdown (same math as Price Breakdown panel). */
+  function buildActiveCustomizeItemPreview(): ItemPreview {
+    const ci = configuringItem!;
+    const isTempOrSizeGroup = (gName: string) => {
+      const n = gName.toLowerCase();
+      return (
+        n.includes("temperature") ||
+        n.includes("temp") ||
+        n.includes("size") ||
+        n === "hot" ||
+        n === "iced" ||
+        n === "concentrated"
+      );
+    };
+
+    const optionNames: string[] = [];
+    ci.itemOptionGroups?.forEach(({ group }) => {
+      if (isTempOrSizeGroup(group.name)) return;
+      const selected = selectedOptions[group.id] ?? [];
+      selected.forEach((optId) => {
+        const opt = group.options.find((o) => o.id === optId);
+        if (opt) optionNames.push(opt.name);
+      });
+    });
+    ci.addOns?.forEach((addon) => {
+      const selected = selectedOptions["addons"] ?? [];
+      if (selected.includes(addon.id)) optionNames.push(addon.name);
+    });
+
+    let baseUnitPrice = ci.basePrice;
+    let optionsTotal = 0;
+    if (ci.hasSizes && ci.sizesByMode && configBaseType && configSizeOption) {
+      const sizeEntry = ci.sizesByMode[configBaseType]?.find((s) => s.id === configSizeOption.id);
+      baseUnitPrice = sizeEntry?.priceCents ?? ci.basePrice;
+      optionsTotal = ci.itemOptionGroups.reduce((sum, { group }) => {
+        if (isTempOrSizeGroup(group.name)) return sum;
+        const selectedIds = selectedOptions[group.id] || [];
+        return (
+          sum +
+          selectedIds.reduce((optSum, optId) => {
+            const opt = group.options.find((o) => o.id === optId);
+            return optSum + (opt?.priceDelta || 0);
+          }, 0)
+        );
+      }, 0);
+    } else {
+      optionsTotal = ci.itemOptionGroups.reduce((sum, { group }) => {
+        const selectedIds = selectedOptions[group.id] || [];
+        return (
+          sum +
+          selectedIds.reduce((optSum, optId) => {
+            const opt = group.options.find((o) => o.id === optId);
+            return optSum + (opt?.priceDelta || 0);
+          }, 0)
+        );
+      }, 0);
+    }
+
+    let addOnsTotal = 0;
+    if (ci.addOns && ci.addOns.length > 0) {
+      const selectedAddonIds = selectedOptions["addons"] ?? [];
+      selectedAddonIds.forEach((addonId) => {
+        const addon = ci.addOns!.find((a) => a.id === addonId);
+        if (addon) addOnsTotal += addon.priceCents;
+      });
+    }
+
+    const milkDelta =
+      ci.substitutes && ci.substitutes.length > 0 && selectedSubstituteId
+        ? (() => {
+            const selectedSub = ci.substitutes.find((s) => s.id === selectedSubstituteId);
+            const defaultId = ci.defaultSubstituteCloudId ?? ci.substitutes?.[0]?.id;
+            const sizeId =
+              ci.hasSizes && configSizeOption
+                ? configSizeOption.id
+                : (() => {
+                    const sizeGroup = ci.itemOptionGroups?.find(
+                      (ig) =>
+                        ig.group.name.toLowerCase().includes("size") ||
+                        ig.group.name.toUpperCase().includes("OZ")
+                    );
+                    const sizeOptId = sizeGroup ? selectedOptions[sizeGroup.group.id]?.[0] : null;
+                    return sizeOptId ?? undefined;
+                  })();
+            const mode =
+              configBaseType ??
+              (() => {
+                const g = ci.itemOptionGroups?.find((ig) =>
+                  ["HOT", "ICED", "CONCENTRATED"].includes(ig.group.name.toUpperCase())
+                );
+                const optId = g ? selectedOptions[g.group.id]?.[0] : null;
+                const opt = g?.group.options.find((o) => o.id === optId);
+                const n = (opt?.name ?? "").toUpperCase();
+                if (n.includes("ICED")) return "ICED" as const;
+                if (n.includes("HOT")) return "HOT" as const;
+                if (n.includes("CONCENTRATED")) return "CONCENTRATED" as const;
+                return undefined;
+              })();
+            const sizeLabelBreakdown =
+              ci.hasSizes && configSizeOption
+                ? configSizeOption.name
+                : (() => {
+                    const sizeGroup = ci.itemOptionGroups?.find(
+                      (ig) =>
+                        ig.group.name.toLowerCase().includes("size") ||
+                        ig.group.name.toUpperCase().includes("OZ")
+                    );
+                    const sizeOptId = sizeGroup ? selectedOptions[sizeGroup.group.id]?.[0] : null;
+                    const sizeOpt = sizeGroup?.group.options.find((o) => o.id === sizeOptId);
+                    return sizeOpt?.name ?? undefined;
+                  })();
+            const selectedPrice = getSubstitutePriceCents(selectedSub ?? undefined, sizeId, mode, sizeLabelBreakdown);
+            return defaultId && selectedSub?.id === defaultId ? 0 : Math.max(0, selectedPrice);
+          })()
+        : 0;
+
+    const includedShotsBreakdown =
+      ci.hasSizes && configBaseType && configSizeOption
+        ? resolveIncludedShots({ item: ci, selectedSizeId: configSizeOption.id, selectedTemp: configBaseType })
+        : (() => {
+            const sizeGroup = ci.itemOptionGroups?.find((ig) => ig.group.name.toLowerCase().includes("size"));
+            const sizeOptId = sizeGroup ? selectedOptions[sizeGroup.group.id]?.[0] : null;
+            const sizeOpt = sizeGroup?.group.options.find((o) => o.id === sizeOptId);
+            return resolveIncludedShotsBySizeName({
+              item: ci,
+              selectedSizeId: sizeOptId ?? undefined,
+              sizeName: sizeOpt?.name ?? configSizeOption?.name,
+            });
+          })();
+
+    const shotsDelta = calculateShotsUpcharge(
+      configShotsQty,
+      ci.shotsPricingMode,
+      includedShotsBreakdown,
+      ci.shotPricingRule
+    );
+
+    const surcharge = configTransactionType?.priceDeltaCents ?? 0;
+
+    const unitPriceCents = baseUnitPrice + optionsTotal + addOnsTotal + milkDelta + shotsDelta + surcharge;
+
+    let milkLabel: string | null = null;
+    let milkImageUrl: string | null = null;
+    if (ci.substitutes && ci.substitutes.length > 0 && selectedSubstituteId) {
+      const sel = ci.substitutes.find((s) => s.id === selectedSubstituteId);
+      milkImageUrl = sel?.imageUrl ?? null;
+      if (sel) {
+        const defaultId = ci.defaultSubstituteCloudId ?? ci.substitutes?.[0]?.id;
+        const showUpgrade = !(defaultId && sel.id === defaultId);
+        milkLabel = showUpgrade
+          ? `Milk: ${sel.name} +${pesosFromCentsLine(milkDelta)}`
+          : `Milk: ${sel.name}`;
+      }
+    }
+
+    return {
+      itemName: ci.name,
+      imageUrl: ci.imageUrl ?? null,
+      baseType: configBaseType ?? null,
+      sizeLabel: configSizeOption?.name ?? null,
+      optionNames,
+      milkLabel,
+      milkImageUrl,
+      shotsQty: configShotsQty ?? 0,
+      qty: configQty,
+      note: configNote.trim() || null,
+      transactionTypeLabel: configTransactionType?.label ?? null,
+      unitPriceCents,
+    };
+  }
+
   function cartItemToItemPreview(item: CartItem, imageUrl?: string | null): ItemPreview {
-    const milkLabel =
+    const milkLabelFmt =
       !item.milkChoice
         ? null
-        : item.milkChoice === "OAT"
-          ? "Oat milk"
-          : item.milkChoice === "ALMOND"
-            ? "Almond"
-            : item.milkChoice === "SOY"
-              ? "Soy"
-              : item.milkChoice === "FULL_CREAM"
-                ? "Full cream"
-                : String(item.milkChoice); // Cloud substitute name e.g. "Coconut Milk"
+        : (() => {
+            const milkLabel =
+              item.milkChoice === "OAT"
+                ? "Oat milk"
+                : item.milkChoice === "ALMOND"
+                  ? "Almond milk"
+                  : item.milkChoice === "SOY"
+                    ? "Soy milk"
+                    : item.milkChoice === "FULL_CREAM"
+                      ? "Full cream"
+                      : String(item.milkChoice);
+            const up = item.milkUpgradeCents ?? 0;
+            return up > 0 ? `Milk: ${milkLabel} +${pesosFromCentsLine(up)}` : `Milk: ${milkLabel}`;
+          })();
+    const unitPriceCents = item.basePrice + (item.optionTotalCents ?? 0) + (item.surchargeCents ?? 0);
     return {
       itemName: item.itemName,
       imageUrl: imageUrl ?? null,
       baseType: item.baseType ?? null,
       sizeLabel: item.sizeLabel ?? null,
-      optionNames: item.selectedOptions?.map((o) => o.name) ?? [],
-      milkLabel: milkLabel ?? null,
+      optionNames: cartPreviewOptionNames(item),
+      milkLabel: milkLabelFmt,
+      milkImageUrl: item.milkSubstituteImageUrl ?? null,
       shotsQty: item.shotsQty ?? 0,
       qty: item.qty,
       note: item.note ?? null,
       transactionTypeLabel: item.transactionTypeLabel ?? null,
+      unitPriceCents,
     };
   }
 
@@ -3187,34 +3439,7 @@ export default function PosRegisterClient() {
 
     let activeItemPreview: ItemPreview | null = null;
     if (registerView === "CUSTOMIZE" && configuringItem) {
-      const optionNames: string[] = [];
-      configuringItem.itemOptionGroups?.forEach(({ group }) => {
-        const selected = selectedOptions[group.id] ?? [];
-        selected.forEach((optId) => {
-          const opt = group.options.find((o) => o.id === optId);
-          if (opt) optionNames.push(opt.name);
-        });
-      });
-      configuringItem.addOns?.forEach((addon) => {
-        const selected = selectedOptions["addons"] ?? [];
-        if (selected.includes(addon.id)) optionNames.push(addon.name);
-      });
-      const milkLabel =
-        configuringItem.substitutes && configuringItem.substitutes.length > 0 && selectedSubstituteId
-          ? (configuringItem.substitutes.find((s) => s.id === selectedSubstituteId)?.name ?? null)
-          : null;
-      activeItemPreview = {
-        itemName: configuringItem.name,
-        imageUrl: configuringItem.imageUrl ?? null,
-        baseType: configBaseType ?? null,
-        sizeLabel: configSizeOption?.name ?? null,
-        optionNames,
-        milkLabel,
-        shotsQty: configShotsQty ?? 0,
-        qty: configQty,
-        note: configNote.trim() || null,
-        transactionTypeLabel: configTransactionType?.label ?? null,
-      };
+      activeItemPreview = buildActiveCustomizeItemPreview();
     }
 
     const cartItems: CartSnapshotItem[] = cart.map((item) => ({
@@ -3264,6 +3489,7 @@ export default function PosRegisterClient() {
     configTransactionType,
     configNote,
     configCustomerName,
+    selectedSubstituteId,
     cart,
     cartPanelMode,
     lastAddedForDisplay,
@@ -6278,7 +6504,8 @@ function TransactionSuccessPanel({
           if (!item) return null;
           
           // Use shared formatter
-          const { primaryText, secondaryParts, fulfillmentLabel, fulfillmentColor } = formatLineItemModifiers(item);
+          const { primaryText, secondaryParts, milkRow, fulfillmentLabel, fulfillmentColor } =
+            formatLineItemModifiers(item);
           
           return (
             <div
@@ -6330,14 +6557,45 @@ function TransactionSuccessPanel({
                   </div>
 
                   {/* Modifiers - UTAK Style: Size+Temp bold, rest comma-separated */}
-                  {(primaryText || secondaryParts.length > 0) && (
+                  {(primaryText || milkRow || secondaryParts.length > 0) && (
                     <div style={{ fontSize: 11, lineHeight: "1.4", marginLeft: 26 }}>
                       {primaryText && (
                         <span style={{ color: "#fff", fontWeight: "600" }}>{primaryText}</span>
                       )}
-                      {primaryText && secondaryParts.length > 0 && (
+                      {primaryText && (milkRow || secondaryParts.length > 0) && (
                         <span style={{ color: "#888" }}>, </span>
                       )}
+                      {milkRow && (
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 6, verticalAlign: "middle" }}>
+                          {milkRow.imageUrl ? (
+                            <img
+                              src={milkRow.imageUrl}
+                              alt=""
+                              style={{
+                                width: 26,
+                                height: 26,
+                                borderRadius: 6,
+                                objectFit: "cover",
+                                border: "1px solid #444",
+                                flexShrink: 0,
+                              }}
+                            />
+                          ) : (
+                            <span
+                              style={{
+                                width: 26,
+                                height: 26,
+                                borderRadius: 6,
+                                background: "#333",
+                                flexShrink: 0,
+                                display: "inline-block",
+                              }}
+                            />
+                          )}
+                          <span style={{ color: "#888" }}>{milkRow.text}</span>
+                        </span>
+                      )}
+                      {milkRow && secondaryParts.length > 0 && <span style={{ color: "#888" }}>, </span>}
                       {secondaryParts.length > 0 && secondaryParts.map((part, i) => {
                         // Check if this part should be bold (marked with **)
                         const isBold = part.startsWith("**") && part.endsWith("**");

@@ -302,7 +302,8 @@ function lineItemDisplayParts(optionsJson: string | null | undefined): { primary
         const temp = (o.baseType ?? "").charAt(0) + (o.baseType ?? "").slice(1).toLowerCase();
         primary.push(`${temp} ${o.sizeLabel}`);
       } else if (o.type === "substitute" && o.name) {
-        secondary.push(o.name);
+        const isDef = (o as { isDefaultSubstitute?: boolean }).isDefaultSubstitute;
+        if (!isDef) secondary.push(o.name);
       } else if (o.type === "milk" && o.choice) {
         const c = (o.choice ?? "").toUpperCase().replace(/\s+/g, "_");
         if (c !== "FULL_CREAM") {
@@ -473,7 +474,7 @@ function shouldPrintSticker(
 
 type ParsedOpt =
   | { type: "size"; baseType: string; sizeLabel: string }
-  | { type: "substitute"; cloudId?: string; name?: string; upchargeCents?: number }
+  | { type: "substitute"; cloudId?: string; name?: string; upchargeCents?: number; isDefaultSubstitute?: boolean }
   | { type: "milk"; choice: string; upchargeCents?: number }
   | { type: "shots"; qty: number; upchargeCents?: number }
   | { type?: string; group?: string; name?: string };
@@ -518,9 +519,13 @@ function collectOrderSlipModifierLabels(optionsJson: string | null | undefined):
     out.push(t);
   }
 
-  const subOptSlip = opts.find((o) => o && (o as ParsedOpt).type === "substitute") as { name?: string } | undefined;
+  const subOptSlip = opts.find((o) => o && (o as ParsedOpt).type === "substitute") as
+    | { name?: string; isDefaultSubstitute?: boolean }
+    | undefined;
   if (subOptSlip?.name?.trim()) {
-    push(subOptSlip.name.trim());
+    if (!subOptSlip.isDefaultSubstitute) {
+      push(subOptSlip.name.trim());
+    }
   } else {
     const milkOpt = opts.find((o) => o && (o as ParsedOpt).type === "milk") as { choice?: string } | undefined;
     if (milkOpt?.choice) {
@@ -676,9 +681,13 @@ function getStickerLineLabel(line: { name: string; optionsJson?: string | null; 
     lines.push(qty > 1 ? `${qty} SHOTS` : "1 SHOT");
   }
 
-  const subSticker = opts.find((o) => o && (o as ParsedOpt).type === "substitute") as { name?: string } | undefined;
+  const subSticker = opts.find((o) => o && (o as ParsedOpt).type === "substitute") as
+    | { name?: string; isDefaultSubstitute?: boolean }
+    | undefined;
   if (subSticker?.name?.trim()) {
-    lines.push(subSticker.name.trim().toUpperCase().replace(/\s+/g, " "));
+    if (!subSticker.isDefaultSubstitute) {
+      lines.push("SUB: " + subSticker.name.trim());
+    }
   } else {
     const milkOpt = opts.find((o) => o && (o as ParsedOpt).type === "milk") as { choice?: string } | undefined;
     if (milkOpt?.choice) {
