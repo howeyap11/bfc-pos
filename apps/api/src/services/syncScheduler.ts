@@ -2,7 +2,11 @@ import type { FastifyInstance } from "fastify";
 import { syncCatalogFromCloud } from "./syncCatalog.service.js";
 import { processTransactionSyncOutbox, getTransactionSyncOutboxStatus } from "./outbox.service.js";
 import { uploadTransactionToCloud } from "./transactionSync.service.js";
-import { cleanupStaleMenuImages } from "./menuImageCache.service.js";
+import {
+  cleanupStaleMenuImages,
+  mergeMenuImageCacheRetentionIds,
+  preloadMissingMenuImages,
+} from "./menuImageCache.service.js";
 import { isOnline } from "./connectivity.service.js";
 import { syncOwnerPasswordHash } from "./ownerPassword.service.js";
 import { processStaffOpsOutbox } from "./staffOpsSync.service.js";
@@ -59,12 +63,31 @@ export async function runCatalogSync(app: FastifyInstance): Promise<void> {
         app.log.warn({ err }, "Staff ops reference sync failed");
       });
       try {
-        const activeItems = await app.prisma.cloudMenuItem.findMany({
-          where: { storeId: "store_1", isActive: true, deletedAt: null },
-          select: { cloudId: true },
-        });
-        const removed = await cleanupStaleMenuImages(activeItems.map((i) => i.cloudId));
+        const [activeItems, ingredientsWithImages] = await Promise.all([
+          app.prisma.cloudMenuItem.findMany({
+            where: { storeId: "store_1", isActive: true, deletedAt: null },
+            select: { cloudId: true, imageUrl: true },
+          }),
+          app.prisma.cloudIngredient.findMany({
+            where: {
+              storeId: "store_1",
+              isActive: true,
+              deletedAt: null,
+              imageUrl: { not: null },
+            },
+            select: { cloudId: true, imageUrl: true },
+          }),
+        ]);
+        const keepIds = mergeMenuImageCacheRetentionIds(
+          activeItems.map((i) => i.cloudId),
+          ingredientsWithImages.map((i) => i.cloudId)
+        );
+        const removed = await cleanupStaleMenuImages(keepIds);
         if (removed > 0) app.log.info({ removed }, "Menu image cache: cleaned stale entries");
+        await preloadMissingMenuImages([
+          ...activeItems.map((i) => ({ id: i.cloudId, imageUrl: i.imageUrl })),
+          ...ingredientsWithImages.map((i) => ({ id: i.cloudId, imageUrl: i.imageUrl })),
+        ]);
       } catch (err) {
         app.log.warn({ err }, "Menu image cache cleanup failed");
       }

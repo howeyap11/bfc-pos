@@ -151,6 +151,26 @@ export async function invalidateCachedImage(itemId: string): Promise<void> {
   scheduleIndexSave();
 }
 
+/**
+ * Menu items cache under `CloudMenuItem.cloudId`; milk substitute thumbnails cache under
+ * `CloudIngredient.cloudId` (same `cache/menu-images` store). Merge both when calling
+ * {@link cleanupStaleMenuImages} so ingredient images are not deleted as stale.
+ */
+export function mergeMenuImageCacheRetentionIds(
+  menuItemCloudIds: string[],
+  ingredientCloudIds: string[]
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of [...menuItemCloudIds, ...ingredientCloudIds]) {
+    const id = (raw ?? "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
 export async function cleanupStaleMenuImages(activeCloudIds: string[]): Promise<number> {
   await loadIndex();
   const validKeys = new Set(activeCloudIds.map((id) => sanitizeId(id)).filter(Boolean));

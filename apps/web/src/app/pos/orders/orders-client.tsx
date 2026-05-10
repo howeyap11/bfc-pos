@@ -42,7 +42,6 @@ const CARD_COLLAPSED_WIDTH = 240;
 const CARD_COLLAPSED_MIN_WIDTH = 200;
 const CARD_EXPANDED_WIDTH = 520;
 const CARD_EXPANDED_MIN_WIDTH = 440;
-const CARD_MIN_HEIGHT = 320;
 /** Cart column width matches Register: clamp(272px, 32vw, 440px) */
 
 /** Ensure QR line formatter never iterates undefined `options`. */
@@ -240,10 +239,13 @@ function OrdersCartLineItem({ item }: { item: CartItem }) {
 export default function OrdersClient({
   variant = "default",
   kdsExitHref = "/tablet/pending-orders",
+  defaultInnerTab,
 }: {
   variant?: "default" | "kds" | "tabletPending" | "tabletQr";
   /** Shown on Kitchen display header (tablet shell). */
   kdsExitHref?: string;
+  /** When set (e.g. `/pos/pending-orders`), open the Pending tab on first paint. */
+  defaultInnerTab?: "qr" | "pending";
 }) {
   const router = useRouter();
   const isKds = variant === "kds";
@@ -263,7 +265,7 @@ export default function OrdersClient({
   const [activeStaff, setActiveStaff] = useState<{ staffKey: string } | null>(null);
   /** Tablet pending route always uses API tab=pending; keep inner aligned so hidden tablet UI doesn't leave this stuck on "qr". */
   const [innerTab, setInnerTab] = useState<"qr" | "pending">(() =>
-    variant === "tabletPending" ? "pending" : "qr"
+    variant === "tabletPending" ? "pending" : defaultInnerTab ?? "qr"
   );
   const [orders, setOrders] = useState<PosOrder[]>([]);
   const [pendingTransactions, setPendingTransactions] = useState<PendingTransaction[]>([]);
@@ -814,7 +816,15 @@ export default function OrdersClient({
     const isLoading = opts.isQr && (acceptingId === o.id || decliningId === o.id);
 
     const header = (
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: isExpanded ? 16 : 12 }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: isExpanded ? 16 : 12,
+          flexShrink: 0,
+        }}
+      >
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <span style={{ fontSize: 18, fontWeight: "700", color: timerColor, display: "flex", alignItems: "center", gap: 6 }}>
             <span>🕐</span>
@@ -1017,8 +1027,10 @@ export default function OrdersClient({
         </div>
         {isPendingQueueView ? (
           <>
-            <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.textSecondary, marginTop: 12 }}>Total Quantity: {orderTotalQty}</div>
-            <div style={{ marginTop: 16, display: "flex", gap: 12, flexWrap: "wrap" }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.textSecondary, marginTop: 12, flexShrink: 0 }}>
+              Total Quantity: {orderTotalQty}
+            </div>
+            <div style={{ marginTop: 16, display: "flex", gap: 12, flexWrap: "wrap", flexShrink: 0 }}>
               <button
                 type="button"
                 onClick={(e) => {
@@ -1120,7 +1132,9 @@ export default function OrdersClient({
           overflow: "hidden",
           minWidth: isExpanded ? CARD_EXPANDED_MIN_WIDTH : CARD_COLLAPSED_MIN_WIDTH,
           width: isExpanded ? CARD_EXPANDED_WIDTH : CARD_COLLAPSED_WIDTH,
-          minHeight: CARD_MIN_HEIGHT,
+          minHeight: 0,
+          height: "100%",
+          maxHeight: "100%",
           flexShrink: 0,
           cursor: "pointer",
         }}
@@ -1268,12 +1282,14 @@ export default function OrdersClient({
             overflow: "hidden",
             minWidth: isExpanded ? CARD_EXPANDED_MIN_WIDTH : CARD_COLLAPSED_MIN_WIDTH,
             width: isExpanded ? CARD_EXPANDED_WIDTH : CARD_COLLAPSED_WIDTH,
-            minHeight: CARD_MIN_HEIGHT,
+            minHeight: 0,
+            height: "100%",
+            maxHeight: "100%",
             flexShrink: 0,
             cursor: "pointer",
           }}
         >
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexShrink: 0 }}>
             <span style={{ fontSize: isExpanded ? 15 : 17, fontWeight: 800, color: "#334155" }}>
               Receipt#: {String(tx.transactionNo).padStart(4, "0")}
             </span>
@@ -1283,7 +1299,7 @@ export default function OrdersClient({
             </span>
           </div>
           {tx.table && isExpanded && (
-            <div style={{ fontSize: 14, color: "#64748b", marginBottom: 8 }}>
+            <div style={{ fontSize: 14, color: "#64748b", marginBottom: 8, flexShrink: 0 }}>
               {tx.table.zone?.code}-{tx.table.label}
             </div>
           )}
@@ -1292,8 +1308,11 @@ export default function OrdersClient({
               flex: 1,
               minHeight: 0,
               overflowY: "auto",
+              overflowX: "hidden",
               WebkitOverflowScrolling: "touch",
               paddingRight: 6,
+              display: "flex",
+              flexDirection: "column",
             }}
           >
             {isExpanded
@@ -1322,8 +1341,8 @@ export default function OrdersClient({
                   );
                 })}
           </div>
-          <div style={{ fontSize: 16, fontWeight: 700, color: "#475569", marginTop: 12 }}>Total Quantity: {totalQty}</div>
-          <div style={{ marginTop: 16, display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: "#475569", marginTop: 12, flexShrink: 0 }}>Total Quantity: {totalQty}</div>
+          <div style={{ marginTop: 16, display: "flex", gap: 12, flexWrap: "wrap", flexShrink: 0 }}>
             <button
               type="button"
               onClick={(e) => {
@@ -1382,7 +1401,15 @@ export default function OrdersClient({
     }
 
     const header = (
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: isExpanded ? 16 : 12 }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: isExpanded ? 16 : 12,
+          flexShrink: 0,
+        }}
+      >
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <span style={{ fontSize: 18, fontWeight: "700", color: timerColor, display: "flex", alignItems: "center", gap: 6 }}>
             <span>🕐</span>
@@ -1401,16 +1428,39 @@ export default function OrdersClient({
         <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
           {header}
           {tx.table && isExpanded && (
-            <div style={{ fontSize: 14, color: COLORS.textSecondary, marginBottom: 8 }}>
+            <div style={{ fontSize: 14, color: COLORS.textSecondary, marginBottom: 8, flexShrink: 0 }}>
               {tx.table.zone?.code}-{tx.table.label}
             </div>
           )}
           {isExpanded ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 16 }}>
+            <div
+              style={{
+                flex: 1,
+                minHeight: 0,
+                overflowY: "auto",
+                WebkitOverflowScrolling: "touch",
+                display: "flex",
+                flexDirection: "column",
+                gap: 12,
+                marginBottom: 16,
+                paddingRight: 6,
+              }}
+            >
               {tx.lineItems.map((li) => renderTxLineDark(li))}
             </div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <div
+              style={{
+                flex: 1,
+                minHeight: 0,
+                overflowY: "auto",
+                WebkitOverflowScrolling: "touch",
+                display: "flex",
+                flexDirection: "column",
+                gap: 10,
+                paddingRight: 6,
+              }}
+            >
               {tx.lineItems.map((li) => {
                 const d = formatPendingTransactionLine(li);
                 return (
@@ -1423,7 +1473,7 @@ export default function OrdersClient({
             </div>
           )}
         </div>
-        <div style={{ marginTop: "auto", display: "flex", justifyContent: "flex-end", paddingTop: 16 }}>
+        <div style={{ marginTop: "auto", display: "flex", justifyContent: "flex-end", paddingTop: 16, flexShrink: 0 }}>
           <button
             type="button"
             disabled={isLoading}
@@ -1466,7 +1516,9 @@ export default function OrdersClient({
           overflow: "hidden",
           minWidth: isExpanded ? CARD_EXPANDED_MIN_WIDTH : CARD_COLLAPSED_MIN_WIDTH,
           width: isExpanded ? CARD_EXPANDED_WIDTH : CARD_COLLAPSED_WIDTH,
-          minHeight: CARD_MIN_HEIGHT,
+          minHeight: 0,
+          height: "100%",
+          maxHeight: "100%",
           flexShrink: 0,
           cursor: "pointer",
         }}
@@ -1610,6 +1662,7 @@ export default function OrdersClient({
         padding: pad,
         flex: 1,
         minHeight: 0,
+        height: "100%",
         minWidth: 0,
         display: "flex",
         flexDirection: "column",
@@ -1703,6 +1756,8 @@ export default function OrdersClient({
           style={{
             flex: 1,
             minWidth: 0,
+            minHeight: 0,
+            height: "100%",
             display: "flex",
             flexDirection: "row",
             gap: 16,

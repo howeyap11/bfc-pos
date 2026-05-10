@@ -54,6 +54,7 @@ import {
   getCachedMenuImageFile,
   getImagePath,
   initMenuImageCache,
+  mergeMenuImageCacheRetentionIds,
   preloadMissingMenuImages,
 } from "./services/menuImageCache.service.js";
 
@@ -169,7 +170,7 @@ const SNAPRESIBO_QR_ITEM_ID = "SNAPRESIBO_QR";
 // Returns Category[] with items, using CloudCategory, CloudSubCategory, CloudMenuItem
 app.get("/menu", async (req, reply) => {
   try {
-    const [categories, subCategories, items, storeConfig] = await Promise.all([
+    const [categories, subCategories, items, storeConfig, ingredientsWithImages] = await Promise.all([
       app.prisma.cloudCategory.findMany({
         where: { storeId: "store_1" },
         orderBy: { sortOrder: "asc" },
@@ -183,6 +184,15 @@ app.get("/menu", async (req, reply) => {
         orderBy: { name: "asc" },
       }),
       app.prisma.storeConfig.findUnique({ where: { storeId: "store_1" } }),
+      app.prisma.cloudIngredient.findMany({
+        where: {
+          storeId: "store_1",
+          isActive: true,
+          deletedAt: null,
+          imageUrl: { not: null },
+        },
+        select: { cloudId: true, imageUrl: true },
+      }),
     ]);
     const drinkSizeItemRows = await app.prisma.cloudMenuItemDrinkSizeConfig.findMany({
       where: { storeId: "store_1" },
@@ -190,9 +200,10 @@ app.get("/menu", async (req, reply) => {
       distinct: ["menuItemCloudId"],
     });
     const itemsWithDrinkSizeConfigs = new Set(drinkSizeItemRows.map((r) => r.menuItemCloudId));
-    await preloadMissingMenuImages(
-      (items ?? []).map((i) => ({ id: i.cloudId, imageUrl: i.imageUrl }))
-    );
+    await preloadMissingMenuImages([
+      ...(items ?? []).map((i) => ({ id: i.cloudId, imageUrl: i.imageUrl })),
+      ...ingredientsWithImages.map((i) => ({ id: i.cloudId, imageUrl: i.imageUrl })),
+    ]);
     const subCategoryMap = new Map((subCategories ?? []).map((s) => [s.cloudId, s.name]));
     let result = await Promise.all(
       (categories ?? []).map(async (cat) => ({
@@ -820,16 +831,31 @@ try {
   await app.listen({ host: "0.0.0.0", port });
   app.log.info({ port, dbPath, mode }, "API started");
   try {
-    const existingItems = await app.prisma.cloudMenuItem.findMany({
-      where: { storeId: "store_1", isActive: true, deletedAt: null },
-      select: { cloudId: true, imageUrl: true },
-    });
-    const activeIds = existingItems.map((i) => i.cloudId);
+    const [existingItems, ingredientsWithImages] = await Promise.all([
+      app.prisma.cloudMenuItem.findMany({
+        where: { storeId: "store_1", isActive: true, deletedAt: null },
+        select: { cloudId: true, imageUrl: true },
+      }),
+      app.prisma.cloudIngredient.findMany({
+        where: {
+          storeId: "store_1",
+          isActive: true,
+          deletedAt: null,
+          imageUrl: { not: null },
+        },
+        select: { cloudId: true, imageUrl: true },
+      }),
+    ]);
+    const activeIds = mergeMenuImageCacheRetentionIds(
+      existingItems.map((i) => i.cloudId),
+      ingredientsWithImages.map((i) => i.cloudId)
+    );
     const removed = await cleanupStaleMenuImages(activeIds);
     if (removed > 0) app.log.info({ removed }, "Startup: menu image cache cleaned stale entries");
-    await preloadMissingMenuImages(
-      existingItems.map((i) => ({ id: i.cloudId, imageUrl: i.imageUrl }))
-    );
+    await preloadMissingMenuImages([
+      ...existingItems.map((i) => ({ id: i.cloudId, imageUrl: i.imageUrl })),
+      ...ingredientsWithImages.map((i) => ({ id: i.cloudId, imageUrl: i.imageUrl })),
+    ]);
   } catch (err) {
     app.log.warn({ err }, "Startup menu image preload failed");
   }
@@ -855,13 +881,25 @@ try {
   runCatalogSync(app)
     .then(async () => {
       try {
-        const cloudItems = await app.prisma.cloudMenuItem.findMany({
-          where: { storeId: "store_1", isActive: true, deletedAt: null },
-          select: { cloudId: true, imageUrl: true },
-        });
-        await preloadMissingMenuImages(
-          cloudItems.map((i) => ({ id: i.cloudId, imageUrl: i.imageUrl }))
-        );
+        const [cloudItems, ingredientsWithImages] = await Promise.all([
+          app.prisma.cloudMenuItem.findMany({
+            where: { storeId: "store_1", isActive: true, deletedAt: null },
+            select: { cloudId: true, imageUrl: true },
+          }),
+          app.prisma.cloudIngredient.findMany({
+            where: {
+              storeId: "store_1",
+              isActive: true,
+              deletedAt: null,
+              imageUrl: { not: null },
+            },
+            select: { cloudId: true, imageUrl: true },
+          }),
+        ]);
+        await preloadMissingMenuImages([
+          ...cloudItems.map((i) => ({ id: i.cloudId, imageUrl: i.imageUrl })),
+          ...ingredientsWithImages.map((i) => ({ id: i.cloudId, imageUrl: i.imageUrl })),
+        ]);
       } catch (err) {
         app.log.warn({ err }, "Menu image preload after initial sync failed");
       }
